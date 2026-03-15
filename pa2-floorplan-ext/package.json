@@ -1,0 +1,35 @@
+{
+  "name": "pa2-floorplan-3dic-visualizer",
+  "displayName": "PA2 3DIC Floorplan Visualizer",
+  "description": "Run ./bin/fp on PA2 inputs and interactively visualize/edit a (multi-die) floorplan with live HPWL in a webview.",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:pa2Floorplan.openVisualizer"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pa2Floorplan.openVisualizer",
+        "title": "PA2 Floorplan: Open 3DIC Visualizer"
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "echo \"no lint configured\"",
+    "test": "echo \"no tests\""
+  },
+  "licenses": [
+    {
+      "type": "MIT",
+      "url": "https://opensource.org/licenses/MIT"
+    }
+  ]
+}

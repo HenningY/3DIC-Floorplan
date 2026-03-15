@@ -1,0 +1,19 @@
+[Eval] Warning: Only sopprot alpha=0.5 for public evaluation. The temporary score would not be correct!
+[Eval] Run cmd: ../evaluator/checker ../input_pa2/ami49.block ../input_pa2/ami49.nets ../output_pa2/ami49_25.out 0.25
+
+Checking Report...
+cost:       actual  10041660.000000/reported 10041660.000000
+wirelength: actual  762299.000000/reported 762299.000000
+area:       actual  37879744.000000/reported 37879744.000000
+width:      outline 5336/actual 5264/reported 5264.000000
+height:     outline 7673/actual 7196/reported 7196.000000
+runtime: 6.676000
+
+Congradulations, your results are correct
+
+[Eval] Your area & wirelength: 37879744.000000 & 762299.000000
+[Eval] Your runtime: 6.676000
+[Eval] Your normalized cost = 0.25*(A-minA)/(maxA-minA) + 0.75*(WL-minWL)/(maxWL-minWL) = -0.0247862
+[Eval] SCORE = QUALITY_SCORE*0.8 + RUNTIME_SCORE*0.2
+             = 9.739569*0.8 + 6.3858248*0.2
+             = 9.06882

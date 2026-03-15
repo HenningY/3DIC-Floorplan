@@ -1,0 +1,18 @@
+[Eval] Run cmd: ../evaluator/checker ../input_pa2/hp.block ../input_pa2/hp.nets ../output_pa2/hp_50.out 0.5
+
+Checking Report...
+cost:       actual  4959858.500000/reported 4959858.500000
+wirelength: actual  211837.000000/reported 211837.000000
+area:       actual  9707880.000000/reported 9707880.000000
+width:      outline 5412/actual 3556/reported 3556.000000
+height:     outline 3704/actual 2730/reported 2730.000000
+runtime: 0.084000
+
+Congradulations, your results are correct
+
+[Eval] Your area & wirelength: 9707880.000000 & 211837.000000
+[Eval] Your runtime: 0.084000
+[Eval] Your normalized cost = 0.5*(A-minA)/(maxA-minA) + 0.5*(WL-minWL)/(maxWL-minWL) = -0.114873
+[Eval] SCORE = QUALITY_SCORE*0.8 + RUNTIME_SCORE*0.2
+             = 32.7295*0.8 + 7.473682*0.2
+             = 27.67834

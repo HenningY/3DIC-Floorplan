@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Die Floorplan Visualizer</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background-color: #fafafa;
+        }
+        h1 { margin-bottom: 16px; }
+
+        #controls {
+            margin-bottom: 16px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+            max-width: 960px;
+        }
+
+        /* separator between control groups */
+        .ctrl-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            background: #fff;
+        }
+        .ctrl-group-label {
+            font-size: 11px;
+            font-weight: bold;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #canvas-container {
+            border: 1px solid #ccc;
+            position: relative;
+            overflow: auto;
+            margin-bottom: 16px;
+            background-color: #ffffff;
+        }
+        canvas { display: block; cursor: crosshair; }
+
+        #info-panel {
+            border: 2px solid #ccc;
+            border-radius: 5px;
+            padding: 16px;
+            width: 100%;
+            max-width: 960px;
+            min-height: 80px;
+            margin-top: 8px;
+            background-color: #ffffff;
+        }
+
+        .btn {
+            padding: 7px 12px;
+            border-radius: 5px;
+            border: 2px solid #000;
+            background-color: #000;
+            color: #fff;
+            cursor: pointer;
+            font-size: 13px;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+        .btn:hover { background-color: #fff; color: #000; }
+        .btn.secondary {
+            background-color: #2563eb;
+            border-color: #2563eb;
+        }
+        .btn.secondary:hover { background-color: #fff; color: #2563eb; }
+        .btn.loaded { background-color: #16a34a; border-color: #16a34a; }
+        .btn.loaded:hover { background-color: #fff; color: #16a34a; }
+
+        #scale-slider { width: 160px; }
+
+        label { font-size: 13px; cursor: pointer; user-select: none; }
+
+        input[type="checkbox"] { cursor: pointer; }
+
+        #die-select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #999;
+            font-size: 13px;
+        }
+
+        /* floating tooltip */
+        #tooltip {
+            display: none;
+            position: fixed;
+            background: rgba(30,30,30,0.92);
+            color: #fff;
+            padding: 4px 9px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 200;
+            white-space: nowrap;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+
+        /* legend */
+        #legend {
+            font-size: 12px;
+            color: #444;
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: center;
+            margin-bottom: 4px;
+        }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+        .legend-swatch {
+            width: 16px; height: 16px;
+            border-radius: 3px;
+            border: 1px solid #666;
+        }
+        .legend-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #e53e3e;
+            border: 1px solid #9b2c2c;
+        }
+        .legend-outline {
+            width: 16px; height: 12px;
+            border: 2px dashed #444;
+            border-radius: 2px;
+        }
+        .legend-strip {
+            width: 16px; height: 10px;
+            background: rgba(251,191,36,0.45);
+            border: 1.5px solid #b45309;
+            border-radius: 2px;
+        }
+        .legend-tsv {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            border: 1.5px solid #7c3aed;
+            background: #a78bfa;
+        }
+        .legend-tsv.tier01 { background: #fb923c; border-color: #c2410c; }
+        .legend-tsv.tier12 { background: #a78bfa; border-color: #6d28d9; }
+        .legend-tsv.fallback { box-shadow: 0 0 0 2px #ef4444; }
+    </style>
+</head>
+<body>
+    <h1>Multi-Die Floorplan Visualizer</h1>
+
+    <div id="controls">
+        <!-- .out file：用 label for= 直接綁定，不需 JS click() -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">.out</span>
+            <label class="btn" id="loadOutLabel" for="outFileInput">Load .out File</label>
+            <input type="file" id="outFileInput" accept=".out,.txt" style="display:none">
+        </div>
+
+        <!-- .block file -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">.block</span>
+            <label class="btn secondary" id="loadBlockLabel" for="blockFileInput">Load .block File</label>
+            <input type="file" id="blockFileInput" accept=".block,.txt" style="display:none">
+        </div>
+
+        <!-- view options -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">View</span>
+            <label><input type="checkbox" id="showOutlineCheck" checked> Outline</label>
+            <label><input type="checkbox" id="showTerminalsCheck" checked> Terminals</label>
+            <label><input type="checkbox" id="showTsvStripsCheck" checked> TSV Strips</label>
+            <label><input type="checkbox" id="showTsvPointsCheck" checked> TSV Points</label>
+        </div>
+
+        <!-- zoom -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">Zoom</span>
+            <input type="range" id="scale-slider" min="0.05" max="10" step="0.01" value="0.3">
+            <span id="scale-value">0.3x</span>
+        </div>
+
+        <!-- die selection -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">Die</span>
+            <select id="die-select">
+                <option value="all">All (overlap)</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="legend"></div>
+
+    <div id="canvas-container">
+        <canvas id="floorplanCanvas"></canvas>
+    </div>
+
+    <div id="info-panel">
+        <h3>Information</h3>
+        <div id="info-content">Load an .out or .block file to begin.</div>
+    </div>
+
+    <div id="tooltip"></div>
+
+    <script src="out_visualizer.js?v=6"></script>
+</body>
+</html>

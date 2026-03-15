@@ -1,0 +1,18 @@
+[Eval] Run cmd: ../evaluator/checker ../input_pa2/xerox.block ../input_pa2/xerox.nets ../output_pa2/xerox_50.out 0.5
+
+Checking Report...
+cost:       actual  10461421.000000/reported 10461379.000000
+wirelength: actual  498367.500000/reported 498284.000000
+area:       actual  20424474.000000/reported 20424474.000000
+width:      outline 6937/actual 3906/reported 3906.000000
+height:     outline 5379/actual 5229/reported 5229.000000
+runtime: 0.099000
+
+Congradulations, your results are correct
+
+[Eval] Your area & wirelength: 20424474.000000 & 498367.500000
+[Eval] Your runtime: 0.099000
+[Eval] Your normalized cost = 0.5*(A-minA)/(maxA-minA) + 0.5*(WL-minWL)/(maxWL-minWL) = 0.0417769
+[Eval] SCORE = QUALITY_SCORE*0.8 + RUNTIME_SCORE*0.2
+             = 8.9546628*0.8 + 7.8028556*0.2
+             = 8.72430
