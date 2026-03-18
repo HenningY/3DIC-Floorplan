@@ -7,6 +7,7 @@
 #include <vector>
 #include <string>
 #include <unordered_map>
+#include <memory>
 #include <cmath>
 #include <limits>
 
@@ -35,6 +36,7 @@ struct Module {
 // ============================================================
 struct Net {
     int              id;
+    std::string      name;           // Net 名稱（如 "net33"）
     std::vector<int> pins;           // Module 索引（同時含 terminal 和 block）
     bool             is_cross_tier = false;  // 可移動方塊是否跨越多個 tier
     int              min_tier = -1;  // 此 net 中 pin 的最小 tier（terminal 視為 0）
@@ -125,6 +127,77 @@ struct PlacementConfig {
 };
 
 // ============================================================
+// TsvPlacementConfig: TSV Placement 獨立求解器的超參數
+// ============================================================
+struct TsvPlacementConfig {
+    int    max_iterations = 1000;    // 最大迭代次數
+    double init_step_size = 2.0;     // 初始步長
+    double step_decay     = 0.998;   // 步長衰減（每次迭代乘以此值）
+    double momentum       = 0.9;     // Nesterov 動量係數
+
+    // TSV 物理尺寸（用於密度排斥的影響範圍，單位與 die 座標相同）
+    double tsv_width  = 4.0;
+    double tsv_height = 4.0;
+
+    // 密度排斥力：使 TSV 往 module 較稀疏的空白區域移動
+    // tsv_lambda 乘以密度 overflow 產生排斥梯度
+    double tsv_lambda = 0.5;
+
+    // 密度感測平滑半徑（0 = 自動設為 bin_w）
+    double tsv_sigma  = 0.0;
+
+    // 印出 progress 的間隔（0 = 不印）
+    int    print_interval = 100;
+};
+
+// ============================================================
+// PartitionConfig: Recursive Bi-partitioning 超參數
+// ============================================================
+struct PartitionConfig {
+    int    leaf_threshold  = 8;     // 區域內 module 數 ≤ 此值時停止遞迴
+    int    min_modules_per_region = 3; // 每個子區域最少 module 數（避免切到太碎）
+    double min_split_ratio = 0.1;   // 切割位置不能靠近邊界的最小比例
+    double max_split_ratio = 0.9;   // 對稱的最大比例
+    int    num_candidates  = 32;    // 掃線候選切割位置數量
+    double tsv_width       = 4.0;   // TSV 物理寬（面積計算用）
+    double tsv_height      = 4.0;   // TSV 物理高（面積計算用）
+    bool   log_tree        = true;  // 是否把 partition tree 寫到 log 檔
+    std::string log_file   = "partition_tree.txt";
+
+    // 將 partition 後（push-back / flush 到切割線）的 module/TSV 位置寫檔
+    bool        write_positions = true;
+    std::string positions_file  = "partition_positions.txt";
+};
+
+// ============================================================
+// PartitionNode: Recursive Partition Tree 的節點
+//   每個節點記錄一個矩形子區域以及其內容
+// ============================================================
+struct PartitionNode {
+    // 幾何邊界
+    double xmin, ymin, xmax, ymax;
+    int    tier_id;
+    int    depth;             // 遞迴深度（根 = 0）
+
+    // 本節點包含的 module/TSV 索引（模組中心在此矩形內）
+    std::vector<int> module_ids;  // 指向全域 modules_ 的索引
+    std::vector<int> tsv_ids;     // 指向全域 tsvs_ 的索引
+
+    // 子節點（葉節點兩者皆為 nullptr）
+    std::unique_ptr<PartitionNode> left;   // 切割線左側 / 下側
+    std::unique_ptr<PartitionNode> right;  // 切割線右側 / 上側
+
+    // 切割資訊（葉節點無意義）
+    bool   split_x   = true;   // true = 垂直切割（沿 X 軸），false = 水平切割
+    double split_pos = 0.0;    // 切割線的座標值
+
+    bool is_leaf() const { return !left && !right; }
+    double width()  const { return xmax - xmin; }
+    double height() const { return ymax - ymin; }
+    double area()   const { return width() * height(); }
+};
+
+// ============================================================
 // PlacementEngine: 解析式擺放主引擎
 // ============================================================
 class PlacementEngine {
@@ -148,6 +221,15 @@ public:
     // 規則：net 橫跨 tier [min_tier, max_tier] 時，在 layer 0..(max_tier-min_tier-1) 各放一個 TSV
     void build_tsvs();
 
+    // TSV Placement 求解器
+    // 所有 Module 座標固定，只更新 TSV (x,y)
+    // 目標：最小化 dist(TSV, B_lower) + dist(TSV, B_upper)，同時避開 module 密集區
+    void solve_tsvs(const TsvPlacementConfig& tcfg = TsvPlacementConfig());
+
+    // 計算目前 TSV 的總 wirelength cost（評估用）
+    // = Σ_tsv [dist(tsv, bbox_lower) + dist(tsv, bbox_upper)]
+    double compute_tsv_cost() const;
+
     // ---- 輸出 ----
     // 寫出符合 PA2 格式的結果檔：
     //   Line 1: total_cost
@@ -170,6 +252,11 @@ public:
     void   update_density_map();
     void   calculate_density_gradient(std::vector<double>& gx,
                                       std::vector<double>& gy) const;
+
+    // ---- Recursive Partitioning（Legalization 準備）----
+    // 對所有 tier 做 Recursive Bi-partitioning，
+    // 結果用 partition_all_tiers() 統一觸發並寫 log
+    void partition_all_tiers(const struct PartitionConfig& pcfg);
 
     // ---- 訪問器 ----
     const std::vector<Module>& modules()  const { return modules_; }

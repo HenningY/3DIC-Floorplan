@@ -186,7 +186,9 @@ bool PlacementEngine::parse_nets(const std::string& filename)
         ss >> degree;
 
         Net net;
-        net.id = net_id++;
+        net.id   = net_id;
+        net.name = "net" + std::to_string(net_id);
+        ++net_id;
 
         for (int d = 0; d < degree; ++d) {
             // 讀取每個 pin 名稱

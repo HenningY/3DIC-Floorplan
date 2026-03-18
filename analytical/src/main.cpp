@@ -59,8 +59,36 @@ int main(int argc, char* argv[])
     std::cout << "\n[Solve] Starting analytical placement...\n";
     engine.solve();
 
-    // ---- 建立 TSV 清單（供後續 TSV placement 使用）----
+    // ---- 建立 TSV 清單 ----
     engine.build_tsvs();
+
+    // ---- TSV Analytical Placement ----
+    TsvPlacementConfig tcfg;
+    tcfg.max_iterations = 1000;
+    tcfg.init_step_size = 2.0;
+    tcfg.step_decay     = 0.998;
+    tcfg.momentum       = 0.9;
+    tcfg.tsv_width      = 3.0;   // TSV 物理寬度（die 座標單位）
+    tcfg.tsv_height     = 3.0;   // TSV 物理高度
+    tcfg.tsv_lambda     = 0.3;   // 密度排斥力強度
+    tcfg.tsv_sigma      = 0.0;   // 0 = 自動設為 bin_w
+    tcfg.print_interval = 200;   // 每 200 次印一次進度
+    engine.solve_tsvs(tcfg);
+
+    // ---- Recursive Bi-partitioning（Legalization 前準備）----
+    PartitionConfig pcfg;
+    pcfg.leaf_threshold  = 8;     // ≤ 8 個 module 的區域停止遞迴
+    pcfg.min_modules_per_region = 3; // partition 後每個子區域至少 3 個 modules
+    pcfg.min_split_ratio = 0.1;   // 切割比例限制 [0.1, 0.9]
+    pcfg.max_split_ratio = 0.9;
+    pcfg.num_candidates  = 32;    // 掃線候選切割數
+    pcfg.tsv_width       = 3.0;   // TSV 物理尺寸（與 solve_tsvs 一致）
+    pcfg.tsv_height      = 3.0;
+    pcfg.log_tree        = true;
+    pcfg.log_file        = output_file + "_partition_tree.txt";
+    pcfg.write_positions = true;
+    pcfg.positions_file  = output_file + "_partition_positions.txt";
+    engine.partition_all_tiers(pcfg);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
@@ -73,6 +101,7 @@ int main(int argc, char* argv[])
     std::cout << "  Num modules  : " << engine.modules().size() << "\n";
     std::cout << "  Num nets     : " << engine.nets().size() << "\n";
     std::cout << "  Num TSVs     : " << engine.tsvs().size() << "\n";
+    std::cout << "  TSV cost     : " << engine.compute_tsv_cost() << "\n";
 
     // Die 使用率統計
     for (int t = 0; t < engine.num_dies(); ++t) {
