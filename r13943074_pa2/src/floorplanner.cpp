@@ -964,7 +964,7 @@ void Floorplanner::simulatedAnnealingRoundRobin() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Floorplanner::simulatedAnnealing() {
-    double initial_temp = 1000.0;
+    double initial_temp = 2000.0;
     // double final_temp = _blocks.size() < 12 ? 86.8 : 1.75;
     double final_temp = 80.0;
     double cooling_rate = 0.98;
