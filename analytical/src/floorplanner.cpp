@@ -318,15 +318,6 @@ struct BBox {
     }
 };
 
-// 點到線段的梯度：點在 [lo, hi] 以外時產生拉力，在內時為零
-// dist_x(v, lo, hi) = max(lo-v, 0) + max(v-hi, 0)
-// ∂/∂v = -1 if v<lo (拉向右), +1 if v>hi (拉向左), 0 otherwise
-double dist_seg_grad(double v, double lo, double hi) {
-    if (v < lo) return -1.0;
-    if (v > hi) return +1.0;
-    return 0.0;
-}
-
 } // anonymous namespace
 
 // ============================================================
@@ -356,26 +347,19 @@ double PlacementEngine::compute_tsv_cost() const
 }
 
 // ============================================================
-// solve_tsvs: TSV Analytical Placement 求解器
+// solve_tsvs: 直接以上下層 BBox 中心決定 TSV 座標（無迭代優化）
 //
-// 所有 Module 位置固定，只更新 TSV (x,y) 座標。
-// 每個 TSV 受兩種力：
+// 對每個 TSV：
+//   B_lower = bbox of pins on tiers ≤ layer_index
+//   B_upper = bbox of pins on tiers ≥ layer_index+1
 //
-// 1. WL 吸引力（BBox-based Distance Penalty）
-//    對所屬 net 計算上下兩側的 BBox：
-//      B_lower = bbox of pins on tiers ≤ layer_index
-//      B_upper = bbox of pins on tiers ≥ layer_index+1
-//    cost = dist(P, B_lower) + dist(P, B_upper)
-//    當 TSV 在兩個 BBox 的交集內時，WL 力為零。
-//    若兩 BBox 不相交，TSV 被拉向各自最近點。
+// 中心點定義：
+//   C_lower = center(B_lower), C_upper = center(B_upper)
+//   TSV 位置 = (C_lower + C_upper) / 2
 //
-// 2. Density 排斥力（靜態密度圖）
-//    使用已計算完的 module density map 推開 TSV，使其落入空白區域。
-//    影響半徑與 Bell 函數同 module density，但以 TSV 物理尺寸計算。
-//
-// 優化方法：Nesterov Accelerated Gradient（與 module placement 相同）
+// 若只有一側 bbox 有效，則使用該側中心；最後夾取到對應 die 邊界。
 // ============================================================
-void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
+void PlacementEngine::solve_tsvs(const TsvPlacementConfig& /*tcfg*/)
 {
     const int N = static_cast<int>(tsvs_.size());
     if (N == 0) {
@@ -383,123 +367,40 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
         return;
     }
 
-    std::cout << "[SolveTSV] Starting TSV placement for " << N
-              << " TSVs, max_iter=" << tcfg.max_iterations << "\n";
+    std::cout << "[SolveTSV] Direct center placement for " << N << " TSVs.\n";
 
-    // Nesterov 狀態
-    std::vector<double> prev_x(N), prev_y(N);
-    for (int i = 0; i < N; ++i) {
-        prev_x[i] = tsvs_[i].x;
-        prev_y[i] = tsvs_[i].y;
-    }
-
-    double step = tcfg.init_step_size;
-
-    for (int iter = 0; iter < tcfg.max_iterations; ++iter) {
-
-        // ---- NAG lookahead: y_k = x_k + μ*(x_k - x_{k-1}) ----
-        std::vector<double> lx(N), ly(N);
-        for (int i = 0; i < N; ++i) {
-            lx[i] = tsvs_[i].x + tcfg.momentum * (tsvs_[i].x - prev_x[i]);
-            ly[i] = tsvs_[i].y + tcfg.momentum * (tsvs_[i].y - prev_y[i]);
-            prev_x[i] = tsvs_[i].x;
-            prev_y[i] = tsvs_[i].y;
+    for (TSV& tsv : tsvs_) {
+        const Net& net = nets_[tsv.net_id];
+        BBox b_lo, b_hi;
+        for (int pid : net.pins) {
+            const Module& m = modules_[pid];
+            int mt = m.is_terminal ? 0 : m.tier_id;
+            if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
+            if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
 
-        // ---- 計算梯度 ----
-        std::vector<double> gx(N, 0.0), gy(N, 0.0);
+        double tx = tsv.x, ty = tsv.y;
+        const bool lo_ok = b_lo.valid();
+        const bool hi_ok = b_hi.valid();
 
-        for (int i = 0; i < N; ++i) {
-            const TSV& tsv = tsvs_[i];
-            double tx = lx[i], ty = ly[i];
-            const Die& die = dies_[tsv.layer_index];
-
-            // =========================================================
-            // 力 1: WL 吸引力（BBox distance penalty）
-            // B_lower = bbox of net pins on tiers ≤ tier_below
-            // B_upper = bbox of net pins on tiers ≥ tier_above
-            // =========================================================
-            const Net& net = nets_[tsv.net_id];
-            BBox b_lo, b_hi;
-            for (int pid : net.pins) {
-                const Module& m = modules_[pid];
-                int mt = m.is_terminal ? 0 : m.tier_id;
-                if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
-                if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
-            }
-
-            // ∂dist(P, B)/∂P = dist_seg_grad(x, xmin, xmax) + dist_seg_grad(y, ...)
-            if (b_lo.valid()) {
-                gx[i] += dist_seg_grad(tx, b_lo.xmin, b_lo.xmax);
-                gy[i] += dist_seg_grad(ty, b_lo.ymin, b_lo.ymax);
-            }
-            if (b_hi.valid()) {
-                gx[i] += dist_seg_grad(tx, b_hi.xmin, b_hi.xmax);
-                gy[i] += dist_seg_grad(ty, b_hi.ymin, b_hi.ymax);
-            }
-
-            // =========================================================
-            // 力 2: Density 排斥力（靜態 module 密度圖）
-            // 使用 tier_below 的密度圖（TSV 就在此層界面上）
-            // =========================================================
-            if (tcfg.tsv_lambda > 0.0) {
-                double sigma = (tcfg.tsv_sigma > 0.0)
-                               ? tcfg.tsv_sigma : die.bin_w;
-                double rx = tcfg.tsv_width  * 0.5 + sigma;
-                double ry = tcfg.tsv_height * 0.5 + sigma;
-                // 正規化係數（面積守恆 Bell 核）
-                double A_ratio = tcfg.tsv_width * tcfg.tsv_height
-                                 * (9.0 / 16.0) / (rx * ry);
-
-                int c_min = std::max(0,
-                    static_cast<int>((tx - rx) / die.bin_w));
-                int c_max = std::min(die.bin_cols - 1,
-                    static_cast<int>((tx + rx) / die.bin_w));
-                int r_min = std::max(0,
-                    static_cast<int>((ty - ry) / die.bin_h));
-                int r_max = std::min(die.bin_rows - 1,
-                    static_cast<int>((ty + ry) / die.bin_h));
-
-                for (int r = r_min; r <= r_max; ++r) {
-                    for (int c = c_min; c <= c_max; ++c) {
-                        const Bin& b = die.bins[r * die.bin_cols + c];
-                        double overflow = b.density - b.target_density;
-                        if (overflow <= 0.0) continue;
-
-                        double dx = tx - b.cx;
-                        double dy = ty - b.cy;
-                        double phi_x  = bell_func(dx, rx);
-                        double phi_y  = bell_func(dy, ry);
-                        double dphi_x = bell_grad(dx, rx);
-                        double dphi_y = bell_grad(dy, ry);
-
-                        double coeff = 2.0 * overflow * A_ratio;
-                        gx[i] += tcfg.tsv_lambda * coeff * dphi_x * phi_y;
-                        gy[i] += tcfg.tsv_lambda * coeff * phi_x  * dphi_y;
-                    }
-                }
-            }
+        if (lo_ok && hi_ok) {
+            const double cxl = 0.5 * (b_lo.xmin + b_lo.xmax);
+            const double cyl = 0.5 * (b_lo.ymin + b_lo.ymax);
+            const double cxh = 0.5 * (b_hi.xmin + b_hi.xmax);
+            const double cyh = 0.5 * (b_hi.ymin + b_hi.ymax);
+            tx = 0.5 * (cxl + cxh);
+            ty = 0.5 * (cyl + cyh);
+        } else if (lo_ok) {
+            tx = 0.5 * (b_lo.xmin + b_lo.xmax);
+            ty = 0.5 * (b_lo.ymin + b_lo.ymax);
+        } else if (hi_ok) {
+            tx = 0.5 * (b_hi.xmin + b_hi.xmax);
+            ty = 0.5 * (b_hi.ymin + b_hi.ymax);
         }
 
-        // ---- 更新座標並夾取至 die 邊界 ----
-        for (int i = 0; i < N; ++i) {
-            tsvs_[i].x = lx[i] - step * gx[i];
-            tsvs_[i].y = ly[i] - step * gy[i];
-            const Die& die = dies_[tsvs_[i].layer_index];
-            tsvs_[i].x = std::max(0.0, std::min(die.width,  tsvs_[i].x));
-            tsvs_[i].y = std::max(0.0, std::min(die.height, tsvs_[i].y));
-        }
-
-        step *= tcfg.step_decay;
-
-        // ---- 收斂監控 ----
-        if (tcfg.print_interval > 0 && iter % tcfg.print_interval == 0) {
-            std::cout << "[SolveTSV iter " << std::setw(4) << iter << "]"
-                      << " cost=" << std::fixed << std::setprecision(2)
-                      << compute_tsv_cost()
-                      << " step=" << std::scientific << std::setprecision(2)
-                      << step << "\n";
-        }
+        const Die& die = dies_[tsv.layer_index];
+        tsv.x = std::max(0.0, std::min(die.width,  tx));
+        tsv.y = std::max(0.0, std::min(die.height, ty));
     }
 
     std::cout << "[SolveTSV] Done. Final TSV cost = "
@@ -516,6 +417,11 @@ double PlacementEngine::compute_lse_wirelength() const
 {
     double total = 0.0;
     const double g = cfg_.gamma;
+
+    auto pin_wl_w = [this](int pid) -> double {
+        return modules_[pid].is_terminal ? cfg_.wl_pin_weight_terminal
+                                         : cfg_.wl_pin_weight_module;
+    };
 
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
@@ -534,12 +440,13 @@ double PlacementEngine::compute_lse_wirelength() const
         }
 
         for (int id : net.pins) {
+            const double wi = pin_wl_w(id);
             double xi = modules_[id].x;
             double yi = modules_[id].y;
-            sum_exp_x  += std::exp((xi - max_x) / g);
-            sum_exp_nx += std::exp((min_x - xi) / g);
-            sum_exp_y  += std::exp((yi - max_y) / g);
-            sum_exp_ny += std::exp((min_y - yi) / g);
+            sum_exp_x  += wi * std::exp((xi - max_x) / g);
+            sum_exp_nx += wi * std::exp((min_x - xi) / g);
+            sum_exp_y  += wi * std::exp((yi - max_y) / g);
+            sum_exp_ny += wi * std::exp((min_y - yi) / g);
         }
 
         // WL_e = γ * [ln(Σe^{xi/γ}) + ln(Σe^{-xi/γ}) + ...]
@@ -565,6 +472,11 @@ void PlacementEngine::calculate_wirelength_gradient(
 
     const double g = cfg_.gamma;
 
+    auto pin_wl_w = [this](int pid) -> double {
+        return modules_[pid].is_terminal ? cfg_.wl_pin_weight_terminal
+                                         : cfg_.wl_pin_weight_module;
+    };
+
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
 
@@ -578,28 +490,30 @@ void PlacementEngine::calculate_wirelength_gradient(
             min_y = std::min(min_y, modules_[id].y);
         }
 
-        // 計算分母 Σ exp((xi - max_x)/γ) 等
+        // 加權分母 Z = Σ w_i exp(...)
         double Z_px = 0.0, Z_nx = 0.0;
         double Z_py = 0.0, Z_ny = 0.0;
         for (int id : net.pins) {
-            Z_px += std::exp((modules_[id].x - max_x) / g);
-            Z_nx += std::exp((min_x - modules_[id].x) / g);
-            Z_py += std::exp((modules_[id].y - max_y) / g);
-            Z_ny += std::exp((min_y - modules_[id].y) / g);
+            const double wi = pin_wl_w(id);
+            Z_px += wi * std::exp((modules_[id].x - max_x) / g);
+            Z_nx += wi * std::exp((min_x - modules_[id].x) / g);
+            Z_py += wi * std::exp((modules_[id].y - max_y) / g);
+            Z_ny += wi * std::exp((min_y - modules_[id].y) / g);
         }
 
         // 計算每個 pin 的梯度貢獻
         for (int id : net.pins) {
             if (modules_[id].is_terminal) continue;  // terminal 固定，跳過
 
+            const double wj = pin_wl_w(id);
             double ex  = std::exp((modules_[id].x - max_x) / g);
             double enx = std::exp((min_x - modules_[id].x) / g);
             double ey  = std::exp((modules_[id].y - max_y) / g);
             double eny = std::exp((min_y - modules_[id].y) / g);
 
-            // ∂WL/∂xj = ex/Z_px - enx/Z_nx（分別為正端和負端貢獻）
-            gx[id] += ex / Z_px - enx / Z_nx;
-            gy[id] += ey / Z_py - eny / Z_ny;
+            // Weighted LSE: ∂WL/∂xj = wj * (ex/Z_px - enx/Z_nx)（γ=g 時與目標一致）
+            gx[id] += wj * (ex / Z_px - enx / Z_nx);
+            gy[id] += wj * (ey / Z_py - eny / Z_ny);
         }
     }
 }
@@ -712,36 +626,53 @@ void PlacementEngine::calculate_density_gradient(
 // ============================================================
 // compute_hpwl: 計算精確 HPWL（含 terminal、module、TSV）
 //
-// 每條 net 的 bbox = 該 net 上所有 pin（terminal + module）的 bbox，
-// 再加上該 net 所屬的 TSV 座標。連接 tier n 與 n+1 的 TSV 在兩層
-// 視為同一 (x,y)，只算一個點納入 bbox。
+// 3D IC 正確計算方式：對每條 net，逐層累加 HPWL。
+// 對第 t 層，納入：
+//   - 位於該層的 module 中心（tier_id == t）
+//   - terminal（is_terminal == true，全部視為 tier 0）
+//   - 連接第 t 層與第 t+1 層的 TSV（layer_index == t）：出現在 tier t 的 bbox
+//   - 連接第 t-1 層與第 t 層的 TSV（layer_index == t-1）：出現在 tier t 的 bbox
+// 即每個 TSV 同時計入其 tier_below 與 tier_above 兩層的 bbox 中，
+// 反映「此層需要在 pin 與 TSV 之間佈線」的真實線長。
+// 跨越多層的 net 每一層都會各算一次 HPWL 後累加。
 // ============================================================
 double PlacementEngine::compute_hpwl() const
 {
     double total = 0.0;
+    const int num_tiers = static_cast<int>(dies_.size());
+
     for (const Net& net : nets_) {
-        double x_min = 1e18, x_max = -1e18;
-        double y_min = 1e18, y_max = -1e18;
+        for (int t = 0; t < num_tiers; ++t) {
+            double x_min = 1e18, x_max = -1e18;
+            double y_min = 1e18, y_max = -1e18;
 
-        // 納入 terminal、module 的座標
-        for (int id : net.pins) {
-            x_min = std::min(x_min, modules_[id].x);
-            x_max = std::max(x_max, modules_[id].x);
-            y_min = std::min(y_min, modules_[id].y);
-            y_max = std::max(y_max, modules_[id].y);
+            auto expand = [&](double x, double y) {
+                x_min = std::min(x_min, x);
+                x_max = std::max(x_max, x);
+                y_min = std::min(y_min, y);
+                y_max = std::max(y_max, y);
+            };
+
+            // 納入此層的 module 與 terminal（terminal 視為 tier 0）
+            for (int id : net.pins) {
+                const Module& m = modules_[id];
+                int mt = m.is_terminal ? 0 : m.tier_id;
+                if (mt == t) expand(m.x, m.y);
+            }
+
+            // 納入與此層相鄰的 TSV：
+            //   tier_below() == t → 從 tier t 往上的 TSV，屬於 tier t 的出口
+            //   tier_above() == t → 從 tier t-1 往上的 TSV，屬於 tier t 的入口
+            for (const TSV& tsv : tsvs_) {
+                if (tsv.net_id != net.id) continue;
+                if (tsv.tier_below() == t || tsv.tier_above() == t)
+                    expand(tsv.x, tsv.y);
+            }
+
+            // 此層有至少兩個點才會有非零線長
+            if (x_min <= x_max && y_min <= y_max)
+                total += (x_max - x_min) + (y_max - y_min);
         }
-
-        // 納入該 net 的 TSV 座標（連接 n 與 n+1 的 TSV 在兩層都有，同一 (x,y) 只算一次）
-        for (const TSV& tsv : tsvs_) {
-            if (tsv.net_id != net.id) continue;
-            x_min = std::min(x_min, tsv.x);
-            x_max = std::max(x_max, tsv.x);
-            y_min = std::min(y_min, tsv.y);
-            y_max = std::max(y_max, tsv.y);
-        }
-
-        if (x_min <= x_max && y_min <= y_max)
-            total += (x_max - x_min) + (y_max - y_min);
     }
     return total;
 }

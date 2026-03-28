@@ -1,0 +1,50 @@
+{
+  "name": "floorplan-3dic-viewer",
+  "displayName": "3DIC Floorplan Viewer",
+  "description": "Select .block/.nets, run analytical floorplan, visualize dies, modules, and TSVs in 3D.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:floorplanViewer.open"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "floorplanViewer.open",
+        "title": "Floorplan Viewer: Open Panel"
+      }
+    ],
+    "configuration": {
+      "title": "Floorplan Viewer",
+      "properties": {
+        "floorplanViewer.analyticalDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Directory containing the `analytical` executable (empty = auto-detect from workspace)."
+        },
+        "floorplanViewer.tsvSize": {
+          "type": "number",
+          "default": 3,
+          "description": "TSV half-extent in die units (matches analytical tsv_width/height)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  }
+}

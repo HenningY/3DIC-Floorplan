@@ -26,7 +26,7 @@ int main(int argc, char* argv[])
     cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 32;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 64;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
@@ -37,11 +37,15 @@ int main(int argc, char* argv[])
     cfg.lambda_max_mult        = 300.0; // λ 倍率上限
 
     // ---- 動態平滑半徑 σ ----
-    cfg.sigma_start_frac = 0.20;   // 初始 = 20% die 寬（=53.6 for 268）
-    cfg.sigma_end_frac   = 0.05;   // 最終 = 7% die 寬（=18.8，略大於 bin 寬 16.75）
+    cfg.sigma_start_frac = 0.4;   // 初始 = 20% die 寬（=53.6 for 268）
+    cfg.sigma_end_frac   = 0.04;   // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75）
 
     // 每層 Die 的密度懲罰係數基礎值（與 lambda_mult 相乘）
     cfg.tier_lambdas    = {0.0087, 0.0087, 0.009};
+
+    // LSE wirelength：module pin 權重 > terminal pin 權重（可調）
+    cfg.wl_pin_weight_module   = 1.0;
+    cfg.wl_pin_weight_terminal = 1.0;
 
     // ---- 初始化引擎 ----
     PlacementEngine engine(cfg);
@@ -79,15 +83,17 @@ int main(int argc, char* argv[])
     PartitionConfig pcfg;
     pcfg.leaf_threshold  = 8;     // ≤ 8 個 module 的區域停止遞迴
     pcfg.min_modules_per_region = 3; // partition 後每個子區域至少 3 個 modules
-    pcfg.min_split_ratio = 0.1;   // 切割比例限制 [0.1, 0.9]
-    pcfg.max_split_ratio = 0.9;
-    pcfg.num_candidates  = 32;    // 掃線候選切割數
+    pcfg.min_split_ratio = 0.30;   // 切割比例限制 [0.1, 0.9]
+    pcfg.max_split_ratio = 0.70;
+    pcfg.num_candidates  = 64;    // 掃線候選切割數
     pcfg.tsv_width       = 3.0;   // TSV 物理尺寸（與 solve_tsvs 一致）
     pcfg.tsv_height      = 3.0;
     pcfg.log_tree        = true;
     pcfg.log_file        = output_file + "_partition_tree.txt";
     pcfg.write_positions = true;
     pcfg.positions_file  = output_file + "_partition_positions.txt";
+
+    // ---- Recursive Bi-partitioning and Legalization ----
     engine.partition_all_tiers(pcfg);
 
     auto t1 = std::chrono::high_resolution_clock::now();

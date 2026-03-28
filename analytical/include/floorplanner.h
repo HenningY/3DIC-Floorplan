@@ -109,6 +109,13 @@ struct PlacementConfig {
     int    bin_resolution   = 16;      // 每層 bin 數量 (bin_resolution x bin_resolution)
     double convergence_tol  = 1e-4;    // 收斂容忍度（相對 HPWL 變化）
 
+    // ---- LSE wirelength：pin 權重（可移動 module vs 固定 terminal）----
+    // 在 softmax 近似中，terminal 權重較小 → 對 bbox 的影響較弱，
+    // 可移動 module 之間的「相對」吸引力會強於 module–terminal。
+    // 需滿足：wl_pin_weight_terminal <= wl_pin_weight_module
+    double wl_pin_weight_module   = 1.0;
+    double wl_pin_weight_terminal = 0.2;
+
     // ---- λ 遞增排程 ----
     // lambda_mult 每 lambda_update_interval 次迭代乘以 lambda_increase_rate，
     // 但不超過 lambda_max_mult（防止密度力爆炸）
@@ -159,6 +166,8 @@ struct PartitionConfig {
     double min_split_ratio = 0.1;   // 切割位置不能靠近邊界的最小比例
     double max_split_ratio = 0.9;   // 對稱的最大比例
     int    num_candidates  = 32;    // 掃線候選切割位置數量
+    // 若 shift + re-balance 後兩側仍不滿足容量／幾何，依 cross_area 順序改試下一個候選 L，最多嘗試次數（≤ num_candidates）
+    int    max_split_retries = 32;
     double tsv_width       = 4.0;   // TSV 物理寬（面積計算用）
     double tsv_height      = 4.0;   // TSV 物理高（面積計算用）
     bool   log_tree        = true;  // 是否把 partition tree 寫到 log 檔

@@ -5,10 +5,15 @@
 //   2. partition()：
 //      a. 若 module 數 ≤ leaf_threshold → 停止（葉節點）
 //      b. 選切割軸（較長邊，長寬比 ≈ 1 時評估兩軸）
-//      c. find_best_split()：掃線找最小 cross-area split，須滿足面積容量限制
+//      c. collect_ranked_split_candidates()：掃線得候選 L（cross_area 佳→次佳），
+//         partition 內可重試至 max_split_retries 次，直到 shift+re-balance 後兩側合法
 //      d. shift_modules()：跨線的 module/TSV 推到較大面積那側，
 //         並更新座標貼齊切割線
-//      e. 建立子節點，遞迴
+//      e. rebalance_split_line_to_side_area_ratio()：
+//         依目前左右兩側 module+TSV「面積和」比例，將切割線移到使子區域
+//         幾何面積與該比例一致（例：左:右 面積 3:2 → 切割線使左寬:右寬=3:2）；
+//         若移動後違反容量或子區域幾何下限則放棄調整。必要時迭代並再次 shift。
+//      f. 建立子節點，遞迴
 //   3. log_partition_tree()：DFS 把 tree 印到檔案
 #include "floorplanner.h"
 
@@ -21,6 +26,10 @@
 #include <iomanip>
 #include <numeric>
 #include <string>
+#include <utility>
+#include <vector>
+
+using namespace std;
 
 // ============================================================
 // 工具：計算一個矩形節點內的「可用面積」
@@ -38,22 +47,21 @@ static double available_area(const PartitionNode&         node,
 }
 
 // ============================================================
-// find_best_split:
-//   在 [region_lo + min_ratio*span, region_lo + max_ratio*span]
-//   均勻取 num_candidates 個候選切割線，對每條線評估：
-//     1. cross_area：被切割線穿過的 module/TSV 中，「較小側」的面積之和
-//     2. 面積容量：兩子區域的 available_area 均 ≥ 0
-//   回傳令 cross_area 最小且滿足容量限制的切割座標。
-//   若全部候選都違反容量，退而選最中間的（避免陷入死迴圈）。
-//
-// split_x = true：沿 X 方向切割（切割線平行 Y 軸，回傳 X 座標）
-// split_x = false：沿 Y 方向切割（切割線平行 X 軸，回傳 Y 座標）
+// collect_ranked_split_candidates:
+//   與 find_best_split 相同的掃線與約束，但回傳「通過初選」的 L，
+//   依 cross_area 由小到大排序（同 cross 則依 L）；鄰近重複 L 會去重。
 // ============================================================
-static double find_best_split(PartitionNode&            node,
-                              const std::vector<Module>& modules,
-                              const std::vector<TSV>&    tsvs,
-                              const PartitionConfig&     pcfg,
-                              bool                       split_x)
+struct SplitCand {
+    double L;
+    double cross_area;
+};
+
+static std::vector<double> collect_ranked_split_candidates(
+    PartitionNode&            node,
+    const std::vector<Module>& modules,
+    const std::vector<TSV>&    tsvs,
+    const PartitionConfig&     pcfg,
+    bool                       split_x)
 {
     double lo   = split_x ? node.xmin : node.ymin;
     double hi   = split_x ? node.xmax : node.ymax;
@@ -62,18 +70,14 @@ static double find_best_split(PartitionNode&            node,
     double L_min = lo + pcfg.min_split_ratio * span;
     double L_max = lo + pcfg.max_split_ratio * span;
 
-    // 均勻取候選切割線
     int    nc    = std::max(2, pcfg.num_candidates);
     double step  = (L_max - L_min) / (nc - 1);
 
-    double best_L      = (lo + hi) * 0.5;
-    double best_cross  = 1e30;
-    bool   found_valid = false;
+    std::vector<SplitCand> pool;
 
     for (int k = 0; k < nc; ++k) {
         double L = L_min + k * step;
 
-        // ----- 先以中心點分類左右，並檢查最少 module 數 -----
         int    left_mod_cnt = 0, right_mod_cnt = 0;
         double used_left = 0.0, used_right = 0.0;
         double left_max_short = 0.0, right_max_short = 0.0;
@@ -93,13 +97,11 @@ static double find_best_split(PartitionNode&            node,
             }
         }
 
-        // 強制每個子區域至少有 pcfg.min_modules_per_region 個 modules
         if (left_mod_cnt < pcfg.min_modules_per_region ||
             right_mod_cnt < pcfg.min_modules_per_region) {
             continue;
         }
 
-        // TSV 面積與左右 used 累加（TSV 不計入「至少幾個 module」的門檻）
         for (int tid : node.tsv_ids) {
             double ctr = split_x ? tsvs[tid].x : tsvs[tid].y;
             double a   = pcfg.tsv_width * pcfg.tsv_height;
@@ -107,8 +109,6 @@ static double find_best_split(PartitionNode&            node,
             else          used_right += a;
         }
 
-        // ----- 子區域幾何尺寸限制：寬/高不得小於子區域內任何 module 的短邊 -----
-        // 左/右子區域尺寸
         double left_w  = split_x ? (L - node.xmin) : node.width();
         double right_w = split_x ? (node.xmax - L) : node.width();
         double left_h  = split_x ? node.height()   : (L - node.ymin);
@@ -119,7 +119,6 @@ static double find_best_split(PartitionNode&            node,
             (right_w + 1e-12 >= right_max_short) && (right_h + 1e-12 >= right_max_short);
         if (!geom_ok) continue;
 
-        // ----- 計算 cross-boundary area -----
         double cross_area = 0.0;
 
         for (int mid : node.module_ids) {
@@ -127,11 +126,9 @@ static double find_best_split(PartitionNode&            node,
             double m_lo = split_x ? m.lx() : m.ly();
             double m_hi = split_x ? m.rx() : m.ry();
             if (m_lo < L && m_hi > L) {
-                // 被切割線穿過
                 double left_part  = L - m_lo;
                 double right_part = m_hi - L;
                 double smaller    = std::min(left_part, right_part);
-                // cross area = smaller_dim × perpendicular_dim
                 double perp = split_x ? m.height : m.width;
                 cross_area += smaller * perp;
             }
@@ -148,7 +145,6 @@ static double find_best_split(PartitionNode&            node,
             }
         }
 
-        // ----- 檢查面積容量 -----
         double left_area  = split_x ? (L - node.xmin) * node.height()
                                     : node.width() * (L - node.ymin);
         double right_area = split_x ? (node.xmax - L) * node.height()
@@ -157,18 +153,115 @@ static double find_best_split(PartitionNode&            node,
         bool capacity_ok = (left_area  >= used_left ) &&
                            (right_area >= used_right);
 
-        if (capacity_ok && cross_area < best_cross) {
-            best_cross = cross_area;
-            best_L     = L;
-            found_valid = true;
-        }
+        if (capacity_ok)
+            pool.push_back({L, cross_area});
     }
 
-    // 若無滿足容量的選項，退而選中點（避免無限遞迴）
-    if (!found_valid)
-        best_L = (lo + hi) * 0.5;
+    std::sort(pool.begin(), pool.end(), [](const SplitCand& a, const SplitCand& b) {
+        if (a.cross_area != b.cross_area) return a.cross_area < b.cross_area;
+        return a.L < b.L;
+    });
 
-    return best_L;
+    std::vector<double> out;
+    for (const auto& c : pool) {
+        if (out.empty() || std::fabs(out.back() - c.L) > 1e-9)
+            out.push_back(c.L);
+    }
+    return out;
+}
+
+// ============================================================
+// validate_final_split: shift + re-balance 後，固定左右集合下檢查容量與幾何
+// （與 rebalance 內邏輯一致）
+// ============================================================
+static bool validate_final_split(
+    const PartitionNode&         node,
+    const std::vector<Module>&   modules,
+    const PartitionConfig&       pcfg,
+    bool                         split_x,
+    double                       L,
+    const std::vector<int>&      left_mods,
+    const std::vector<int>&      right_mods,
+    const std::vector<int>&      left_tsvs,
+    const std::vector<int>&      right_tsvs)
+{
+    double used_left = 0.0, used_right = 0.0;
+    for (int mid : left_mods)  used_left  += modules[mid].area();
+    for (int mid : right_mods) used_right += modules[mid].area();
+    const double ta = pcfg.tsv_width * pcfg.tsv_height;
+    used_left  += left_tsvs.size()  * ta;
+    used_right += right_tsvs.size() * ta;
+
+    double left_area  = split_x ? (L - node.xmin) * node.height()
+                                  : node.width() * (L - node.ymin);
+    double right_area = split_x ? (node.xmax - L) * node.height()
+                                  : node.width() * (node.ymax - L);
+
+    if (left_area < used_left - 1e-9 || right_area < used_right - 1e-9)
+        return false;
+
+    double left_max_short  = 0.0;
+    double right_max_short = 0.0;
+    for (int mid : left_mods) {
+        const Module& m = modules[mid];
+        left_max_short = std::max(left_max_short, std::min(m.width, m.height));
+    }
+    for (int mid : right_mods) {
+        const Module& m = modules[mid];
+        right_max_short = std::max(right_max_short, std::min(m.width, m.height));
+    }
+
+    const double lw = split_x ? (L - node.xmin) : node.width();
+    const double rw = split_x ? (node.xmax - L) : node.width();
+    const double lh = split_x ? node.height()     : (L - node.ymin);
+    const double rh = split_x ? node.height()     : (node.ymax - L);
+
+    return (lw + 1e-12 >= left_max_short)  && (lh + 1e-12 >= left_max_short) &&
+           (rw + 1e-12 >= right_max_short) && (rh + 1e-12 >= right_max_short);
+}
+
+static void snapshot_partition_entities(
+    const PartitionNode&         node,
+    const std::vector<Module>&   modules,
+    const std::vector<TSV>&    tsvs,
+    std::vector<double>&         mx,
+    std::vector<double>&         my,
+    std::vector<double>&         tx,
+    std::vector<double>&         ty)
+{
+    mx.clear();
+    my.clear();
+    for (int mid : node.module_ids) {
+        mx.push_back(modules[mid].x);
+        my.push_back(modules[mid].y);
+    }
+    tx.clear();
+    ty.clear();
+    for (int tid : node.tsv_ids) {
+        tx.push_back(tsvs[tid].x);
+        ty.push_back(tsvs[tid].y);
+    }
+}
+
+static void restore_partition_entities(
+    const PartitionNode&       node,
+    std::vector<Module>&       modules,
+    std::vector<TSV>&          tsvs,
+    const std::vector<double>& mx,
+    const std::vector<double>& my,
+    const std::vector<double>& tx,
+    const std::vector<double>& ty)
+{
+    for (size_t i = 0; i < node.module_ids.size(); ++i) {
+        int mid = node.module_ids[i];
+        modules[mid].x = mx[i];
+        modules[mid].y = my[i];
+    }
+    for (size_t i = 0; i < node.tsv_ids.size(); ++i) {
+        int tid = node.tsv_ids[i];
+        tsvs[tid].x = tx[i];
+        tsvs[tid].y = ty[i];
+    }
 }
 
 // ============================================================
@@ -227,6 +320,115 @@ static void shift_modules(PartitionNode&      node,
 }
 
 // ============================================================
+// rebalance_split_line_to_side_area_ratio:
+//   在選定初選 L 且已對該 L 做過一次 shift_modules() 之後呼叫。
+//
+//   令左側 module+TSV 面積和為 U_L、右側為 U_R（以中心點與切割線 L 判斷左右）。
+//   目標：調整切割線 L*，使子區域幾何面積比等於 U_L : U_R。
+//   垂直切（沿 X）：區間 [xmin,xmax] 切成兩段，使 (L*-xmin):(xmax-L*) = U_L:U_R
+//     ⇒ L* = (xmin·U_R + xmax·U_L) / (U_L+U_R)
+//   水平切（沿 Y）同理：L* = (ymin·U_R + ymax·U_L) / (U_L+U_R)
+//
+//   與等高矩形結合時，此分割亦使左右「利用率」一致。
+//   注意：re-balance 階段不受 min_split_ratio / max_split_ratio 限制，
+//   僅檢查容量與子區域寬高 ≥ 該側 module 短邊。
+//   若新線與舊線不同，會再次 shift_modules() 並重算左右集合；最多迭代數次以收斂。
+// ============================================================
+static double rebalance_split_line_to_side_area_ratio(
+    PartitionNode&         node,
+    std::vector<Module>&   modules,
+    std::vector<TSV>&      tsvs,
+    const PartitionConfig& pcfg,
+    bool                   split_x,
+    double                 L,
+    const std::vector<int>& fixed_left_mods,
+    const std::vector<int>& fixed_right_mods,
+    const std::vector<int>& fixed_left_tsvs,
+    const std::vector<int>& fixed_right_tsvs)
+{
+    const double lo   = split_x ? node.xmin : node.ymin;
+    const double hi   = split_x ? node.xmax : node.ymax;
+    const double span = hi - lo;
+    (void)span;
+
+    for (int it = 0; it < 1; ++it) {
+        double used_left = 0.0, used_right = 0.0;
+        for (int mid : fixed_left_mods)  used_left  += modules[mid].area();
+        for (int mid : fixed_right_mods) used_right += modules[mid].area();
+        used_left  += fixed_left_tsvs.size()  * pcfg.tsv_width * pcfg.tsv_height;
+        used_right += fixed_right_tsvs.size() * pcfg.tsv_width * pcfg.tsv_height;
+
+        const double denom = used_left + used_right;
+        if (denom <= 1e-12)
+            return L;
+
+        double L_bal = split_x
+            ? (used_left * node.xmax + used_right * node.xmin) / denom
+            : (used_left * node.ymax + used_right * node.ymin) / denom;
+        // re-balance 可跨越 min/max split ratio，但仍不能超出區域邊界
+        L_bal = std::max(lo + 1e-9, std::min(hi - 1e-9, L_bal));
+
+        double left_area  = split_x ? (L_bal - node.xmin) * node.height()
+                                    : node.width() * (L_bal - node.ymin);
+        double right_area = split_x ? (node.xmax - L_bal) * node.height()
+                                    : node.width() * (node.ymax - L_bal);
+
+        double left_max_short  = 0.0;
+        double right_max_short = 0.0;
+        for (int mid : fixed_left_mods) {
+            const Module& m = modules[mid];
+            left_max_short = std::max(left_max_short, std::min(m.width, m.height));
+        }
+        for (int mid : fixed_right_mods) {
+            const Module& m = modules[mid];
+            right_max_short = std::max(right_max_short, std::min(m.width, m.height));
+        }
+
+        auto geom_ok_with = [&](double cut) {
+            const double lw = split_x ? (cut - node.xmin) : node.width();
+            const double rw = split_x ? (node.xmax - cut) : node.width();
+            const double lh = split_x ? node.height()     : (cut - node.ymin);
+            const double rh = split_x ? node.height()     : (node.ymax - cut);
+            return (lw + 1e-12 >= left_max_short)  && (lh + 1e-12 >= left_max_short) &&
+                   (rw + 1e-12 >= right_max_short) && (rh + 1e-12 >= right_max_short);
+        };
+
+        bool geom_ok = geom_ok_with(L_bal);
+        if (!geom_ok) {
+            // 幾何不合法時，不直接 return；把切割線推到滿足 max_short 的可行範圍。
+            const double geom_lo = split_x ? (node.xmin + left_max_short)
+                                           : (node.ymin + left_max_short);
+            const double geom_hi = split_x ? (node.xmax - right_max_short)
+                                           : (node.ymax - right_max_short);
+            if (geom_lo > geom_hi + 1e-9) {
+                // 該固定左右分組本身幾何不可行
+                return L;
+            }
+            L_bal = std::max(geom_lo, std::min(geom_hi, L_bal));
+            geom_ok = geom_ok_with(L_bal);
+        }
+
+        // L_bal 若被幾何修正過，容量也要重算
+        left_area  = split_x ? (L_bal - node.xmin) * node.height()
+                             : node.width() * (L_bal - node.ymin);
+        right_area = split_x ? (node.xmax - L_bal) * node.height()
+                             : node.width() * (node.ymax - L_bal);
+        const bool capacity_ok2 =
+            (left_area >= used_left - 1e-9) && (right_area >= used_right - 1e-9);
+
+        if (!capacity_ok2 || !geom_ok)
+            return L;
+
+        if (std::fabs(L_bal - L) <= 1e-9)
+            return L;
+
+        L = L_bal;
+        shift_modules(node, modules, tsvs, pcfg, L, split_x);
+    }
+    return L;
+}
+
+// ============================================================
 // partition: 遞迴 Bi-partitioning 主體
 // ============================================================
 static void partition(PartitionNode&         node,
@@ -267,95 +469,85 @@ static void partition(PartitionNode&         node,
         split_x = (x_span >= y_span);
     }
 
-    // ---- 找最佳切割線 ----
-    double L = find_best_split(node, modules, tsvs, pcfg, split_x);
+    // ---- 候選切割線（依 cross_area 佳→次佳），必要時重試：shift + 固定邊 + re-balance 後須兩側合法 ----
+    std::vector<double> ranked_Ls = collect_ranked_split_candidates(node, modules, tsvs, pcfg, split_x);
+    {
+        double lo = split_x ? node.xmin : node.ymin;
+        double hi = split_x ? node.xmax : node.ymax;
+        if (ranked_Ls.empty())
+            ranked_Ls.push_back((lo + hi) * 0.5);
+    }
 
-    // ---- 第一次：以 best L 做 push-back，確立左右集合 ----
-    shift_modules(node, modules, tsvs, pcfg, L, split_x);
+    std::vector<double> snap_mx, snap_my, snap_tx, snap_ty;
+    snapshot_partition_entities(node, modules, tsvs, snap_mx, snap_my, snap_tx, snap_ty);
 
-    // ---- 依目前 L 分配左右集合（用中心點）----
     std::vector<int> left_mods, right_mods, left_tsvs, right_tsvs;
     left_mods.reserve(node.module_ids.size());
     right_mods.reserve(node.module_ids.size());
     left_tsvs.reserve(node.tsv_ids.size());
     right_tsvs.reserve(node.tsv_ids.size());
 
-    double used_left = 0.0, used_right = 0.0;
-    for (int mid : node.module_ids) {
-        double ctr = split_x ? modules[mid].x : modules[mid].y;
-        if (ctr <= L) { left_mods.push_back(mid);  used_left  += modules[mid].area(); }
-        else          { right_mods.push_back(mid); used_right += modules[mid].area(); }
+    const int max_tries =
+        std::max(1, std::min(pcfg.max_split_retries, static_cast<int>(ranked_Ls.size())));
+    double L = ranked_Ls[0];
+    bool   split_ok = false;
+
+    for (int attempt = 0; attempt < max_tries; ++attempt) {
+        restore_partition_entities(node, modules, tsvs, snap_mx, snap_my, snap_tx, snap_ty);
+        L = ranked_Ls[attempt];
+
+        shift_modules(node, modules, tsvs, pcfg, L, split_x);
+
+        left_mods.clear();
+        right_mods.clear();
+        left_tsvs.clear();
+        right_tsvs.clear();
+        for (int mid : node.module_ids) {
+            double ctr = split_x ? modules[mid].x : modules[mid].y;
+            if (ctr <= L) left_mods.push_back(mid);
+            else          right_mods.push_back(mid);
+        }
+        for (int tid : node.tsv_ids) {
+            double ctr = split_x ? tsvs[tid].x : tsvs[tid].y;
+            if (ctr <= L) left_tsvs.push_back(tid);
+            else          right_tsvs.push_back(tid);
+        }
+
+        L = rebalance_split_line_to_side_area_ratio(
+            node, modules, tsvs, pcfg, split_x, L,
+            left_mods, right_mods, left_tsvs, right_tsvs);
+
+        if (validate_final_split(node, modules, pcfg, split_x, L,
+                left_mods, right_mods, left_tsvs, right_tsvs)) {
+            split_ok = true;
+            break;
+        }
     }
-    for (int tid : node.tsv_ids) {
-        double ctr = split_x ? tsvs[tid].x : tsvs[tid].y;
-        double a   = pcfg.tsv_width * pcfg.tsv_height;
-        if (ctr <= L) { left_tsvs.push_back(tid);  used_left  += a; }
-        else          { right_tsvs.push_back(tid); used_right += a; }
-    }
 
-    // ---- Re-balance：調整切割線到左右使用率相等的位置 ----
-    // 目標：used_left / area_left == used_right / area_right
-    // 對垂直切：area_left  = (L-xmin)*H, area_right = (xmax-L)*H
-    // 解得：L = (used_left*xmax + used_right*xmin) / (used_left+used_right)
-    // 水平切同理（以 ymin/ymax）
-    double lo   = split_x ? node.xmin : node.ymin;
-    double hi   = split_x ? node.xmax : node.ymax;
-    double span = hi - lo;
-    double L_min = lo + pcfg.min_split_ratio * span;
-    double L_max = lo + pcfg.max_split_ratio * span;
+    // 若仍無合法切分，退回與先前相同：用最佳候選（或中點）強制切下去
+    if (!split_ok) {
+        restore_partition_entities(node, modules, tsvs, snap_mx, snap_my, snap_tx, snap_ty);
+        L = ranked_Ls[0];
+        shift_modules(node, modules, tsvs, pcfg, L, split_x);
 
-    double denom = used_left + used_right;
-    if (denom > 1e-12) {
-        double L_bal = split_x
-            ? (used_left * node.xmax + used_right * node.xmin) / denom
-            : (used_left * node.ymax + used_right * node.ymin) / denom;
-        L_bal = std::max(L_min, std::min(L_max, L_bal));
-
-        // 檢查容量限制（兩邊 area 必須 ≥ used）
-        double left_area  = split_x ? (L_bal - node.xmin) * node.height()
-                                    : node.width() * (L_bal - node.ymin);
-        double right_area = split_x ? (node.xmax - L_bal) * node.height()
-                                    : node.width() * (node.ymax - L_bal);
-        bool ok = (left_area >= used_left) && (right_area >= used_right);
-
-        // Re-balance 也要通過幾何尺寸限制（子區域寬/高 ≥ 該側 module 短邊最大值）
-        double left_max_short  = 0.0;
-        double right_max_short = 0.0;
-        for (int mid : left_mods) {
-            const Module& m = modules[mid];
-            left_max_short = std::max(left_max_short, std::min(m.width, m.height));
+        left_mods.clear();
+        right_mods.clear();
+        left_tsvs.clear();
+        right_tsvs.clear();
+        for (int mid : node.module_ids) {
+            double ctr = split_x ? modules[mid].x : modules[mid].y;
+            if (ctr <= L) left_mods.push_back(mid);
+            else          right_mods.push_back(mid);
         }
-        for (int mid : right_mods) {
-            const Module& m = modules[mid];
-            right_max_short = std::max(right_max_short, std::min(m.width, m.height));
+        for (int tid : node.tsv_ids) {
+            double ctr = split_x ? tsvs[tid].x : tsvs[tid].y;
+            if (ctr <= L) left_tsvs.push_back(tid);
+            else          right_tsvs.push_back(tid);
         }
 
-        double left_w  = split_x ? (L_bal - node.xmin) : node.width();
-        double right_w = split_x ? (node.xmax - L_bal) : node.width();
-        double left_h  = split_x ? node.height()       : (L_bal - node.ymin);
-        double right_h = split_x ? node.height()       : (node.ymax - L_bal);
-        bool geom_ok =
-            (left_w  + 1e-12 >= left_max_short)  && (left_h  + 1e-12 >= left_max_short) &&
-            (right_w + 1e-12 >= right_max_short) && (right_h + 1e-12 >= right_max_short);
-
-        if (ok && geom_ok && std::fabs(L_bal - L) > 1e-9) {
-            L = L_bal;
-            // 重新 push-back 到新的切割線，並重算左右集合（保持幾何一致）
-            shift_modules(node, modules, tsvs, pcfg, L, split_x);
-            left_mods.clear(); right_mods.clear(); left_tsvs.clear(); right_tsvs.clear();
-            used_left = 0.0; used_right = 0.0;
-            for (int mid : node.module_ids) {
-                double ctr = split_x ? modules[mid].x : modules[mid].y;
-                if (ctr <= L) { left_mods.push_back(mid);  used_left  += modules[mid].area(); }
-                else          { right_mods.push_back(mid); used_right += modules[mid].area(); }
-            }
-            for (int tid : node.tsv_ids) {
-                double ctr = split_x ? tsvs[tid].x : tsvs[tid].y;
-                double a   = pcfg.tsv_width * pcfg.tsv_height;
-                if (ctr <= L) { left_tsvs.push_back(tid);  used_left  += a; }
-                else          { right_tsvs.push_back(tid); used_right += a; }
-            }
-        }
+        L = rebalance_split_line_to_side_area_ratio(
+            node, modules, tsvs, pcfg, split_x, L,
+            left_mods, right_mods, left_tsvs, right_tsvs);
     }
 
     // ---- 建立兩個子節點並分配 module/TSV ----
@@ -427,6 +619,359 @@ static void log_tree(const PartitionNode& node, std::ofstream& ofs, const std::s
     if (node.right) log_tree(*node.right, ofs, child_indent + "R ");
 }
 
+// ============================================================ 0318
+// legalize_leaf:
+//   對單一 leaf 區域內：
+//   1) 窮舉 module 的「排法」（實作為 module 逐一放置的排列順序），
+//      每個位置用 **first free y**（由下往上掃 y 候選）再 **first free x**
+//      （由左往右，自 leaf.xmin+hw 起），不使用 preferred 對齊原點。
+//      每一步可選 0°/90° 旋轉，以 DFS 窮舉完整合法解，最後取「總 L1 位移」最小者。
+//   2) module 位置確定後，逐一放 TSV：
+//      對每個 TSV 在不超出邊界的候選 y 中找可行 x，
+//      以與原始位置的位移量（L1）最小者作為「最鄰近空位」。
+// ============================================================
+static void legalize_leaf(PartitionNode&              leaf,
+                           std::vector<Module>&       modules,
+                           std::vector<TSV>&          tsvs,
+                           double                     tsv_w,
+                           double                     tsv_h)
+{
+    struct Rect { double lx, ly, rx, ry; };
+
+    auto clamp = [&](double v, double lo, double hi) -> double {
+        return std::max(lo, std::min(hi, v));
+    };
+
+    // Module：由左緣起算 first free x（不使用原點偏好）
+    auto first_free_x_from_left = [&](const std::vector<Rect>& p,
+                                      double                     hw,
+                                      double                     hh,
+                                      double                     cy) -> double {
+        double cx = leaf.xmin + hw;
+        bool moved = true;
+
+        while (moved) {
+            moved = false;
+            for (const Rect& r : p) {
+                if (cy - hh >= r.ry - 1e-9 || cy + hh <= r.ly + 1e-9) continue;
+                if (cx - hw < r.rx - 1e-9 && cx + hw > r.lx + 1e-9) {
+                    cx = r.rx + hw;
+                    moved = true;
+                }
+            }
+        }
+
+        return (cx + hw > leaf.xmax + 1e-9) ? -1.0 : cx;
+    };
+
+    // TSV：可從偏好 x 起算再向右推
+    auto first_free_x = [&](const std::vector<Rect>& placed,
+                             double               hw,
+                             double               hh,
+                             double               cy,
+                             double               preferred_x) -> double {
+        double cx = std::max(preferred_x, leaf.xmin + hw);
+        bool moved = true;
+
+        while (moved) {
+            moved = false;
+            for (const Rect& r : placed) {
+                if (cy - hh >= r.ry - 1e-9 || cy + hh <= r.ly + 1e-9) continue;
+                if (cx - hw < r.rx - 1e-9 && cx + hw > r.lx + 1e-9) {
+                    cx = r.rx + hw;
+                    moved = true;
+                }
+            }
+        }
+
+        return (cx + hw > leaf.xmax + 1e-9) ? -1.0 : cx;
+    };
+
+    std::vector<Rect> placed;
+    placed.reserve(leaf.module_ids.size() + leaf.tsv_ids.size());
+
+    // Module：y 由下往上掃描（邊界與已放矩形產生的候選高度）
+    auto collect_y_levels_ascending = [&](double hh, const std::vector<Rect>& current_placed) {
+        std::vector<double> ys;
+
+        auto push_if_ok = [&](double y) {
+            if (y - hh < leaf.ymin - 1e-9) return;
+            if (y + hh > leaf.ymax + 1e-9) return;
+            ys.push_back(y);
+        };
+
+        push_if_ok(leaf.ymin + hh);
+        push_if_ok(leaf.ymax - hh);
+        for (const Rect& r : current_placed) {
+            push_if_ok(r.ry + hh);
+            push_if_ok(r.ly - hh);
+        }
+
+        if (ys.empty()) return ys;
+
+        std::sort(ys.begin(), ys.end());
+        const double tol = std::max(1e-6, hh * 1e-3);
+        ys.erase(std::unique(ys.begin(), ys.end(),
+                              [&](double a, double b){ return std::fabs(a - b) < tol; }),
+                 ys.end());
+        return ys;
+    };
+
+    auto first_free_y_then_x = [&](const std::vector<Rect>& p,
+                                   double hw, double hh) -> std::pair<double, double> {
+        for (double cy : collect_y_levels_ascending(hh, p)) {
+            double cx = first_free_x_from_left(p, hw, hh, cy);
+            if (cx >= 0.0)
+                return { cx, cy };
+        }
+        return { -1.0, -1.0 };
+    };
+
+    // TSV：依目前 placed 產生 y 候選（按離原始 y 最近）
+    auto collect_y_cands = [&](double hh, double orig_y, const std::vector<Rect>& current_placed) {
+        std::vector<double> ys;
+
+        auto push_if_ok = [&](double y) {
+            if (y - hh < leaf.ymin - 1e-9) return;
+            if (y + hh > leaf.ymax + 1e-9) return;
+            ys.push_back(y);
+        };
+
+        // 優先加入原始 y clamp（最接近原位）
+        push_if_ok(clamp(orig_y, leaf.ymin + hh, leaf.ymax - hh));
+
+        // 也加入區域底/頂（有時候會剛好卡出走道）
+        push_if_ok(leaf.ymin + hh);
+        push_if_ok(leaf.ymax - hh);
+
+        for (const Rect& r : current_placed) {
+            // 使兩個矩形在 y 方向「貼邊」（理論上最容易出現可行空位）
+            push_if_ok(r.ry + hh);
+            push_if_ok(r.ly - hh);
+        }
+
+        if (ys.empty()) return ys;
+
+        // 去重
+        std::sort(ys.begin(), ys.end());
+        const double tol = std::max(1e-6, hh * 1e-3);
+        ys.erase(std::unique(ys.begin(), ys.end(),
+                              [&](double a, double b){ return std::fabs(a - b) < tol; }),
+                 ys.end());
+
+        // 按離原始 y 最近排序
+        std::sort(ys.begin(), ys.end(),
+                  [&](double a, double b){ return std::fabs(a - orig_y) < std::fabs(b - orig_y); });
+        return ys;
+    };
+
+    // ============================================================
+    // A) 模組：窮舉排列順序，選位移總和最小的可行排法
+    // ============================================================
+    const int n = static_cast<int>(leaf.module_ids.size());
+    if (n > 0) {
+        std::vector<int> ids = leaf.module_ids; // leaf 內 module 的全域索引
+
+        std::vector<double> orig_x(n), orig_y(n);
+        std::vector<double> w0(n), h0(n); // 用來支援 90 度旋轉（寬高互換）
+        for (int i = 0; i < n; ++i) {
+            const Module& m = modules[ids[i]];
+            orig_x[i] = m.x;
+            orig_y[i] = m.y;
+            w0[i]      = m.width;
+            h0[i]      = m.height;
+        }
+
+        std::vector<int> perm(n);
+        std::iota(perm.begin(), perm.end(), 0);
+
+        double best_cost = std::numeric_limits<double>::infinity();
+        bool   best_found = false;
+        std::vector<double> best_x(n), best_y(n);
+        std::vector<char>   best_rot(n, 0);
+
+        do {
+            placed.clear();
+            std::vector<double> temp_x(n, 0.0), temp_y(n, 0.0);
+            std::vector<char>   temp_rot(n, 0);
+
+            // 固定 permutation：每一步 first free y → first free x（自左），
+            // 旋轉 0°/90° 用 DFS 窮舉；最後在「完整合法解」中取總 L1 位移最小。
+            std::function<void(int, double)> dfs_place;
+            dfs_place = [&](int depth, double acc_cost) {
+                if (acc_cost >= best_cost - 1e-9)
+                    return;
+                if (depth == n) {
+                    if (acc_cost < best_cost - 1e-9) {
+                        best_cost = acc_cost;
+                        best_found = true;
+                        best_x     = temp_x;
+                        best_y     = temp_y;
+                        best_rot   = temp_rot;
+                    }
+                    return;
+                }
+
+                const int local_i = perm[depth];
+                const double ox = orig_x[local_i];
+                const double oy = orig_y[local_i];
+
+                for (int rot = 0; rot <= 1; ++rot) {
+                    const double w_i  = (rot == 0) ? w0[local_i] : h0[local_i];
+                    const double h_i  = (rot == 0) ? h0[local_i] : w0[local_i];
+                    const double hw_i = w_i * 0.5;
+                    const double hh_i = h_i * 0.5;
+
+                    if (leaf.ymin + hh_i > leaf.ymax - hh_i + 1e-12)
+                        continue;
+
+                    const auto xy = first_free_y_then_x(placed, hw_i, hh_i);
+                    const double cx = xy.first;
+                    const double cy = xy.second;
+                    if (cx < 0.0)
+                        continue;
+
+                    const double inc = std::abs(cx - ox) + std::abs(cy - oy);
+                    placed.push_back({ cx - hw_i, cy - hh_i, cx + hw_i, cy + hh_i });
+                    temp_x[local_i] = cx;
+                    temp_y[local_i] = cy;
+                    temp_rot[local_i] = static_cast<char>(rot);
+
+                    dfs_place(depth + 1, acc_cost + inc);
+
+                    placed.pop_back();
+                }
+            };
+
+            dfs_place(0, 0.0);
+
+        } while (std::next_permutation(perm.begin(), perm.end()));
+
+        if (best_found) {
+            // 寫回 module 位置，並重建 placed
+            placed.clear();
+            for (int i = 0; i < n; ++i) {
+                Module& m = modules[ids[i]];
+                m.x = best_x[i];
+                m.y = best_y[i];
+                const bool rot = (best_rot[i] != 0);
+                m.width  = rot ? h0[i] : w0[i];
+                m.height = rot ? w0[i] : h0[i];
+                placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+            }
+        } else {
+            // 若完全找不到可行排法，回退到簡單的 x 升序 first-fit（至少確保在邊界內）
+            std::vector<int> greedy_order = ids;
+            std::sort(greedy_order.begin(), greedy_order.end(),
+                      [&](int a, int b){ return modules[a].x < modules[b].x; });
+
+            placed.clear();
+            for (int mid : greedy_order) {
+                Module& m = modules[mid];
+
+                // 嘗試兩種旋轉，選擇「模組本身 displacement L1 最小」且可行者
+                const double base_w = m.width;
+                const double base_h = m.height;
+                const double orig_x_m = m.x;
+                const double orig_y_m = m.y;
+
+                bool   ok = false;
+                double best_cx = -1.0, best_cy = -1.0;
+                double best_w = base_w, best_h = base_h;
+                double best_cost_m = std::numeric_limits<double>::infinity();
+
+                for (int rot = 0; rot <= 1; ++rot) {
+                    const double w_i = (rot == 0) ? base_w : base_h;
+                    const double h_i = (rot == 0) ? base_h : base_w;
+                    const double hw_i = w_i * 0.5;
+                    const double hh_i = h_i * 0.5;
+
+                    if (leaf.ymin + hh_i > leaf.ymax - hh_i + 1e-12) continue;
+
+                    const auto xy = first_free_y_then_x(placed, hw_i, hh_i);
+                    if (xy.first < 0.0) continue;
+
+                    const double cost_m =
+                        std::abs(xy.first - orig_x_m) + std::abs(xy.second - orig_y_m);
+                    if (cost_m < best_cost_m) {
+                        best_cost_m = cost_m;
+                        best_cx = xy.first;
+                        best_cy = xy.second;
+                        best_w = w_i;
+                        best_h = h_i;
+                        ok = true;
+                    }
+                }
+
+                if (ok) {
+                    m.x = best_cx;
+                    m.y = best_cy;
+                    m.width = best_w;
+                    m.height = best_h;
+                    placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+                } else {
+                    // 幾何上無解時，至少把模組夾回 leaf 邊界（可能仍會與既有矩形重疊）
+                    const double hw_i = m.width * 0.5;
+                    const double hh_i = m.height * 0.5;
+                    m.x = clamp(m.x, leaf.xmin + hw_i, leaf.xmax - hw_i);
+                    m.y = clamp(m.y, leaf.ymin + hh_i, leaf.ymax - hh_i);
+                    placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+                }
+            }
+        }
+    }
+
+    // ============================================================
+    // B) TSV：module 固定後，逐一放到「最鄰近且不重疊」的空位
+    // ============================================================
+    if (!leaf.tsv_ids.empty()) {
+        std::vector<int> tsv_order = leaf.tsv_ids;
+        std::sort(tsv_order.begin(), tsv_order.end(),
+                  [&](int a, int b){ return tsvs[a].x < tsvs[b].x; });
+
+        for (int tid : tsv_order) {
+            TSV& tsv = tsvs[tid];
+
+            const double hw_t = tsv_w * 0.5;
+            const double hh_t = tsv_h * 0.5;
+            const double orig_tx = tsv.x;
+            const double orig_ty = tsv.y;
+
+            // 先產生候選 y（依貼邊可行性），再在每個 y 下找可行 cx
+            auto y_cands = collect_y_cands(hh_t, orig_ty, placed);
+
+            bool   ok_any = false;
+            double best_cx = -1.0, best_cy = -1.0;
+            double best_cost = std::numeric_limits<double>::infinity();
+
+            for (double cy : y_cands) {
+                double cx = first_free_x(placed, hw_t, hh_t, cy, orig_tx);
+                if (cx < 0.0) cx = first_free_x(placed, hw_t, hh_t, cy, leaf.xmin);
+                if (cx < 0.0) continue;
+
+                const double cost = std::abs(cx - orig_tx) + std::abs(cy - orig_ty);
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_cx = cx;
+                    best_cy = cy;
+                    ok_any = true;
+                }
+            }
+
+            if (ok_any) {
+                tsv.x = best_cx;
+                tsv.y = best_cy;
+                placed.push_back({ tsv.x - hw_t, tsv.y - hh_t, tsv.x + hw_t, tsv.y + hh_t });
+            } else {
+                // 理論上如果幾何不可行，仍至少夾到邊界，並交給後續評估
+                tsv.x = clamp(tsv.x, leaf.xmin + hw_t, leaf.xmax - hw_t);
+                tsv.y = clamp(tsv.y, leaf.ymin + hh_t, leaf.ymax - hh_t);
+                placed.push_back({ tsv.x - hw_t, tsv.y - hh_t, tsv.x + hw_t, tsv.y + hh_t });
+            }
+        }
+    }
+}
+
 // ============================================================
 // PlacementEngine::partition_all_tiers
 //   對每個 tier 各建一個根節點，遞迴 partition，最後 log 輸出。
@@ -474,6 +1019,18 @@ void PlacementEngine::partition_all_tiers(const PartitionConfig& pcfg)
 
         // ---- 遞迴 partition ----
         partition(root, modules_, tsvs_, pcfg);
+
+        // ---- Leaf legalization：在每個 leaf 內窮舉排法並避免重疊 ---- 0318
+        std::function<void(PartitionNode&)> dfs_legalize;
+        dfs_legalize = [&](PartitionNode& node) {
+            if (node.is_leaf()) {
+                legalize_leaf(node, modules_, tsvs_, pcfg.tsv_width, pcfg.tsv_height);
+                return;
+            }
+            if (node.left) dfs_legalize(*node.left);
+            if (node.right) dfs_legalize(*node.right);
+        };
+        dfs_legalize(root);
 
         // ---- 統計葉節點數 ----
         std::function<int(const PartitionNode&)> count_leaves;

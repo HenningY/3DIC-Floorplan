@@ -175,6 +175,13 @@
             <input type="file" id="blockFileInput" accept=".block,.txt" style="display:none">
         </div>
 
+        <!-- .nets file -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">.nets</span>
+            <label class="btn" id="loadNetsLabel" for="netsFileInput">Load .nets File</label>
+            <input type="file" id="netsFileInput" accept=".nets,.txt" style="display:none">
+        </div>
+
         <!-- view options -->
         <div class="ctrl-group">
             <span class="ctrl-group-label">View</span>
@@ -182,6 +189,17 @@
             <label><input type="checkbox" id="showTerminalsCheck" checked> Terminals</label>
             <label><input type="checkbox" id="showTsvStripsCheck" checked> TSV Strips</label>
             <label><input type="checkbox" id="showTsvPointsCheck" checked> TSV Points</label>
+            <label title="勾選後，連接 tier d→d+1 的 TSV 只在 Die d（下層）顯示">
+                <input type="checkbox" id="tsvLowerTierOnlyCheck"> TSV 下層優先
+            </label>
+        </div>
+
+        <!-- editing controls -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">Edit</span>
+            <button class="btn loaded" id="resetPositionsBtn" type="button">Reset positions</button>
+            <button class="btn" id="rotateSelectedBtn" type="button" title="Rotate selected module by 90 degrees (anchor: module bottom-left).">Rotate 90°</button>
+            <button class="btn secondary" id="recomputeHpwlBtn" type="button" title="Recompute HPWL using uploaded .nets + current edited positions">Recompute HPWL</button>
         </div>
 
         <!-- zoom -->
@@ -213,6 +231,6 @@
 
     <div id="tooltip"></div>
 
-    <script src="out_visualizer.js?v=6"></script>
+    <script src="out_visualizer.js?v=8"></script>
 </body>
 </html>

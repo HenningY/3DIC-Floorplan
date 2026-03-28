@@ -9,16 +9,23 @@ const PADDING = 50;
 // { cost, hpwl, area, width, height, runtime,
 //   dies: { [dieId]: { blocks:[{name,x,y,width,height}], bbox:{minX,minY,maxX,maxY} } } }
 let outData = null;
+// .out 原始解析結果（用於 Reset）
+let outDataOriginal = null;
 
 // .block 解析結果
 // { numDie, outlines:[{w,h}], modules:[{name,w,h,dieId}], terminals:[{name,x,y}] }
 let blockData = null;
 
+// .nets 解析結果（每個 net 的 terminals 名稱清單）
+// netsData: { numNets, nets: Array<Array<string>> }
+let netsData = null;
+
 // 顯示選項
 let showOutline    = true;
 let showTerminals  = true;
-let showTsvStrips  = true;
-let showTsvPoints  = true;
+let showTsvStrips     = true;
+let showTsvPoints     = true;
+let tsvLowerTierOnly  = false;  // true = tier d→d+1 的 TSV 只在 die d（下層）顯示
 
 // 畫面上 terminal 的像素位置（供 hover 檢測）
 let terminalPixels = [];   // [{name, cx, cy, worldX, worldY}]
@@ -29,6 +36,39 @@ let tsvPixels = [];        // [{netId, tierLo, tierHi, cx, cy, worldX, worldY, f
 // 目前 hover 的元素
 let hoveredTerminal = null;
 let hoveredTsv      = null;
+
+// ── 編輯狀態（點選/拖曳/旋轉）──────────────────────────────────────────────
+// selected:
+//   { type:'module', dieId, blockIndex, name }
+//   { type:'tsv', assignmentIndex }
+let selected = null;
+let dragging = false;
+let dragOffsetX = 0;
+let dragOffsetY = 0;
+let currentView = null; // { wMinX, wMinY, ch, scale }
+
+function deepCopy(obj) {
+    return JSON.parse(JSON.stringify(obj));
+}
+
+function snapInt(v) {
+    return Math.round(v);
+}
+
+// TSV centers 在既有輸出中通常是 .0/.5；用 0.5 網格對齊，確保 3x3 正方形四邊落在整數座標。
+function snapTsvCenter(v) {
+    return Math.round(v * 2) / 2;
+}
+
+function canvasToWorldX(cx) {
+    if (!currentView) return 0;
+    return currentView.wMinX + (cx - PADDING) / currentView.scale;
+}
+
+function canvasToWorldY(cy) {
+    if (!currentView) return 0;
+    return currentView.wMinY + (currentView.ch - PADDING - cy) / currentView.scale;
+}
 
 // TSV tier 顏色
 const TSV_TIER_COLORS = [
@@ -74,11 +114,16 @@ function setupUI() {
     const outInput      = document.getElementById('outFileInput');
     const blockLabel    = document.getElementById('loadBlockLabel');
     const blockInput    = document.getElementById('blockFileInput');
+    const netsLabel     = document.getElementById('loadNetsLabel');
+    const netsInput     = document.getElementById('netsFileInput');
     const scaleSlider   = document.getElementById('scale-slider');
     const scaleValue    = document.getElementById('scale-value');
     const dieSelect     = document.getElementById('die-select');
     const outlineCheck  = document.getElementById('showOutlineCheck');
     const terminalCheck = document.getElementById('showTerminalsCheck');
+    const resetBtn      = document.getElementById('resetPositionsBtn');
+    const rotateBtn     = document.getElementById('rotateSelectedBtn');
+    const recomputeHpwlBtn = document.getElementById('recomputeHpwlBtn');
     const tooltip       = document.getElementById('tooltip');
 
     // ── .out 檔案 ──
@@ -87,7 +132,12 @@ function setupUI() {
         if (!file) return;
         readFile(file, text => {
             try {
-                outData = parseOutContent(text);
+                outDataOriginal = parseOutContent(text);
+                outData = deepCopy(outDataOriginal);
+                selected = null;
+                dragging = false;
+                hoveredTerminal = null;
+                hoveredTsv = null;
                 outLabel.textContent = `✓ ${file.name}`;
                 outLabel.classList.add('loaded');
                 updateDieSelect();
@@ -122,6 +172,24 @@ function setupUI() {
         });
     });
 
+    // ── .nets 檔案 ──
+    netsInput.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        readFile(file, text => {
+            try {
+                netsData = parseNetsContent(text);
+                netsLabel.textContent = `✓ ${file.name}`;
+                netsLabel.classList.add('loaded');
+                updateInfoPanel();
+                redraw();
+            } catch (err) {
+                console.error(err);
+                alert('Failed to parse .nets file: ' + err.message);
+            }
+        });
+    });
+
     // ── Zoom ──
     scaleSlider.addEventListener('input', () => {
         scale = parseFloat(scaleSlider.value);
@@ -148,6 +216,153 @@ function setupUI() {
     document.getElementById('showTsvPointsCheck').addEventListener('change', e => {
         showTsvPoints = e.target.checked; redraw();
     });
+    document.getElementById('tsvLowerTierOnlyCheck').addEventListener('change', e => {
+        tsvLowerTierOnly = e.target.checked; redraw();
+    });
+
+    // ── Edit: Reset / Rotate ───────────────────────────────────────────────
+    resetBtn.addEventListener('click', () => {
+        if (!outDataOriginal) return;
+        outData = deepCopy(outDataOriginal);
+        selected = null;
+        dragging = false;
+        hoveredTerminal = null;
+        hoveredTsv = null;
+        tooltip.style.display = 'none';
+        redraw();
+        updateInfoPanel();
+    });
+
+    rotateBtn.addEventListener('click', () => {
+        if (!outData || !selected || selected.type !== 'module') return;
+        const die = outData.dies[selected.dieId];
+        if (!die) return;
+        const b = die.blocks[selected.blockIndex];
+        if (!b) return;
+        // Rotation 規則 A：以 (x,y) 左下角為 anchor，只交換 width/height
+        const oldW = b.width;
+        b.width = b.height;
+        b.height = oldW;
+        // x,y 不變
+        redraw();
+        updateInfoPanel();
+    });
+
+    // ── Edit: Recompute HPWL（分層 bbox + TSV 雙邊計入）──────────────────────
+    recomputeHpwlBtn.addEventListener('click', () => {
+        if (!outData || !blockData || !netsData) {
+            alert('Please upload .out, .block, and .nets first.');
+            return;
+        }
+        try {
+            const recomputed = recomputeHpwlFromCurrentState(outData, blockData, netsData);
+            outData.hpwl = recomputed.hpwl;
+
+            updateInfoPanel();
+            redraw();
+        } catch (err) {
+            console.error(err);
+            alert('Failed to recompute HPWL: ' + err.message);
+        }
+    });
+
+    // ── Canvas edit（點選/拖曳）────────────────────────────────────────────
+    canvas.addEventListener('mousedown', e => {
+        if (!outData) return;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+        const worldX = canvasToWorldX(mx);
+        const worldY = canvasToWorldY(my);
+
+        // 當前 die 選擇範圍
+        const sel = document.getElementById('die-select').value;
+        const dieIds = sel === 'all'
+            ? Object.keys(outData.dies).map(Number)
+            : [parseInt(sel, 10)];
+
+        // 1) 優先 hit-test module（較大、好抓）
+        let bestMod = null; // {dieId, blockIndex, dist2, b}
+        dieIds.forEach(dieId => {
+            const die = outData.dies[dieId];
+            if (!die) return;
+            die.blocks.forEach((b, bi) => {
+                const x1 = b.x, x2 = b.x + b.width;
+                const y1 = b.y, y2 = b.y + b.height;
+                if (worldX < x1 || worldX > x2 || worldY < y1 || worldY > y2) return;
+                const cx = x1 + (x2 - x1) / 2;
+                const cy = y1 + (y2 - y1) / 2;
+                const dx = worldX - cx, dy = worldY - cy;
+                const dist2 = dx * dx + dy * dy;
+                if (!bestMod || dist2 < bestMod.dist2) {
+                    bestMod = { dieId, blockIndex: bi, dist2, b };
+                }
+            });
+        });
+
+        // 2) hit-test TSV（依目前 showTsvPoints + die selection + tsvLowerTierOnly）
+        let bestTsv = null; // {assignmentIndex, a, dist2}
+        if (showTsvPoints && outData.tsvAssignments && outData.tsvAssignments.length > 0) {
+            const selDie = sel === 'all' ? -1 : parseInt(sel, 10);
+            outData.tsvAssignments.forEach((a, assignmentIndex) => {
+                const shown = selDie === -1
+                    ? true
+                    : (tsvLowerTierOnly
+                        ? a.tierLo === selDie
+                        : (a.tierLo === selDie || a.tierHi === selDie));
+                if (!shown) return;
+                const x1 = a.x - 1.5, x2 = a.x + 1.5;
+                const y1 = a.y - 1.5, y2 = a.y + 1.5;
+                if (worldX < x1 || worldX > x2 || worldY < y1 || worldY > y2) return;
+                const cx = a.x, cy = a.y;
+                const dx = worldX - cx, dy = worldY - cy;
+                const dist2 = dx * dx + dy * dy;
+                if (!bestTsv || dist2 < bestTsv.dist2) bestTsv = { assignmentIndex, a, dist2 };
+            });
+        }
+
+        // 選取
+        if (bestMod) {
+            selected = { type: 'module', dieId: bestMod.dieId, blockIndex: bestMod.blockIndex, name: bestMod.b.name };
+            dragOffsetX = worldX - bestMod.b.x;
+            dragOffsetY = worldY - bestMod.b.y;
+            dragging = true;
+            hoveredTerminal = null;
+            hoveredTsv = null;
+            tooltip.style.display = 'none';
+            redraw();
+            updateInfoPanel();
+            return;
+        }
+
+        if (bestTsv) {
+            selected = { type: 'tsv', assignmentIndex: bestTsv.assignmentIndex };
+            dragOffsetX = worldX - bestTsv.a.x;
+            dragOffsetY = worldY - bestTsv.a.y;
+            dragging = true;
+            hoveredTerminal = null;
+            hoveredTsv = null;
+            tooltip.style.display = 'none';
+            redraw();
+            updateInfoPanel();
+            return;
+        }
+
+        selected = null;
+        dragging = false;
+        hoveredTerminal = null;
+        hoveredTsv = null;
+        tooltip.style.display = 'none';
+        redraw();
+        updateInfoPanel();
+    });
+
+    window.addEventListener('mouseup', () => {
+        if (!dragging) return;
+        dragging = false;
+        updateInfoPanel();
+        redraw();
+    });
 
     // ── Canvas hover（偵測 terminal + TSV point）──
     canvas.addEventListener('mousemove', e => {
@@ -155,6 +370,33 @@ function setupUI() {
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
         const HIT_R = 8;
+
+        // 拖曳時：直接更新座標（整數/TSV 0.5 網格）並重繪
+        if (dragging && selected) {
+            const worldX = canvasToWorldX(mx);
+            const worldY = canvasToWorldY(my);
+            if (selected.type === 'module') {
+                const die = outData && outData.dies ? outData.dies[selected.dieId] : null;
+                if (die && die.blocks && die.blocks[selected.blockIndex]) {
+                    const b = die.blocks[selected.blockIndex];
+                    const targetX = worldX - dragOffsetX;
+                    const targetY = worldY - dragOffsetY;
+                    b.x = snapInt(targetX);
+                    b.y = snapInt(targetY);
+                }
+            } else if (selected.type === 'tsv') {
+                const a = outData && outData.tsvAssignments ? outData.tsvAssignments[selected.assignmentIndex] : null;
+                if (a) {
+                    const targetX = worldX - dragOffsetX;
+                    const targetY = worldY - dragOffsetY;
+                    a.x = snapTsvCenter(targetX);
+                    a.y = snapTsvCenter(targetY);
+                }
+            }
+            redraw();
+            tooltip.style.display = 'none';
+            return;
+        }
 
         // 優先偵測 TSV 點
         let foundTsv = null;
@@ -285,6 +527,50 @@ function parseOutContent(text) {
     }
 
     return { cost, hpwl, area, width, height, runtime, dies, tsvStrips, tsvAssignments };
+}
+
+// ── 解析 .nets 檔 ──────────────────────────────────────────────────────────────
+// 格式（以 n100.nets 為例）：
+// NumNets: 885
+// NetDegree: 2
+// p1
+// sb26
+// NetDegree: 2
+// p2
+// sb46
+function parseNetsContent(text) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length < 2) throw new Error('Nets file too short.');
+
+    let numNets = null;
+    if (lines[0].startsWith('NumNets:')) {
+        numNets = parseInt(lines[0].split(':')[1], 10);
+    }
+
+    const nets = [];
+    let i = 1;
+    while (i < lines.length) {
+        if (!lines[i].startsWith('NetDegree:')) {
+            i++;
+            continue;
+        }
+        const degree = parseInt(lines[i].split(':')[1], 10);
+        i++;
+        const terms = [];
+        for (let k = 0; k < degree; k++) {
+            if (i >= lines.length) break;
+            terms.push(lines[i]);
+            i++;
+        }
+        nets.push(terms);
+        if (numNets !== null && nets.length >= numNets) break;
+    }
+
+    if (numNets !== null && nets.length !== numNets) {
+        console.warn(`Parsed nets count mismatch: expected ${numNets}, got ${nets.length}`);
+    }
+
+    return { numNets: nets.length, nets };
 }
 
 // ── 解析 .block 檔 ─────────────────────────────────────────────────────────────
@@ -449,14 +735,28 @@ function updateInfoPanel() {
         if (sel === 'all') {
             ids.forEach(id => {
                 const d = outData.dies[id];
-                const w = d.bbox.maxX - d.bbox.minX, h = d.bbox.maxY - d.bbox.minY;
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                d.blocks.forEach(b => {
+                    minX = Math.min(minX, b.x);
+                    minY = Math.min(minY, b.y);
+                    maxX = Math.max(maxX, b.x + b.width);
+                    maxY = Math.max(maxY, b.y + b.height);
+                });
+                const w = maxX - minX, h = maxY - minY;
                 html += `<span>Die ${id}: ${d.blocks.length} blocks, bbox = ${w.toFixed(0)} × ${h.toFixed(0)}</span>  `;
             });
         } else {
             const id = parseInt(sel, 10);
             const d  = outData.dies[id];
             if (d) {
-                const w = d.bbox.maxX - d.bbox.minX, h = d.bbox.maxY - d.bbox.minY;
+                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                d.blocks.forEach(b => {
+                    minX = Math.min(minX, b.x);
+                    minY = Math.min(minY, b.y);
+                    maxX = Math.max(maxX, b.x + b.width);
+                    maxY = Math.max(maxY, b.y + b.height);
+                });
+                const w = maxX - minX, h = maxY - minY;
                 html += `<span>Die ${id}: ${d.blocks.length} blocks, bbox = ${w.toFixed(0)} × ${h.toFixed(0)}</span>`;
             }
         }
@@ -496,7 +796,124 @@ function updateInfoPanel() {
         html += blockData.outlines.map((o, i) => `Die ${i}: ${o.w} × ${o.h}`).join(', ');
     }
 
+    // Selected info
+    if (selected) {
+        if (html) html += '<br><br>';
+        if (selected.type === 'module') {
+            const d = outData && outData.dies ? outData.dies[selected.dieId] : null;
+            const b = d && d.blocks ? d.blocks[selected.blockIndex] : null;
+            if (b) {
+                html += `<strong>Selected module:</strong> ${b.name} &nbsp; (die ${selected.dieId})<br>` +
+                        `x=${b.x}, y=${b.y}, w=${b.width}, h=${b.height}`;
+            } else {
+                html += `<strong>Selected module:</strong> (missing)`;
+            }
+        } else if (selected.type === 'tsv') {
+            const a = outData && outData.tsvAssignments ? outData.tsvAssignments[selected.assignmentIndex] : null;
+            if (a) {
+                html += `<strong>Selected TSV:</strong> net${a.netId}  tier${a.tierLo}-${a.tierHi}<br>` +
+                        `x=${a.x}, y=${a.y}`;
+            } else {
+                html += `<strong>Selected TSV:</strong> (missing)`;
+            }
+        }
+    }
+
     panel.innerHTML = html || 'No data.';
+}
+
+// ── Recompute HPWL（分層 bbox + TSV 雙邊計入）────────────────────────────────────
+function recomputeHpwlFromCurrentState(currentOut, currentBlock, currentNets) {
+    if (!currentOut || !currentBlock || !currentNets) {
+        throw new Error('Missing currentOut / currentBlock / currentNets.');
+    }
+    if (!currentOut.dies) throw new Error('outData missing dies.');
+    if (!currentBlock.terminals) throw new Error('blockData missing terminals.');
+    if (!currentOut.tsvAssignments) throw new Error('outData missing tsvAssignments.');
+    if (!currentNets.nets) throw new Error('netsData missing nets.');
+
+    const numDies = currentBlock.numDie || 1;
+
+    // module name -> {dieId, cx, cy}
+    const moduleMap = new Map();
+    Object.keys(currentOut.dies).forEach(dieIdStr => {
+        const dieId = parseInt(dieIdStr, 10);
+        const die = currentOut.dies[dieId];
+        if (!die || !die.blocks) return;
+        die.blocks.forEach(b => {
+            const cx = b.x + b.width / 2;
+            const cy = b.y + b.height / 2;
+            moduleMap.set(b.name, { dieId, cx, cy });
+        });
+    });
+
+    // terminal name -> {cx, cy}，tier0
+    const terminalMap = new Map();
+    currentBlock.terminals.forEach(t => terminalMap.set(t.name, { cx: t.x, cy: t.y }));
+
+    // tsv assignments grouped by net index
+    const tsvByNet = new Map(); // netIdx -> array of {tierLo, tierHi, x, y}
+    currentOut.tsvAssignments.forEach(a => {
+        const netIdx = parseInt(String(a.netId).replace(/net/i, ''), 10);
+        if (!Number.isFinite(netIdx)) return;
+        if (!tsvByNet.has(netIdx)) tsvByNet.set(netIdx, []);
+        tsvByNet.get(netIdx).push(a);
+    });
+
+    const nets = currentNets.nets;
+    let totalHpwl = 0.0;
+
+    for (let netIdx = 0; netIdx < nets.length; netIdx++) {
+        const terms = nets[netIdx];
+
+        const minX = Array(numDies).fill(Infinity);
+        const minY = Array(numDies).fill(Infinity);
+        const maxX = Array(numDies).fill(-Infinity);
+        const maxY = Array(numDies).fill(-Infinity);
+        const has   = Array(numDies).fill(false);
+
+        function upd(d, px, py) {
+            if (d < 0 || d >= numDies) return;
+            minX[d] = Math.min(minX[d], px);
+            minY[d] = Math.min(minY[d], py);
+            maxX[d] = Math.max(maxX[d], px);
+            maxY[d] = Math.max(maxY[d], py);
+            has[d] = true;
+        }
+
+        // 1) Add module / terminal members
+        terms.forEach(name => {
+            if (typeof name !== 'string') return;
+            if (name.startsWith('sb')) {
+                if (!moduleMap.has(name)) return;
+                const m = moduleMap.get(name);
+                upd(m.dieId, m.cx, m.cy);
+            } else if (name.startsWith('p')) {
+                if (!terminalMap.has(name)) return;
+                const t = terminalMap.get(name);
+                upd(0, t.cx, t.cy);
+            }
+        });
+
+        // 2) Add TSV points (included in both adjacent dies)
+        const tsvList = tsvByNet.get(netIdx) || [];
+        tsvList.forEach(tsv => {
+            upd(tsv.tierLo, tsv.x, tsv.y);
+            upd(tsv.tierHi, tsv.x, tsv.y);
+        });
+
+        // 3) Sum per-die HPWL
+        for (let d = 0; d < numDies; d++) {
+            if (!has[d]) continue;
+            totalHpwl += (maxX[d] - minX[d]) + (maxY[d] - minY[d]);
+        }
+    }
+
+    return {
+        hpwl: totalHpwl,
+        hpwlOld: currentOut.hpwl,
+        costOld: currentOut.cost,
+    };
 }
 
 // ── 主繪圖函式 ─────────────────────────────────────────────────────────────────
@@ -518,8 +935,12 @@ function redraw() {
         ids.forEach(id => {
             const d = outData.dies[id];
             if (!d) return;
-            wMinX = Math.min(wMinX, d.bbox.minX); wMinY = Math.min(wMinY, d.bbox.minY);
-            wMaxX = Math.max(wMaxX, d.bbox.maxX); wMaxY = Math.max(wMaxY, d.bbox.maxY);
+            d.blocks.forEach(b => {
+                wMinX = Math.min(wMinX, b.x);
+                wMinY = Math.min(wMinY, b.y);
+                wMaxX = Math.max(wMaxX, b.x + b.width);
+                wMaxY = Math.max(wMaxY, b.y + b.height);
+            });
         });
     }
 
@@ -566,6 +987,9 @@ function redraw() {
     // ── 世界座標 → 畫布座標轉換 ──
     const toCanvasX = wx => PADDING + (wx - wMinX) * scale;
     const toCanvasY = wy => ch - PADDING - (wy - wMinY) * scale;  // y 軸往上為正
+
+    // 記錄目前視窗轉換參數（供 mousedown/mousemove 互動使用）
+    currentView = { wMinX, wMinY, ch, scale };
 
     ctx.clearRect(0, 0, cw, ch);
 
@@ -661,7 +1085,7 @@ function redraw() {
             if (!d) return;
             const p = getPalette(id);
 
-            d.blocks.forEach(b => {
+            d.blocks.forEach((b, bi) => {
                 const bx = toCanvasX(b.x);
                 const by = toCanvasY(b.y + b.height);
                 const bw = b.width  * scale;
@@ -672,6 +1096,15 @@ function redraw() {
                 ctx.strokeStyle = p.stroke;
                 ctx.lineWidth   = 1;
                 ctx.strokeRect(bx, by, bw, bh);
+
+                // Selected module highlight
+                if (selected && selected.type === 'module' &&
+                    selected.dieId === id && selected.blockIndex === bi) {
+                    ctx.strokeStyle = 'rgba(34,197,94,1)'; // green
+                    ctx.lineWidth   = 3;
+                    ctx.strokeRect(bx, by, bw, bh);
+                    ctx.lineWidth   = 1;
+                }
 
                 // 名稱置中顯示（zoom 夠大才顯示）
                 if (scale >= 0.5 && bw > 20 && bh > 10) {
@@ -731,17 +1164,25 @@ function redraw() {
     // ── 4. 畫 TSV Assignment 點位（.out）──
     if (outData && showTsvPoints && outData.tsvAssignments && outData.tsvAssignments.length > 0) {
 
-        const filteredAssigns = sel === 'all'
-            ? outData.tsvAssignments
-            : outData.tsvAssignments.filter(a =>
-                a.tierLo === parseInt(sel, 10) || a.tierHi === parseInt(sel, 10));
+        const selDie = sel === 'all' ? -1 : parseInt(sel, 10);
+        const filteredAssigns = [];
+        outData.tsvAssignments.forEach((a, assignmentIndex) => {
+            const shown = selDie === -1
+                ? true
+                : (tsvLowerTierOnly
+                    ? a.tierLo === selDie
+                    : (a.tierLo === selDie || a.tierHi === selDie));
+            if (!shown) return;
+            filteredAssigns.push({ a, assignmentIndex });
+        });
 
-        filteredAssigns.forEach(a => {
+        filteredAssigns.forEach(({ a, assignmentIndex }) => {
             const c  = TSV_TIER_COLORS[a.tierLo] ||
                        TSV_TIER_COLORS[TSV_TIER_COLORS.length - 1];
 
             const isHovered = hoveredTsv && hoveredTsv.netId === a.netId &&
                               hoveredTsv.tierLo === a.tierLo;
+            const isSelected = selected && selected.type === 'tsv' && selected.assignmentIndex === assignmentIndex;
 
             // TSV 實際佔地：世界座標 (x±1.5, y±1.5)，畫布對應 3*scale 大小
             const sqX = toCanvasX(a.x - 1.5);
@@ -762,6 +1203,14 @@ function redraw() {
             ctx.strokeStyle = c.stroke;
             ctx.lineWidth   = 1;
             ctx.strokeRect(sqX, sqY, sqW, sqH);
+
+            // Selected TSV highlight
+            if (isSelected) {
+                ctx.strokeStyle = 'rgba(239,68,68,1)'; // red
+                ctx.lineWidth   = 3;
+                ctx.strokeRect(sqX, sqY, sqW, sqH);
+                ctx.lineWidth   = 1;
+            }
 
             // hover 時顯示 net 名稱
             if (isHovered || scale >= 2.5) {
