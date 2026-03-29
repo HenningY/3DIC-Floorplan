@@ -166,7 +166,7 @@ struct PartitionConfig {
     double min_split_ratio = 0.1;   // 切割位置不能靠近邊界的最小比例
     double max_split_ratio = 0.9;   // 對稱的最大比例
     int    num_candidates  = 32;    // 掃線候選切割位置數量
-    // 若 shift + re-balance 後兩側仍不滿足容量／幾何，依 cross_area 順序改試下一個候選 L，最多嘗試次數（≤ num_candidates）
+    // validate 失敗，或（左右皆為 leaf 時）legalize 後仍有重疊，則改試下一候選切分線
     int    max_split_retries = 32;
     double tsv_width       = 4.0;   // TSV 物理寬（面積計算用）
     double tsv_height      = 4.0;   // TSV 物理高（面積計算用）
@@ -199,6 +199,9 @@ struct PartitionNode {
     // 切割資訊（葉節點無意義）
     bool   split_x   = true;   // true = 垂直切割（沿 X 軸），false = 水平切割
     double split_pos = 0.0;    // 切割線的座標值
+
+    // 若在 partition 內已對 leaf 做過 legalize_leaf，dfs_legalize 不再重複呼叫
+    bool skip_leaf_legalize = false;
 
     bool is_leaf() const { return !left && !right; }
     double width()  const { return xmax - xmin; }

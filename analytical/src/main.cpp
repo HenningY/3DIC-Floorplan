@@ -83,8 +83,8 @@ int main(int argc, char* argv[])
     PartitionConfig pcfg;
     pcfg.leaf_threshold  = 8;     // ≤ 8 個 module 的區域停止遞迴
     pcfg.min_modules_per_region = 3; // partition 後每個子區域至少 3 個 modules
-    pcfg.min_split_ratio = 0.30;   // 切割比例限制 [0.1, 0.9]
-    pcfg.max_split_ratio = 0.70;
+    pcfg.min_split_ratio = 0.4;   // 切割比例限制 [0.1, 0.9]
+    pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數
     pcfg.tsv_width       = 3.0;   // TSV 物理尺寸（與 solve_tsvs 一致）
     pcfg.tsv_height      = 3.0;
