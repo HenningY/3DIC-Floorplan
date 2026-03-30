@@ -867,9 +867,25 @@ static void legalize_fallback_merged_firstfit(
     };
 
     const std::vector<int>& frozen_mods = keep_left ? left_mods : right_mods;
-    const std::vector<int>& frozen_tsvs = keep_left ? left_tsvs : right_tsvs;
-    const std::vector<int>& move_mods  = keep_left ? right_mods : left_mods;
-    const std::vector<int>& move_tsvs  = keep_left ? right_tsvs : left_tsvs;
+    const std::vector<int>& move_mods   = keep_left ? right_mods : left_mods;
+
+    // keep right(top) 時：凍結側 module 會先往右/上推擠，但「凍結側的 tsv」不要 frozen，
+    // 讓它們在 module 全部擺完後也一起走 first-fit。
+    std::vector<int> empty_tsvs;
+    std::vector<int> move_tsvs_combined;
+    const std::vector<int>& frozen_tsvs =
+        keep_left ? left_tsvs : empty_tsvs;
+
+    if (keep_left) {
+        // keep left(bottom)：原本邏輯不變，凍結左側 tsv；可動右側 tsv 走 first-fit。
+        move_tsvs_combined = right_tsvs;
+    } else {
+        // keep right(top)：凍結右側 tsv 也要走 first-fit（與左側 tsv 一起納入可動集合）。
+        move_tsvs_combined = left_tsvs;
+        move_tsvs_combined.insert(move_tsvs_combined.end(),
+                                   right_tsvs.begin(), right_tsvs.end());
+    }
+    const std::vector<int>& move_tsvs = move_tsvs_combined;
 
     std::vector<Rect> placed;
     placed.reserve(frozen_mods.size() + frozen_tsvs.size() + move_mods.size() + move_tsvs.size());

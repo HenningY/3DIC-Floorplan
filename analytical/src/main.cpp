@@ -20,13 +20,13 @@ int main(int argc, char* argv[])
 
     // ---- 設定超參數 ----
     PlacementConfig cfg;
-    cfg.max_iterations  = 5000;    // 最大迭代次數 default 3000
+    cfg.max_iterations  = 4000;    // 最大迭代次數 default 3000
     cfg.gamma           = 5.0;    // LSE 平滑參數（越大越接近真實 HPWL） default 5.0
     cfg.init_step_size  = 3.0;     // 初始步長 default 2.0
     cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 64;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 32;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
@@ -108,6 +108,69 @@ int main(int argc, char* argv[])
     std::cout << "  Num nets     : " << engine.nets().size() << "\n";
     std::cout << "  Num TSVs     : " << engine.tsvs().size() << "\n";
     std::cout << "  TSV cost     : " << engine.compute_tsv_cost() << "\n";
+
+    // ---- 最終重疊檢查（summary 印出每一層 overlap pairs）----
+    // 說明：這裡比對的是同一 tier 的 modules（tier_id==t）與該 tier interface 的 TSV（layer_index==t）。
+    struct ItemRect {
+        char   kind; // 'M' = Module, 'T' = TSV
+        int    id;   // global id
+        double lx, ly, rx, ry;
+    };
+
+    auto rects_overlap_xy = [&](const ItemRect& a, const ItemRect& b) -> bool {
+        const double eps = 1e-9;
+        if (a.rx <= b.lx + eps || b.rx <= a.lx + eps) return false;
+        if (a.ry <= b.ly + eps || b.ry <= a.ly + eps) return false;
+        return true;
+    };
+
+    const double tsv_hw = pcfg.tsv_width * 0.5;
+    const double tsv_hh = pcfg.tsv_height * 0.5;
+
+    for (int t = 0; t < engine.num_dies(); ++t) {
+        std::vector<ItemRect> items;
+
+        for (const Module& m : engine.modules()) {
+            if (!m.is_terminal && m.tier_id == t) {
+                items.push_back({ 'M', m.id, m.lx(), m.ly(), m.rx(), m.ry() });
+            }
+        }
+        for (const TSV& tsv : engine.tsvs()) {
+            if (tsv.layer_index == t) {
+                items.push_back({ 'T', tsv.id,
+                                   tsv.x - tsv_hw, tsv.y - tsv_hh,
+                                   tsv.x + tsv_hw, tsv.y + tsv_hh });
+            }
+        }
+
+        std::vector<std::pair<int, int>> ov_pairs;
+        for (size_t i = 0; i < items.size(); ++i) {
+            for (size_t j = i + 1; j < items.size(); ++j) {
+                if (rects_overlap_xy(items[i], items[j])) {
+                    ov_pairs.push_back({ static_cast<int>(i), static_cast<int>(j) });
+                }
+            }
+        }
+
+        if (ov_pairs.empty()) {
+            std::cout << "  Tier " << t << " overlaps: none\n";
+            continue;
+        }
+
+        std::cout << "  Tier " << t << " overlaps: " << ov_pairs.size() << " pairs\n";
+        for (const auto& pr : ov_pairs) {
+            const auto& a = items[pr.first];
+            const auto& b = items[pr.second];
+
+            std::cout << "    - ";
+            if (a.kind == 'M') std::cout << "Module#" << a.id;
+            else                std::cout << "TSV#" << a.id;
+            std::cout << "  <->  ";
+            if (b.kind == 'M') std::cout << "Module#" << b.id;
+            else                std::cout << "TSV#" << b.id;
+            std::cout << "\n";
+        }
+    }
 
     // Die 使用率統計
     for (int t = 0; t < engine.num_dies(); ++t) {
