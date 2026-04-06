@@ -242,6 +242,11 @@ public:
     // = Σ_tsv [dist(tsv, bbox_lower) + dist(tsv, bbox_upper)]
     double compute_tsv_cost() const;
 
+    // Legalization 完成後：依所屬 net 全體 bbox 之周長（小→大）排序，
+    // 將各 TSV 以 B_lower/B_upper 幾何區域為範圍做 first-fit；區域內無空位則改在整張 die 上
+    // 找 L1 距離至該目標矩形最近之空位。
+    void reflow_tsvs_after_legalize(double tsv_w, double tsv_h);
+
     // ---- 輸出 ----
     // 寫出符合 PA2 格式的結果檔：
     //   Line 1: total_cost

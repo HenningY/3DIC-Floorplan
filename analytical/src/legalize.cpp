@@ -962,19 +962,6 @@ static void legalize_fallback_merged_firstfit(
         return { -1.0, -1.0 };
     };
 
-    // 上→下，右→左（keep left/bottom 時可動側）
-    auto first_free_y_top_then_x_from_right = [&](const std::vector<Rect>& p, double hw, double hh)
-        -> std::pair<double, double> {
-        std::vector<double> ys = collect_y_levels_ascending(hh, p);
-        std::sort(ys.begin(), ys.end(), std::greater<double>());
-        for (double cy : ys) {
-            double cx = first_free_x_from_right(p, hw, hh, cy);
-            if (cx >= 0.0)
-                return { cx, cy };
-        }
-        return { -1.0, -1.0 };
-    };
-
     // keep right(top)：凍結側維持 legalize 後的相對配置，只做「往右、往上」推到緊貼障礙／邊界（不重排、不旋轉）
     if (!keep_left) {
         const double eps = 1e-7;
@@ -1039,68 +1026,196 @@ static void legalize_fallback_merged_firstfit(
         }
     }
 
-    auto pick_first_free_for_move_modules = [&](const std::vector<Rect>& p, double hw, double hh)
+    // 上→下，左→右
+    auto first_free_y_top_then_x_from_left = [&](const std::vector<Rect>& p, double hw, double hh)
         -> std::pair<double, double> {
-        if (keep_left)
-            return first_free_y_top_then_x_from_right(p, hw, hh);
-        return first_free_y_bottom_then_x_from_left(p, hw, hh);
+        std::vector<double> ys = collect_y_levels_ascending(hh, p);
+        std::sort(ys.begin(), ys.end(), std::greater<double>());
+        for (double cy : ys) {
+            double cx = first_free_x_from_left(p, hw, hh, cy);
+            if (cx >= 0.0)
+                return { cx, cy };
+        }
+        return { -1.0, -1.0 };
     };
 
-    std::vector<int> mod_order = move_mods;
-    if (keep_left) {
-        std::sort(mod_order.begin(), mod_order.end(),
-                  [&](int a, int b){ return modules[a].x > modules[b].x; });
-    } else {
-        std::sort(mod_order.begin(), mod_order.end(),
-                  [&](int a, int b){ return modules[a].x < modules[b].x; });
+    // 上→下，右→左（keep_left 時可動側主要掃描）
+    auto first_free_y_top_then_x_from_right = [&](const std::vector<Rect>& p, double hw, double hh)
+        -> std::pair<double, double> {
+        std::vector<double> ys = collect_y_levels_ascending(hh, p);
+        std::sort(ys.begin(), ys.end(), std::greater<double>());
+        for (double cy : ys) {
+            double cx = first_free_x_from_right(p, hw, hh, cy);
+            if (cx >= 0.0)
+                return { cx, cy };
+        }
+        return { -1.0, -1.0 };
+    };
+
+    // 下→上，右→左
+    auto first_free_y_bottom_then_x_from_right = [&](const std::vector<Rect>& p, double hw, double hh)
+        -> std::pair<double, double> {
+        for (double cy : collect_y_levels_ascending(hh, p)) {
+            double cx = first_free_x_from_right(p, hw, hh, cy);
+            if (cx >= 0.0)
+                return { cx, cy };
+        }
+        return { -1.0, -1.0 };
+    };
+
+    // 可動 module 快照（供 module overlap 時還原重試）
+    std::vector<double> snap_mx, snap_my, snap_mw, snap_mh;
+    snap_mx.reserve(move_mods.size());
+    snap_my.reserve(move_mods.size());
+    snap_mw.reserve(move_mods.size());
+    snap_mh.reserve(move_mods.size());
+    for (int mid : move_mods) {
+        const Module& m = modules[mid];
+        snap_mx.push_back(m.x);
+        snap_my.push_back(m.y);
+        snap_mw.push_back(m.width);
+        snap_mh.push_back(m.height);
     }
 
-    for (int mid : mod_order) {
-        Module&      m         = modules[mid];
-        const double ox        = m.x;
-        const double oy        = m.y;
-        const double base_w    = m.width;
-        const double base_h    = m.height;
+    // 依 first-fit 排擺可動 module，置於 placed 後方
+    using PickFn = std::function<std::pair<double, double>(const std::vector<Rect>&, double, double)>;
+    using SortFn = std::function<bool(int, int)>;
+    auto place_move_modules = [&](const SortFn& sort_fn, const PickFn& pick_fn) {
+        // 還原可動 module 到快照
+        for (size_t i = 0; i < move_mods.size(); ++i) {
+            const int mid = move_mods[i];
+            modules[mid].x      = snap_mx[i];
+            modules[mid].y      = snap_my[i];
+            modules[mid].width  = snap_mw[i];
+            modules[mid].height = snap_mh[i];
+        }
+        // 重建 placed（只含凍結 module）
+        placed.clear();
+        placed.reserve(frozen_mods.size() + frozen_tsvs.size() + move_mods.size() + move_tsvs.size());
+        for (int mid : frozen_mods) {
+            const Module& m = modules[mid];
+            placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+        }
+        // 依給定排序順序 + pick 策略排可動 module
+        std::vector<int> mod_order = move_mods;
+        std::sort(mod_order.begin(), mod_order.end(), sort_fn);
 
-        bool   ok     = false;
-        double best_cx = -1.0, best_cy = -1.0;
-        double best_w = base_w, best_h = base_h;
-        double best_cost = std::numeric_limits<double>::infinity();
+        for (int mid : mod_order) {
+            Module&      m         = modules[mid];
+            const double ox        = m.x;
+            const double oy        = m.y;
+            const double base_w    = m.width;
+            const double base_h    = m.height;
 
-        for (int rot = 0; rot <= 1; ++rot) {
-            const double w_i  = (rot == 0) ? base_w : base_h;
-            const double h_i  = (rot == 0) ? base_h : base_w;
-            const double hw_i = w_i * 0.5;
-            const double hh_i = h_i * 0.5;
+            bool   ok     = false;
+            double best_cx = -1.0, best_cy = -1.0;
+            double best_w = base_w, best_h = base_h;
+            double best_cost = std::numeric_limits<double>::infinity();
 
-            if (region.ymin + hh_i > region.ymax - hh_i + 1e-12) continue;
+            for (int rot = 0; rot <= 1; ++rot) {
+                const double w_i  = (rot == 0) ? base_w : base_h;
+                const double h_i  = (rot == 0) ? base_h : base_w;
+                const double hw_i = w_i * 0.5;
+                const double hh_i = h_i * 0.5;
 
-            const auto xy = pick_first_free_for_move_modules(placed, hw_i, hh_i);
-            if (xy.first < 0.0) continue;
+                if (region.ymin + hh_i > region.ymax - hh_i + 1e-12) continue;
 
-            const double cost = std::abs(xy.first - ox) + std::abs(xy.second - oy);
-            if (cost < best_cost) {
-                best_cost = cost;
-                best_cx   = xy.first;
-                best_cy   = xy.second;
-                best_w    = w_i;
-                best_h    = h_i;
-                ok        = true;
+                const auto xy = pick_fn(placed, hw_i, hh_i);
+                if (xy.first < 0.0) continue;
+
+                const double cost = std::abs(xy.first - ox) + std::abs(xy.second - oy);
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_cx   = xy.first;
+                    best_cy   = xy.second;
+                    best_w    = w_i;
+                    best_h    = h_i;
+                    ok        = true;
+                }
+            }
+
+            if (ok) {
+                m.x      = best_cx;
+                m.y      = best_cy;
+                m.width  = best_w;
+                m.height = best_h;
+                placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+            } else {
+                const double hw_i = m.width * 0.5;
+                const double hh_i = m.height * 0.5;
+                m.x = clamp(m.x, region.xmin + hw_i, region.xmax - hw_i);
+                m.y = clamp(m.y, region.ymin + hh_i, region.ymax - hh_i);
+                placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
             }
         }
+    };
 
-        if (ok) {
-            m.x      = best_cx;
-            m.y      = best_cy;
-            m.width  = best_w;
-            m.height = best_h;
-            placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+    // module-only overlap check（只對 all_mods 做，不含 TSV）
+    auto module_has_overlap = [&]() -> bool {
+        std::vector<int> all_mods;
+        all_mods.reserve(left_mods.size() + right_mods.size());
+        all_mods.insert(all_mods.end(), left_mods.begin(), left_mods.end());
+        all_mods.insert(all_mods.end(), right_mods.begin(), right_mods.end());
+        std::vector<int> empty;
+        return entity_group_has_overlap(all_mods, empty, modules, tsvs, tsv_w, tsv_h);
+    };
+
+    // 定義 5 種排序 lambda
+    SortFn sort_x_asc     = [&](int a, int b){ return modules[a].x < modules[b].x; };
+    SortFn sort_x_desc    = [&](int a, int b){ return modules[a].x > modules[b].x; };
+    SortFn sort_y_asc     = [&](int a, int b){ return modules[a].y < modules[b].y; };
+    SortFn sort_y_desc    = [&](int a, int b){ return modules[a].y > modules[b].y; };
+    SortFn sort_area_desc = [&](int a, int b){
+        return modules[a].width * modules[a].height > modules[b].width * modules[b].height;
+    };
+
+    // (sort, scan, name) 嘗試清單；最多 10 組，找到第一個無 overlap 即停止
+    struct Attempt { SortFn sort_fn; PickFn pick_fn; const char* name; };
+    std::vector<Attempt> attempts;
+    attempts.reserve(10);
+
+    auto push_att = [&](SortFn sf, PickFn pf, const char* n) {
+        attempts.push_back({ std::move(sf), std::move(pf), n });
+    };
+
+    if (!keep_left) {
+        // 可動側在左/下；掃描：y 下→上/上→下，x 左→右
+        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "x_asc+y_bot_xleft");
+        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "x_asc+y_top_xleft");
+        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "x_desc+y_bot_xleft");
+        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "x_desc+y_top_xleft");
+        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "y_asc+y_bot_xleft");
+        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "y_asc+y_top_xleft");
+        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "y_desc+y_bot_xleft");
+        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "y_desc+y_top_xleft");
+        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "area+y_bot_xleft");
+        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "area+y_top_xleft");
+    } else {
+        // 可動側在右/上；掃描：y 上→下/下→上，x 右→左
+        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "x_desc+y_top_xright");
+        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "x_desc+y_bot_xright");
+        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "x_asc+y_top_xright");
+        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "x_asc+y_bot_xright");
+        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "y_desc+y_top_xright");
+        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "y_desc+y_bot_xright");
+        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "y_asc+y_top_xright");
+        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "y_asc+y_bot_xright");
+        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "area+y_top_xright");
+        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "area+y_bot_xright");
+    }
+
+    // 依序嘗試各組合，遇到第一個無 overlap 即停止
+    for (size_t i = 0; i < attempts.size(); ++i) {
+        place_move_modules(attempts[i].sort_fn, attempts[i].pick_fn);
+        if (!module_has_overlap()) break;
+        if (i + 1 < attempts.size()) {
+            std::cout << "[Partition] fallback_merge_firstfit: overlap ["
+                      << attempts[i].name << "] -> retry ["
+                      << attempts[i + 1].name << "] T" << region.tier_id
+                      << " d=" << region.depth << "\n";
         } else {
-            const double hw_i = m.width * 0.5;
-            const double hh_i = m.height * 0.5;
-            m.x = clamp(m.x, region.xmin + hw_i, region.xmax - hw_i);
-            m.y = clamp(m.y, region.ymin + hh_i, region.ymax - hh_i);
-            placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+            std::cout << "[Partition] fallback_merge_firstfit: module UNSAT (all combos fail) "
+                      << "T" << region.tier_id << " d=" << region.depth << "\n";
         }
     }
 

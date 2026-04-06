@@ -20,13 +20,13 @@ int main(int argc, char* argv[])
 
     // ---- 設定超參數 ----
     PlacementConfig cfg;
-    cfg.max_iterations  = 4000;    // 最大迭代次數 default 3000
+    cfg.max_iterations  = 5000;    // 最大迭代次數 default 3000
     cfg.gamma           = 5.0;    // LSE 平滑參數（越大越接近真實 HPWL） default 5.0
     cfg.init_step_size  = 3.0;     // 初始步長 default 2.0
-    cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998
+    cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 32;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 64;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
@@ -37,8 +37,8 @@ int main(int argc, char* argv[])
     cfg.lambda_max_mult        = 300.0; // λ 倍率上限
 
     // ---- 動態平滑半徑 σ ----
-    cfg.sigma_start_frac = 0.4;   // 初始 = 20% die 寬（=53.6 for 268）
-    cfg.sigma_end_frac   = 0.04;   // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75）
+    cfg.sigma_start_frac = 0.4;   // 初始 = 20% die 寬（=53.6 for 268） 0.4
+    cfg.sigma_end_frac   = 0.04;   // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） 0.04
 
     // 每層 Die 的密度懲罰係數基礎值（與 lambda_mult 相乘）
     cfg.tier_lambdas    = {0.0087, 0.0087, 0.009};
@@ -86,6 +86,7 @@ int main(int argc, char* argv[])
     pcfg.min_split_ratio = 0.4;   // 切割比例限制 [0.1, 0.9]
     pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數
+    pcfg.max_split_retries = 32;
     pcfg.tsv_width       = 3.0;   // TSV 物理尺寸（與 solve_tsvs 一致）
     pcfg.tsv_height      = 3.0;
     pcfg.log_tree        = true;
@@ -95,6 +96,9 @@ int main(int argc, char* argv[])
 
     // ---- Recursive Bi-partitioning and Legalization ----
     engine.partition_all_tiers(pcfg);
+
+    // ---- TSV：依 net bbox 周長排序，在兩層 bbox 幾何區域內 first-fit 重排 ----
+    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
