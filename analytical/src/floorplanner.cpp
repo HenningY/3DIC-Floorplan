@@ -75,6 +75,7 @@ void PlacementEngine::initialize_positions()
 
     for (Module& m : modules_) {
         if (m.is_terminal) continue;   // terminal 位置固定不動
+        if (m.is_fixed)    continue;   // 被 constraint 固定的 module 保持原位
 
         const Die& die = dies_[m.tier_id];
         double cx      = die.width  * 0.5;
@@ -153,7 +154,8 @@ void PlacementEngine::solve()
 
         // ---- Step 2: NAG lookahead y_k = x_k + μ*(x_k - x_{k-1}) ----
         for (int i = 0; i < n; ++i) {
-            if (modules_[i].is_terminal) {
+            // terminal 和 fixed module 均保持原位不做 lookahead 偏移
+            if (modules_[i].is_terminal || modules_[i].is_fixed) {
                 look_x[i] = modules_[i].x;
                 look_y[i] = modules_[i].y;
                 continue;
@@ -163,6 +165,7 @@ void PlacementEngine::solve()
         }
 
         // 暫存 x_k，再把 module 座標移到 lookahead 位置以計算梯度
+        // fixed module 也暫存但不搬移（density map 和 WL gradient 仍需感知其位置）
         for (int i = 0; i < n; ++i) {
             prev_x_[i]    = modules_[i].x;
             prev_y_[i]    = modules_[i].y;
@@ -170,17 +173,16 @@ void PlacementEngine::solve()
             modules_[i].y = look_y[i];
         }
 
-        // ---- Step 3: 計算兩路梯度 ----
-        update_density_map();                          // 使用 smooth_sigma_
+        // ---- Step 3: 計算兩路梯度（fixed module 位置已正確反映在 look_x/y 中）----
+        update_density_map();
         calculate_wirelength_gradient(gx_wl, gy_wl);
-        calculate_density_gradient(gx_d,  gy_d);      // 使用 smooth_sigma_
+        calculate_density_gradient(gx_d,  gy_d);
 
-        // ---- Step 4: RMS 正規化 → 梯度量級對齊 ----
-        // 分別計算 WL 與 Density 梯度的 RMS（僅統計可移動模組）
+        // ---- Step 4: RMS 正規化（只統計真正可動模組）----
         double wl_sq = 0.0, d_sq = 0.0;
         int    movable = 0;
         for (int i = 0; i < n; ++i) {
-            if (modules_[i].is_terminal) continue;
+            if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
             wl_sq += gx_wl[i]*gx_wl[i] + gy_wl[i]*gy_wl[i];
             d_sq  += gx_d[i] *gx_d[i]  + gy_d[i] *gy_d[i];
             ++movable;
@@ -188,18 +190,14 @@ void PlacementEngine::solve()
         double wl_rms = std::sqrt(wl_sq / (2.0 * movable + 1e-12));
         double d_rms  = std::sqrt(d_sq  / (2.0 * movable + 1e-12));
 
-        // scale_d：將 density 梯度縮放到與 WL 梯度相同的 RMS 量級
-        // 再由 λ 控制兩者的相對權重，避免不同量級造成 λ 失去意義
         double scale_d = (d_rms > 1e-12) ? (wl_rms / d_rms) : 0.0;
 
-        // ---- Step 5: 合併梯度並更新位置 ----
+        // ---- Step 5: 合併梯度並更新位置（fixed module 不更新）----
         for (int i = 0; i < n; ++i) {
-            if (modules_[i].is_terminal) continue;
+            if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
 
-            // 每層 λ = 基礎值 × 當前倍率
             double lam = dies_[modules_[i].tier_id].lambda * lambda_mult_;
 
-            // WL 梯度 + 正規化後的 Density 梯度
             gx[i] = gx_wl[i] + lam * scale_d * gx_d[i];
             gy[i] = gy_wl[i] + lam * scale_d * gy_d[i];
 

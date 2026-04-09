@@ -19,7 +19,8 @@ run: $(TARGET)
 	./$(TARGET) \
 		../input_pa2/n100.block \
 		../input_pa2/n100.nets \
-		./output/n100_output.txt
+		./output/n100_output.txt \
+		../input_pa2/n100.constraint
 
 clean:
 	rm -f $(OBJS) $(TARGET) ./output/n100_output.txt

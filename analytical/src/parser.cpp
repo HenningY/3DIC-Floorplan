@@ -141,6 +141,73 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
 }
 
 // ============================================================
+// parse_constraints: 解析 .constraint 檔案
+//
+// 格式（每行一條約束，# 開頭為註解）：
+//   FIXED <module_name> <x_ll> <y_ll> <x_ur> <y_ur>
+//
+// 效果：
+//   - 找到對應 Module（必須是非 terminal 的 block）
+//   - 以 (x_ll, y_ll, x_ur, y_ur) 決定固定位置與尺寸（因 ll/ur 隱含旋轉方向）
+//   - 設定 is_fixed = true；x/y 設為中心；width/height 設為 ur-ll
+// ============================================================
+bool PlacementEngine::parse_constraints(const std::string& filename)
+{
+    std::ifstream fin(filename);
+    if (!fin) {
+        std::cerr << "[Constraint] Cannot open constraint file: " << filename << "\n";
+        return false;
+    }
+
+    int count = 0;
+    std::string line;
+    while (std::getline(fin, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream ss(line);
+        std::string keyword;
+        ss >> keyword;
+        if (keyword != "FIXED") continue;
+
+        std::string name;
+        double x_ll, y_ll, x_ur, y_ur;
+        if (!(ss >> name >> x_ll >> y_ll >> x_ur >> y_ur)) {
+            std::cerr << "[Constraint] Malformed FIXED line: " << line << "\n";
+            continue;
+        }
+
+        auto it = name_to_id_.find(name);
+        if (it == name_to_id_.end()) {
+            std::cerr << "[Constraint] Unknown module name: " << name << "\n";
+            continue;
+        }
+
+        Module& m = modules_[it->second];
+        if (m.is_terminal) {
+            std::cerr << "[Constraint] Cannot fix terminal: " << name << "\n";
+            continue;
+        }
+
+        if (x_ur < x_ll) std::swap(x_ll, x_ur);
+        if (y_ur < y_ll) std::swap(y_ll, y_ur);
+
+        m.width    = x_ur - x_ll;
+        m.height   = y_ur - y_ll;
+        m.x        = 0.5 * (x_ll + x_ur);
+        m.y        = 0.5 * (y_ll + y_ur);
+        m.is_fixed = true;
+
+        ++count;
+        std::cout << "[Constraint] FIXED " << name
+                  << "  tier=" << m.tier_id
+                  << "  ll=(" << x_ll << "," << y_ll << ")"
+                  << "  ur=(" << x_ur << "," << y_ur << ")\n";
+    }
+
+    std::cout << "[Constraint] Applied " << count << " FIXED constraint(s).\n";
+    return true;
+}
+
+// ============================================================
 // parse_nets: 解析 .nets 檔案
 //
 // 格式：

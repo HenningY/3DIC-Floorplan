@@ -23,6 +23,7 @@ struct Module {
     double      y;            // 中心座標 Y (可移動)
     int         tier_id;      // 所屬 Die（0-indexed），terminal 為 -1
     bool        is_terminal;  // 是否為固定 I/O 端點
+    bool        is_fixed = false; // 是否被 constraint 固定（位置不可移動）
 
     double area() const { return width * height; }
     double lx()   const { return x - width  * 0.5; }   // 左邊界
@@ -227,6 +228,11 @@ public:
 
     // 執行解析式優化主迴圈
     void solve();
+
+    // ---- Constraint ----
+    // 讀取 .constraint 檔，格式：FIXED <name> <x_ll> <y_ll> <x_ur> <y_ur>
+    // 會設定對應 Module 的 is_fixed=true，並更新 x/y/width/height（以 ll/ur 決定）
+    bool parse_constraints(const std::string& filename);
 
     // ---- TSV ----
     // 依 cross-tier nets 建立 TSV 清單（需在 parse + module 位置固定後呼叫）

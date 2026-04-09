@@ -1,5 +1,5 @@
 // 3D IC Analytical Floorplanner - 主程式入口
-// 用法：./analytical <block_file> <net_file> [output_file]
+// 用法：./analytical <block_file> <net_file> [output_file] [constraint_file]
 #include "floorplanner.h"
 
 #include <iostream>
@@ -10,13 +10,14 @@ int main(int argc, char* argv[])
 {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0]
-                  << " <block_file> <net_file> [output_file]\n";
+                  << " <block_file> <net_file> [output_file] [constraint_file]\n";
         return 1;
     }
 
-    const std::string block_file  = argv[1];
-    const std::string nets_file   = argv[2];
-    const std::string output_file = (argc >= 4) ? argv[3] : "output.txt";
+    const std::string block_file       = argv[1];
+    const std::string nets_file        = argv[2];
+    const std::string output_file      = (argc >= 4) ? argv[3] : "output.txt";
+    const std::string constraint_file  = (argc >= 5) ? argv[4] : "";
 
     // ---- 設定超參數 ----
     PlacementConfig cfg;
@@ -26,7 +27,7 @@ int main(int argc, char* argv[])
     cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 64;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 32;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
@@ -56,6 +57,10 @@ int main(int argc, char* argv[])
     if (!engine.parse_blocks(block_file)) return 1;
     if (!engine.parse_nets(nets_file))    return 1;
 
+    // ---- 讀取 constraint 檔（選填），套用前必須在 parse_blocks 之後 ----
+    if (!constraint_file.empty())
+        engine.parse_constraints(constraint_file);
+
     // ---- 初始化位置 ----
     engine.initialize_positions();
 
@@ -66,7 +71,7 @@ int main(int argc, char* argv[])
     // ---- 建立 TSV 清單 ----
     engine.build_tsvs();
 
-    // ---- TSV Analytical Placement ----
+    // ---- TSV Analytical Placement ---- 目前沒有用到
     TsvPlacementConfig tcfg;
     tcfg.max_iterations = 1000;
     tcfg.init_step_size = 2.0;
@@ -82,7 +87,7 @@ int main(int argc, char* argv[])
     // ---- Recursive Bi-partitioning（Legalization 前準備）----
     PartitionConfig pcfg;
     pcfg.leaf_threshold  = 8;     // ≤ 8 個 module 的區域停止遞迴
-    pcfg.min_modules_per_region = 3; // partition 後每個子區域至少 3 個 modules
+    pcfg.min_modules_per_region = 2; // partition 後每個子區域至少 3 個 modules
     pcfg.min_split_ratio = 0.4;   // 切割比例限制 [0.1, 0.9]
     pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數

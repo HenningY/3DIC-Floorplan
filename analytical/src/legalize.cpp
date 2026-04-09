@@ -48,6 +48,27 @@ static double available_area(const PartitionNode&         node,
 }
 
 // ============================================================
+// fixed_area_in_rect: 計算 fixed module 列表與指定矩形的交集面積之和
+// ============================================================
+static double fixed_area_in_rect(
+    const std::vector<int>&    fixed_ids,
+    const std::vector<Module>& modules,
+    double xmin, double ymin, double xmax, double ymax)
+{
+    double area = 0.0;
+    for (int fid : fixed_ids) {
+        const Module& m = modules[fid];
+        const double ix0 = std::max(m.lx(), xmin);
+        const double ix1 = std::min(m.rx(), xmax);
+        const double iy0 = std::max(m.ly(), ymin);
+        const double iy1 = std::min(m.ry(), ymax);
+        if (ix1 > ix0 + 1e-12 && iy1 > iy0 + 1e-12)
+            area += (ix1 - ix0) * (iy1 - iy0);
+    }
+    return area;
+}
+
+// ============================================================
 // collect_ranked_split_candidates:
 //   與 find_best_split 相同的掃線與約束，但回傳「通過初選」的 L，
 //   依 cross_area 由小到大排序（同 cross 則依 L）；鄰近重複 L 會去重。
@@ -62,7 +83,8 @@ static std::vector<double> collect_ranked_split_candidates(
     const std::vector<Module>& modules,
     const std::vector<TSV>&    tsvs,
     const PartitionConfig&     pcfg,
-    bool                       split_x)
+    bool                       split_x,
+    const std::vector<int>&    fixed_ids)
 {
     double lo   = split_x ? node.xmin : node.ymin;
     double hi   = split_x ? node.xmax : node.ymax;
@@ -151,8 +173,18 @@ static std::vector<double> collect_ranked_split_candidates(
         double right_area = split_x ? (node.xmax - L) * node.height()
                                     : node.width() * (node.ymax - L);
 
-        bool capacity_ok = (left_area  >= used_left ) &&
-                           (right_area >= used_right);
+        // 扣除 fixed module 在各側的佔用，得到可用面積
+        const double fa_l = fixed_area_in_rect(fixed_ids, modules,
+            node.xmin, node.ymin,
+            split_x ? L : node.xmax,
+            split_x ? node.ymax : L);
+        const double fa_r = fixed_area_in_rect(fixed_ids, modules,
+            split_x ? L : node.xmin,
+            split_x ? node.ymin : L,
+            node.xmax, node.ymax);
+
+        bool capacity_ok = ((left_area  - fa_l) >= used_left  - 1e-9) &&
+                           ((right_area - fa_r) >= used_right - 1e-9);
 
         if (capacity_ok)
             pool.push_back({L, cross_area});
@@ -184,7 +216,8 @@ static bool validate_final_split(
     const std::vector<int>&      left_mods,
     const std::vector<int>&      right_mods,
     const std::vector<int>&      left_tsvs,
-    const std::vector<int>&      right_tsvs)
+    const std::vector<int>&      right_tsvs,
+    const std::vector<int>&      fixed_ids)
 {
     double used_left = 0.0, used_right = 0.0;
     for (int mid : left_mods)  used_left  += modules[mid].area();
@@ -198,7 +231,18 @@ static bool validate_final_split(
     double right_area = split_x ? (node.xmax - L) * node.height()
                                   : node.width() * (node.ymax - L);
 
-    if (left_area < used_left - 1e-9 || right_area < used_right - 1e-9)
+    // 扣除 fixed module 在各側的佔用
+    const double fa_l = fixed_area_in_rect(fixed_ids, modules,
+        node.xmin, node.ymin,
+        split_x ? L : node.xmax,
+        split_x ? node.ymax : L);
+    const double fa_r = fixed_area_in_rect(fixed_ids, modules,
+        split_x ? L : node.xmin,
+        split_x ? node.ymin : L,
+        node.xmax, node.ymax);
+
+    if ((left_area  - fa_l) < used_left  - 1e-9 ||
+        (right_area - fa_r) < used_right - 1e-9)
         return false;
 
     double left_max_short  = 0.0;
@@ -250,16 +294,25 @@ static bool rects_overlap_xy(
     return true;
 }
 
-// 同一子集合內 module / TSV 是否有任意兩個幾何重疊
+// 同一子集合內 module / TSV 是否有任意兩個幾何重疊（包含與 fixed 障礙物的碰撞）
 static bool entity_group_has_overlap(
     const std::vector<int>&      mod_ids,
     const std::vector<int>&      tsv_ids,
     const std::vector<Module>&   modules,
     const std::vector<TSV>&      tsvs,
     double                       tsv_w,
-    double                       tsv_h)
+    double                       tsv_h,
+    const std::vector<int>&      fixed_ids)
 {
     struct BB { double lx, ly, rx, ry; };
+    // fixed 障礙物先進 bb（作為只參與「被撞」側，不互相檢查）
+    std::vector<BB> fixed_bb;
+    fixed_bb.reserve(fixed_ids.size());
+    for (int fid : fixed_ids) {
+        const Module& m = modules[fid];
+        fixed_bb.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+    }
+
     std::vector<BB> bb;
     bb.reserve(mod_ids.size() + tsv_ids.size());
     for (int mid : mod_ids) {
@@ -272,11 +325,20 @@ static bool entity_group_has_overlap(
         const TSV& t = tsvs[tid];
         bb.push_back({ t.x - hw, t.y - hh, t.x + hw, t.y + hh });
     }
+    // movable vs movable（含 TSV）
     for (size_t i = 0; i < bb.size(); ++i) {
         for (size_t j = i + 1; j < bb.size(); ++j) {
             if (rects_overlap_xy(
                     bb[i].lx, bb[i].ly, bb[i].rx, bb[i].ry,
                     bb[j].lx, bb[j].ly, bb[j].rx, bb[j].ry))
+                return true;
+        }
+    }
+    // movable vs fixed
+    for (const auto& a : bb) {
+        for (const auto& f : fixed_bb) {
+            if (rects_overlap_xy(a.lx, a.ly, a.rx, a.ry,
+                                 f.lx, f.ly, f.rx, f.ry))
                 return true;
         }
     }
@@ -407,7 +469,8 @@ static double rebalance_split_line_to_side_area_ratio(
     const std::vector<int>& fixed_left_mods,
     const std::vector<int>& fixed_right_mods,
     const std::vector<int>& fixed_left_tsvs,
-    const std::vector<int>& fixed_right_tsvs)
+    const std::vector<int>& fixed_right_tsvs,
+    const std::vector<int>& fixed_obstacle_ids)
 {
     const double lo   = split_x ? node.xmin : node.ymin;
     const double hi   = split_x ? node.xmax : node.ymax;
@@ -424,17 +487,6 @@ static double rebalance_split_line_to_side_area_ratio(
         const double denom = used_left + used_right;
         if (denom <= 1e-12)
             return L;
-
-        double L_bal = split_x
-            ? (used_left * node.xmax + used_right * node.xmin) / denom
-            : (used_left * node.ymax + used_right * node.ymin) / denom;
-        // re-balance 可跨越 min/max split ratio，但仍不能超出區域邊界
-        L_bal = std::max(lo + 1e-9, std::min(hi - 1e-9, L_bal));
-
-        double left_area  = split_x ? (L_bal - node.xmin) * node.height()
-                                    : node.width() * (L_bal - node.ymin);
-        double right_area = split_x ? (node.xmax - L_bal) * node.height()
-                                    : node.width() * (node.ymax - L_bal);
 
         double left_max_short  = 0.0;
         double right_max_short = 0.0;
@@ -456,13 +508,54 @@ static double rebalance_split_line_to_side_area_ratio(
                    (rw + 1e-12 >= right_max_short) && (rh + 1e-12 >= right_max_short);
         };
 
+        // 幾何可行時，初始 L_bal 就用「扣除 fixed 後的可用面積比例」決定，
+        // 而不是只用幾何面積比例。
+        const double geom_lo = split_x ? (node.xmin + left_max_short)
+                                       : (node.ymin + left_max_short);
+        const double geom_hi = split_x ? (node.xmax - right_max_short)
+                                       : (node.ymax - right_max_short);
+        if (geom_lo > geom_hi + 1e-9)
+            return L;
+        const double cut_lo = std::max(lo + 1e-9, geom_lo);
+        const double cut_hi = std::min(hi - 1e-9, geom_hi);
+        if (cut_lo > cut_hi + 1e-9)
+            return L;
+
+        const double target_ratio = used_left / std::max(1e-12, used_right);
+        auto ratio_diff = [&](double cut) {
+            const double la = split_x ? (cut - node.xmin) * node.height()
+                                      : node.width() * (cut - node.ymin);
+            const double ra = split_x ? (node.xmax - cut) * node.height()
+                                      : node.width() * (node.ymax - cut);
+            const double fa_l = fixed_area_in_rect(fixed_obstacle_ids, modules,
+                node.xmin, node.ymin,
+                split_x ? cut : node.xmax,
+                split_x ? node.ymax : cut);
+            const double fa_r = fixed_area_in_rect(fixed_obstacle_ids, modules,
+                split_x ? cut : node.xmin,
+                split_x ? node.ymin : cut,
+                node.xmax, node.ymax);
+            const double free_l = std::max(1e-12, la - fa_l);
+            const double free_r = std::max(1e-12, ra - fa_r);
+            return std::fabs((free_l / free_r) - target_ratio);
+        };
+
+        double L_bal = cut_lo;
+        double best_diff = std::numeric_limits<double>::infinity();
+        const int samples = 121;
+        for (int s = 0; s < samples; ++s) {
+            const double t = static_cast<double>(s) / static_cast<double>(samples - 1);
+            const double cut = cut_lo + (cut_hi - cut_lo) * t;
+            const double d = ratio_diff(cut);
+            if (d < best_diff) {
+                best_diff = d;
+                L_bal = cut;
+            }
+        }
+
         bool geom_ok = geom_ok_with(L_bal);
         if (!geom_ok) {
             // 幾何不合法時，不直接 return；把切割線推到滿足 max_short 的可行範圍。
-            const double geom_lo = split_x ? (node.xmin + left_max_short)
-                                           : (node.ymin + left_max_short);
-            const double geom_hi = split_x ? (node.xmax - right_max_short)
-                                           : (node.ymax - right_max_short);
             if (geom_lo > geom_hi + 1e-9) {
                 // 該固定左右分組本身幾何不可行
                 return L;
@@ -472,12 +565,22 @@ static double rebalance_split_line_to_side_area_ratio(
         }
 
         // L_bal 若被幾何修正過，容量也要重算
-        left_area  = split_x ? (L_bal - node.xmin) * node.height()
-                             : node.width() * (L_bal - node.ymin);
-        right_area = split_x ? (node.xmax - L_bal) * node.height()
-                             : node.width() * (node.ymax - L_bal);
+        const double left_area  = split_x ? (L_bal - node.xmin) * node.height()
+                                          : node.width() * (L_bal - node.ymin);
+        const double right_area = split_x ? (node.xmax - L_bal) * node.height()
+                                          : node.width() * (node.ymax - L_bal);
+        // 扣除 fixed module 在各側的佔用
+        const double fa_l = fixed_area_in_rect(fixed_obstacle_ids, modules,
+            node.xmin, node.ymin,
+            split_x ? L_bal : node.xmax,
+            split_x ? node.ymax : L_bal);
+        const double fa_r = fixed_area_in_rect(fixed_obstacle_ids, modules,
+            split_x ? L_bal : node.xmin,
+            split_x ? node.ymin : L_bal,
+            node.xmax, node.ymax);
         const bool capacity_ok2 =
-            (left_area >= used_left - 1e-9) && (right_area >= used_right - 1e-9);
+            (left_area  - fa_l >= used_left  - 1e-9) &&
+            (right_area - fa_r >= used_right - 1e-9);
 
         if (!capacity_ok2 || !geom_ok)
             return L;
@@ -495,7 +598,8 @@ static void legalize_leaf(PartitionNode&              leaf,
                           std::vector<Module>&       modules,
                           std::vector<TSV>&          tsvs,
                           double                     tsv_w,
-                          double                     tsv_h);
+                          double                     tsv_h,
+                          const std::vector<int>&    fixed_ids);
 
 static void legalize_fallback_merged_firstfit(
     PartitionNode&              region,
@@ -507,7 +611,8 @@ static void legalize_fallback_merged_firstfit(
     const std::vector<int>&    right_tsvs,
     bool                       keep_left,
     double                     tsv_w,
-    double                     tsv_h);
+    double                     tsv_h,
+    const std::vector<int>&    fixed_ids);
 
 // ============================================================
 // partition: 遞迴 Bi-partitioning 主體
@@ -515,7 +620,8 @@ static void legalize_fallback_merged_firstfit(
 static void partition(PartitionNode&         node,
                       std::vector<Module>&    modules,
                       std::vector<TSV>&       tsvs,
-                      const PartitionConfig&  pcfg)
+                      const PartitionConfig&  pcfg,
+                      const std::vector<int>& fixed_ids)
 {
     // ---- 終止條件：module 數 ≤ leaf_threshold ----
     int mcount = static_cast<int>(node.module_ids.size());
@@ -555,7 +661,7 @@ static void partition(PartitionNode&         node,
     const double split_lo = split_x ? node.xmin : node.ymin;
     const double split_hi = split_x ? node.xmax : node.ymax;
 
-    std::vector<double> ranked_Ls = collect_ranked_split_candidates(node, modules, tsvs, pcfg, split_x);
+    std::vector<double> ranked_Ls = collect_ranked_split_candidates(node, modules, tsvs, pcfg, split_x, fixed_ids);
     if (ranked_Ls.empty())
         ranked_Ls.push_back((split_lo + split_hi) * 0.5);
 
@@ -608,11 +714,11 @@ static void partition(PartitionNode&         node,
 
         L = rebalance_split_line_to_side_area_ratio(
             node, modules, tsvs, pcfg, split_x, L,
-            left_mods, right_mods, left_tsvs, right_tsvs);
+            left_mods, right_mods, left_tsvs, right_tsvs, fixed_ids);
         L = round_split_line_to_integer(L, split_lo, split_hi);
 
         if (!validate_final_split(node, modules, pcfg, split_x, L,
-                left_mods, right_mods, left_tsvs, right_tsvs))
+                left_mods, right_mods, left_tsvs, right_tsvs, fixed_ids))
             continue;
 
         const int nL = static_cast<int>(left_mods.size());
@@ -651,15 +757,15 @@ static void partition(PartitionNode&         node,
             tmp_r.module_ids = right_mods;
             tmp_r.tsv_ids    = right_tsvs;
 
-            legalize_leaf(tmp_l, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height);
-            legalize_leaf(tmp_r, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height);
+            legalize_leaf(tmp_l, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
+            legalize_leaf(tmp_r, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
 
             const bool ov_l =
                 entity_group_has_overlap(left_mods, left_tsvs, modules, tsvs,
-                    pcfg.tsv_width, pcfg.tsv_height);
+                    pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
             const bool ov_r =
                 entity_group_has_overlap(right_mods, right_tsvs, modules, tsvs,
-                    pcfg.tsv_width, pcfg.tsv_height);
+                    pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
 
             if (ov_l || ov_r) {
                 std::cout << "[Partition] split_retry: overlap after legalize_leaf on dual-leaf split "
@@ -705,7 +811,7 @@ static void partition(PartitionNode&         node,
 
         L = rebalance_split_line_to_side_area_ratio(
             node, modules, tsvs, pcfg, split_x, L,
-            left_mods, right_mods, left_tsvs, right_tsvs);
+            left_mods, right_mods, left_tsvs, right_tsvs, fixed_ids);
         L = round_split_line_to_integer(L, split_lo, split_hi);
         if (max_tries > 1) {
             std::cout << "[Partition] split_retry exhausted tier=T" << node.tier_id
@@ -751,15 +857,15 @@ static void partition(PartitionNode&         node,
         tmp_r.module_ids = right_mods;
         tmp_r.tsv_ids    = right_tsvs;
 
-        legalize_leaf(tmp_l, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height);
-        legalize_leaf(tmp_r, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height);
+        legalize_leaf(tmp_l, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
+        legalize_leaf(tmp_r, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
 
         const bool ov_l =
             entity_group_has_overlap(left_mods, left_tsvs, modules, tsvs,
-                pcfg.tsv_width, pcfg.tsv_height);
+                pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
         const bool ov_r =
             entity_group_has_overlap(right_mods, right_tsvs, modules, tsvs,
-                pcfg.tsv_width, pcfg.tsv_height);
+                pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
         const bool lok = !ov_l;
         const bool rok = !ov_r;
 
@@ -777,7 +883,7 @@ static void partition(PartitionNode&         node,
                       << " depth=" << node.depth << "\n";
             legalize_fallback_merged_firstfit(node, modules, tsvs,
                 left_mods, right_mods, left_tsvs, right_tsvs,
-                true, pcfg.tsv_width, pcfg.tsv_height);
+                true, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
             node.skip_leaf_legalize = true;
             return;
         }
@@ -786,7 +892,7 @@ static void partition(PartitionNode&         node,
                       << " depth=" << node.depth << "\n";
             legalize_fallback_merged_firstfit(node, modules, tsvs,
                 left_mods, right_mods, left_tsvs, right_tsvs,
-                false, pcfg.tsv_width, pcfg.tsv_height);
+                false, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
             node.skip_leaf_legalize = true;
             return;
         }
@@ -794,7 +900,7 @@ static void partition(PartitionNode&         node,
         std::cout << "[Partition] fallback_merge: both overlap, full-region legalize_leaf tier=T"
                   << node.tier_id << " depth=" << node.depth << "\n";
         restore_partition_entities(node, modules, tsvs, snap_mx, snap_my, snap_tx, snap_ty);
-        legalize_leaf(node, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height);
+        legalize_leaf(node, modules, tsvs, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
         node.skip_leaf_legalize = true;
         return;
     }
@@ -835,8 +941,8 @@ static void partition(PartitionNode&         node,
     }
 
     // ---- 遞迴 ----
-    partition(*left_node,  modules, tsvs, pcfg);
-    partition(*right_node, modules, tsvs, pcfg);
+    partition(*left_node,  modules, tsvs, pcfg, fixed_ids);
+    partition(*right_node, modules, tsvs, pcfg, fixed_ids);
 
     node.left  = std::move(left_node);
     node.right = std::move(right_node);
@@ -858,7 +964,8 @@ static void legalize_fallback_merged_firstfit(
     const std::vector<int>&    right_tsvs,
     bool                       keep_left,
     double                     tsv_w,
-    double                     tsv_h)
+    double                     tsv_h,
+    const std::vector<int>&    fixed_ids)
 {
     struct Rect { double lx, ly, rx, ry; };
 
@@ -877,10 +984,8 @@ static void legalize_fallback_merged_firstfit(
         keep_left ? left_tsvs : empty_tsvs;
 
     if (keep_left) {
-        // keep left(bottom)：原本邏輯不變，凍結左側 tsv；可動右側 tsv 走 first-fit。
         move_tsvs_combined = right_tsvs;
     } else {
-        // keep right(top)：凍結右側 tsv 也要走 first-fit（與左側 tsv 一起納入可動集合）。
         move_tsvs_combined = left_tsvs;
         move_tsvs_combined.insert(move_tsvs_combined.end(),
                                    right_tsvs.begin(), right_tsvs.end());
@@ -889,6 +994,17 @@ static void legalize_fallback_merged_firstfit(
 
     std::vector<Rect> placed;
     placed.reserve(frozen_mods.size() + frozen_tsvs.size() + move_mods.size() + move_tsvs.size());
+
+    // 把 fixed 障礙物先放進 placed（從 per-tier fixed list 中取與 region 相交者）
+    auto add_fixed_obstacles = [&]() {
+        for (int fid : fixed_ids) {
+            const Module& fm = modules[fid];
+            if (fm.rx() <= region.xmin + 1e-9 || fm.lx() >= region.xmax - 1e-9) continue;
+            if (fm.ry() <= region.ymin + 1e-9 || fm.ly() >= region.ymax - 1e-9) continue;
+            placed.push_back({ fm.lx(), fm.ly(), fm.rx(), fm.ry() });
+        }
+    };
+    add_fixed_obstacles();
 
     auto first_free_x_from_left = [&](const std::vector<Rect>& p,
                                       double                     hw,
@@ -1079,8 +1195,7 @@ static void legalize_fallback_merged_firstfit(
 
     // 依 first-fit 排擺可動 module，置於 placed 後方
     using PickFn = std::function<std::pair<double, double>(const std::vector<Rect>&, double, double)>;
-    using SortFn = std::function<bool(int, int)>;
-    auto place_move_modules = [&](const SortFn& sort_fn, const PickFn& pick_fn) {
+    auto place_move_modules = [&](const std::vector<int>& mod_order, const PickFn& pick_fn) {
         // 還原可動 module 到快照
         for (size_t i = 0; i < move_mods.size(); ++i) {
             const int mid = move_mods[i];
@@ -1089,134 +1204,184 @@ static void legalize_fallback_merged_firstfit(
             modules[mid].width  = snap_mw[i];
             modules[mid].height = snap_mh[i];
         }
-        // 重建 placed（只含凍結 module）
+        // 重建 placed（fixed 障礙物 + 凍結 module）
         placed.clear();
         placed.reserve(frozen_mods.size() + frozen_tsvs.size() + move_mods.size() + move_tsvs.size());
+        add_fixed_obstacles();
         for (int mid : frozen_mods) {
             const Module& m = modules[mid];
             placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
         }
-        // 依給定排序順序 + pick 策略排可動 module
-        std::vector<int> mod_order = move_mods;
-        std::sort(mod_order.begin(), mod_order.end(), sort_fn);
+        // 依給定模組順序 + pick 策略排可動 module
+        const int k = static_cast<int>(mod_order.size());
+        if (k == 0) return;
 
-        for (int mid : mod_order) {
-            Module&      m         = modules[mid];
-            const double ox        = m.x;
-            const double oy        = m.y;
-            const double base_w    = m.width;
-            const double base_h    = m.height;
+        std::vector<double> ox(k), oy(k), ow(k), oh(k);
+        for (int i = 0; i < k; ++i) {
+            const Module& m = modules[mod_order[i]];
+            ox[i] = m.x; oy[i] = m.y; ow[i] = m.width; oh[i] = m.height;
+        }
 
-            bool   ok     = false;
-            double best_cx = -1.0, best_cy = -1.0;
-            double best_w = base_w, best_h = base_h;
-            double best_cost = std::numeric_limits<double>::infinity();
+        std::vector<double> cur_x(k), cur_y(k), cur_w(k), cur_h(k);
+        std::vector<double> best_x(k), best_y(k), best_w(k), best_h(k);
+        double best_total_cost = std::numeric_limits<double>::infinity();
+        bool   best_found = false;
+        auto can_place_rect = [&](double lx, double ly, double rx, double ry) -> bool {
+            for (const Rect& r : placed) {
+                if (rects_overlap_xy(lx, ly, rx, ry, r.lx, r.ly, r.rx, r.ry))
+                    return false;
+            }
+            return true;
+        };
+        auto placed_has_any_overlap = [&]() -> bool {
+            for (size_t i = 0; i < placed.size(); ++i) {
+                for (size_t j = i + 1; j < placed.size(); ++j) {
+                    if (rects_overlap_xy(
+                            placed[i].lx, placed[i].ly, placed[i].rx, placed[i].ry,
+                            placed[j].lx, placed[j].ly, placed[j].rx, placed[j].ry))
+                        return true;
+                }
+            }
+            return false;
+        };
+
+        std::function<void(int, double)> dfs_place = [&](int depth, double acc_cost) {
+            if (acc_cost >= best_total_cost - 1e-12) return;
+            if (depth == k) {
+                // 只用「合法無重疊」解更新 best_total_cost，避免非法解影響剪枝
+                if (placed_has_any_overlap())
+                    return;
+                best_total_cost = acc_cost;
+                best_found = true;
+                best_x = cur_x; best_y = cur_y; best_w = cur_w; best_h = cur_h;
+                return;
+            }
+
+            const double base_w = ow[depth];
+            const double base_h = oh[depth];
+            struct Cand { double cx, cy, w, h, cost; };
+            std::vector<Cand> cands;
+            cands.reserve(2);
 
             for (int rot = 0; rot <= 1; ++rot) {
                 const double w_i  = (rot == 0) ? base_w : base_h;
                 const double h_i  = (rot == 0) ? base_h : base_w;
                 const double hw_i = w_i * 0.5;
                 const double hh_i = h_i * 0.5;
-
                 if (region.ymin + hh_i > region.ymax - hh_i + 1e-12) continue;
-
                 const auto xy = pick_fn(placed, hw_i, hh_i);
                 if (xy.first < 0.0) continue;
-
-                const double cost = std::abs(xy.first - ox) + std::abs(xy.second - oy);
-                if (cost < best_cost) {
-                    best_cost = cost;
-                    best_cx   = xy.first;
-                    best_cy   = xy.second;
-                    best_w    = w_i;
-                    best_h    = h_i;
-                    ok        = true;
-                }
+                const double c = std::abs(xy.first - ox[depth]) + std::abs(xy.second - oy[depth]);
+                cands.push_back({ xy.first, xy.second, w_i, h_i, c });
             }
 
-            if (ok) {
-                m.x      = best_cx;
-                m.y      = best_cy;
-                m.width  = best_w;
-                m.height = best_h;
-                placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
-            } else {
-                const double hw_i = m.width * 0.5;
-                const double hh_i = m.height * 0.5;
-                m.x = clamp(m.x, region.xmin + hw_i, region.xmax - hw_i);
-                m.y = clamp(m.y, region.ymin + hh_i, region.ymax - hh_i);
-                placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
+            if (cands.empty()) {
+                // 幾何上無可行 first-fit 時，優先選擇「能放進 bbox」的朝向（含旋轉）。
+                const double box_w = region.xmax - region.xmin;
+                const double box_h = region.ymax - region.ymin;
+                const bool fit0  = (base_w <= box_w + 1e-12 && base_h <= box_h + 1e-12);
+                const bool fit90 = (base_h <= box_w + 1e-12 && base_w <= box_h + 1e-12);
+                const bool use_rot = (!fit0 && fit90);
+
+                const double w_sel = use_rot ? base_h : base_w;
+                const double h_sel = use_rot ? base_w : base_h;
+                const double hw_i = w_sel * 0.5;
+                const double hh_i = h_sel * 0.5;
+                const double cx = clamp(ox[depth], region.xmin + hw_i, region.xmax - hw_i);
+                const double cy = clamp(oy[depth], region.ymin + hh_i, region.ymax - hh_i);
+                cur_x[depth] = cx; cur_y[depth] = cy; cur_w[depth] = w_sel; cur_h[depth] = h_sel;
+                if (!can_place_rect(cx - hw_i, cy - hh_i, cx + hw_i, cy + hh_i))
+                    return;
+                const double c = std::abs(cx - ox[depth]) + std::abs(cy - oy[depth]);
+                placed.push_back({ cx - hw_i, cy - hh_i, cx + hw_i, cy + hh_i });
+                dfs_place(depth + 1, acc_cost + c);
+                placed.pop_back();
+                return;
             }
+
+            // 當 0°/90° 都可行時，這裡會走兩個分支，等同窮舉所有旋轉組合。
+            for (const auto& cand : cands) {
+                const double hw_i = cand.w * 0.5;
+                const double hh_i = cand.h * 0.5;
+                cur_x[depth] = cand.cx; cur_y[depth] = cand.cy; cur_w[depth] = cand.w; cur_h[depth] = cand.h;
+                placed.push_back({ cand.cx - hw_i, cand.cy - hh_i, cand.cx + hw_i, cand.cy + hh_i });
+                dfs_place(depth + 1, acc_cost + cand.cost);
+                placed.pop_back();
+            }
+        };
+
+        dfs_place(0, 0.0);
+        if (!best_found) return;
+
+        for (int i = 0; i < k; ++i) {
+            Module& m = modules[mod_order[i]];
+            m.x = best_x[i];
+            m.y = best_y[i];
+            m.width = best_w[i];
+            m.height = best_h[i];
+        }
+
+        // 以最佳解重建可動 module 佔據矩形
+        for (int i = 0; i < k; ++i) {
+            const double hw_i = best_w[i] * 0.5;
+            const double hh_i = best_h[i] * 0.5;
+            placed.push_back({ best_x[i] - hw_i, best_y[i] - hh_i,
+                               best_x[i] + hw_i, best_y[i] + hh_i });
         }
     };
 
-    // module-only overlap check（只對 all_mods 做，不含 TSV）
+    // module-only overlap check（包含與 fixed 障礙物的碰撞）
     auto module_has_overlap = [&]() -> bool {
         std::vector<int> all_mods;
         all_mods.reserve(left_mods.size() + right_mods.size());
         all_mods.insert(all_mods.end(), left_mods.begin(), left_mods.end());
         all_mods.insert(all_mods.end(), right_mods.begin(), right_mods.end());
         std::vector<int> empty;
-        return entity_group_has_overlap(all_mods, empty, modules, tsvs, tsv_w, tsv_h);
+        return entity_group_has_overlap(all_mods, empty, modules, tsvs, tsv_w, tsv_h, fixed_ids);
     };
 
-    // 定義 5 種排序 lambda
-    SortFn sort_x_asc     = [&](int a, int b){ return modules[a].x < modules[b].x; };
-    SortFn sort_x_desc    = [&](int a, int b){ return modules[a].x > modules[b].x; };
-    SortFn sort_y_asc     = [&](int a, int b){ return modules[a].y < modules[b].y; };
-    SortFn sort_y_desc    = [&](int a, int b){ return modules[a].y > modules[b].y; };
-    SortFn sort_area_desc = [&](int a, int b){
-        return modules[a].width * modules[a].height > modules[b].width * modules[b].height;
-    };
-
-    // (sort, scan, name) 嘗試清單；最多 10 組，找到第一個無 overlap 即停止
-    struct Attempt { SortFn sort_fn; PickFn pick_fn; const char* name; };
+    // (scan, name) 嘗試清單；每個掃描策略下窮舉所有 module 順序
+    struct Attempt { PickFn pick_fn; const char* name; };
     std::vector<Attempt> attempts;
-    attempts.reserve(10);
+    attempts.reserve(2);
 
-    auto push_att = [&](SortFn sf, PickFn pf, const char* n) {
-        attempts.push_back({ std::move(sf), std::move(pf), n });
+    auto push_att = [&](PickFn pf, const char* n) {
+        attempts.push_back({ std::move(pf), n });
     };
 
     if (!keep_left) {
         // 可動側在左/下；掃描：y 下→上/上→下，x 左→右
-        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "x_asc+y_bot_xleft");
-        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "x_asc+y_top_xleft");
-        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "x_desc+y_bot_xleft");
-        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "x_desc+y_top_xleft");
-        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "y_asc+y_bot_xleft");
-        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "y_asc+y_top_xleft");
-        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "y_desc+y_bot_xleft");
-        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "y_desc+y_top_xleft");
-        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "area+y_bot_xleft");
-        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "area+y_top_xleft");
+        push_att([&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_left(p,hw,hh); }, "y_bot_xleft");
+        push_att([&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_left   (p,hw,hh); }, "y_top_xleft");
     } else {
         // 可動側在右/上；掃描：y 上→下/下→上，x 右→左
-        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "x_desc+y_top_xright");
-        push_att(sort_x_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "x_desc+y_bot_xright");
-        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "x_asc+y_top_xright");
-        push_att(sort_x_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "x_asc+y_bot_xright");
-        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "y_desc+y_top_xright");
-        push_att(sort_y_desc,    [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "y_desc+y_bot_xright");
-        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "y_asc+y_top_xright");
-        push_att(sort_y_asc,     [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "y_asc+y_bot_xright");
-        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "area+y_top_xright");
-        push_att(sort_area_desc, [&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "area+y_bot_xright");
+        push_att([&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_top_then_x_from_right   (p,hw,hh); }, "y_top_xright");
+        push_att([&](const std::vector<Rect>& p, double hw, double hh){ return first_free_y_bottom_then_x_from_right(p,hw,hh); }, "y_bot_xright");
     }
 
-    // 依序嘗試各組合，遇到第一個無 overlap 即停止
-    for (size_t i = 0; i < attempts.size(); ++i) {
-        place_move_modules(attempts[i].sort_fn, attempts[i].pick_fn);
-        if (!module_has_overlap()) break;
-        if (i + 1 < attempts.size()) {
+    // 依序嘗試掃描策略；每個策略下窮舉所有 module 順序，遇到第一個無 overlap 即停止
+    bool module_sat = false;
+    for (size_t i = 0; i < attempts.size() && !module_sat; ++i) {
+        std::vector<int> mod_order = move_mods;
+        std::sort(mod_order.begin(), mod_order.end());
+        do {
+            place_move_modules(mod_order, attempts[i].pick_fn);
+            if (!module_has_overlap()) {
+                module_sat = true;
+                break;
+            }
+        } while (std::next_permutation(mod_order.begin(), mod_order.end()));
+
+        if (!module_sat && i + 1 < attempts.size()) {
             std::cout << "[Partition] fallback_merge_firstfit: overlap ["
                       << attempts[i].name << "] -> retry ["
                       << attempts[i + 1].name << "] T" << region.tier_id
                       << " d=" << region.depth << "\n";
-        } else {
-            std::cout << "[Partition] fallback_merge_firstfit: module UNSAT (all combos fail) "
-                      << "T" << region.tier_id << " d=" << region.depth << "\n";
         }
+    }
+    if (!module_sat) {
+        std::cout << "[Partition] fallback_merge_firstfit: module UNSAT (all permutations fail) "
+                  << "T" << region.tier_id << " d=" << region.depth << "\n";
     }
 
     for (int tid : frozen_tsvs) {
@@ -1369,7 +1534,8 @@ static void legalize_leaf(PartitionNode&              leaf,
                            std::vector<Module>&       modules,
                            std::vector<TSV>&          tsvs,
                            double                     tsv_w,
-                           double                     tsv_h)
+                           double                     tsv_h,
+                           const std::vector<int>&    fixed_ids)
 {
     struct Rect { double lx, ly, rx, ry; };
 
@@ -1424,6 +1590,18 @@ static void legalize_leaf(PartitionNode&              leaf,
 
     std::vector<Rect> placed;
     placed.reserve(leaf.module_ids.size() + leaf.tsv_ids.size());
+
+    // 從 per-tier fixed_ids 中取與 leaf 相交者當障礙物
+    auto rebuild_fixed_obstacles = [&]() {
+        for (int fid : fixed_ids) {
+            const Module& fm = modules[fid];
+            if (fm.rx() <= leaf.xmin + 1e-9 || fm.lx() >= leaf.xmax - 1e-9) continue;
+            if (fm.ry() <= leaf.ymin + 1e-9 || fm.ly() >= leaf.ymax - 1e-9) continue;
+            placed.push_back({ fm.lx(), fm.ly(), fm.rx(), fm.ry() });
+        }
+    };
+    // fixed module 先加入 placed 作為障礙，不參與 first-fit 擺放
+    rebuild_fixed_obstacles();
 
     // Module：y 由下往上掃描（邊界與已放矩形產生的候選高度）
     auto collect_y_levels_ascending = [&](double hh, const std::vector<Rect>& current_placed) {
@@ -1502,10 +1680,16 @@ static void legalize_leaf(PartitionNode&              leaf,
 
     // ============================================================
     // A) 模組：窮舉排列順序，選位移總和最小的可行排法
+    //    fixed module 已在上方加入 placed，此處僅處理可動 module
     // ============================================================
-    const int n = static_cast<int>(leaf.module_ids.size());
+    std::vector<int> movable_leaf_ids;
+    movable_leaf_ids.reserve(leaf.module_ids.size());
+    for (int mid : leaf.module_ids)
+        if (!modules[mid].is_fixed) movable_leaf_ids.push_back(mid);
+
+    const int n = static_cast<int>(movable_leaf_ids.size());
     if (n > 0) {
-        std::vector<int> ids = leaf.module_ids; // leaf 內 module 的全域索引
+        std::vector<int> ids = movable_leaf_ids; // leaf 內可動 module 的全域索引
 
         std::vector<double> orig_x(n), orig_y(n);
         std::vector<double> w0(n), h0(n); // 用來支援 90 度旋轉（寬高互換）
@@ -1527,6 +1711,7 @@ static void legalize_leaf(PartitionNode&              leaf,
 
         do {
             placed.clear();
+            rebuild_fixed_obstacles();
             std::vector<double> temp_x(n, 0.0), temp_y(n, 0.0);
             std::vector<char>   temp_rot(n, 0);
 
@@ -1585,6 +1770,7 @@ static void legalize_leaf(PartitionNode&              leaf,
         if (best_found) {
             // 寫回 module 位置，並重建 placed
             placed.clear();
+            rebuild_fixed_obstacles();
             for (int i = 0; i < n; ++i) {
                 Module& m = modules[ids[i]];
                 m.x = best_x[i];
@@ -1601,6 +1787,7 @@ static void legalize_leaf(PartitionNode&              leaf,
                       [&](int a, int b){ return modules[a].x < modules[b].x; });
 
             placed.clear();
+            rebuild_fixed_obstacles();
             for (int mid : greedy_order) {
                 Module& m = modules[mid];
 
@@ -1645,9 +1832,19 @@ static void legalize_leaf(PartitionNode&              leaf,
                     m.height = best_h;
                     placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
                 } else {
-                    // 幾何上無解時，至少把模組夾回 leaf 邊界（可能仍會與既有矩形重疊）
-                    const double hw_i = m.width * 0.5;
-                    const double hh_i = m.height * 0.5;
+                    // 幾何上無可行 first-fit 時，優先選擇能放進 leaf bbox 的朝向（含旋轉）。
+                    const double box_w = leaf.xmax - leaf.xmin;
+                    const double box_h = leaf.ymax - leaf.ymin;
+                    const bool fit0  = (base_w <= box_w + 1e-12 && base_h <= box_h + 1e-12);
+                    const bool fit90 = (base_h <= box_w + 1e-12 && base_w <= box_h + 1e-12);
+                    const bool use_rot = (!fit0 && fit90);
+
+                    const double w_sel = use_rot ? base_h : base_w;
+                    const double h_sel = use_rot ? base_w : base_h;
+                    const double hw_i = w_sel * 0.5;
+                    const double hh_i = h_sel * 0.5;
+                    m.width = w_sel;
+                    m.height = h_sel;
                     m.x = clamp(m.x, leaf.xmin + hw_i, leaf.xmax - hw_i);
                     m.y = clamp(m.y, leaf.ymin + hh_i, leaf.ymax - hh_i);
                     placed.push_back({ m.lx(), m.ly(), m.rx(), m.ry() });
@@ -1733,9 +1930,14 @@ void PlacementEngine::partition_all_tiers(const PartitionConfig& pcfg)
         root.xmin    = 0.0;   root.xmax = die.width;
         root.ymin    = 0.0;   root.ymax = die.height;
 
-        // 蒐集此 tier 的可移動 module
+        // 分離 fixed 與 movable module：
+        // fixed 不進 partition 集合，只作為全域障礙物；movable 才參與 partition
+        std::vector<int> fixed_ids;
         for (const Module& m : modules_) {
-            if (!m.is_terminal && m.tier_id == t)
+            if (m.is_terminal || m.tier_id != t) continue;
+            if (m.is_fixed)
+                fixed_ids.push_back(m.id);
+            else
                 root.module_ids.push_back(m.id);
         }
 
@@ -1753,14 +1955,14 @@ void PlacementEngine::partition_all_tiers(const PartitionConfig& pcfg)
                   << init_tsvs << " TSVs\n";
 
         // ---- 遞迴 partition ----
-        partition(root, modules_, tsvs_, pcfg);
+        partition(root, modules_, tsvs_, pcfg, fixed_ids);
 
         // ---- Leaf legalization：在每個 leaf 內窮舉排法並避免重疊 ---- 0318
         std::function<void(PartitionNode&)> dfs_legalize;
         dfs_legalize = [&](PartitionNode& node) {
             if (node.is_leaf()) {
                 if (!node.skip_leaf_legalize)
-                    legalize_leaf(node, modules_, tsvs_, pcfg.tsv_width, pcfg.tsv_height);
+                    legalize_leaf(node, modules_, tsvs_, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
                 return;
             }
             if (node.left) dfs_legalize(*node.left);
