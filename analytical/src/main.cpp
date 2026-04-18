@@ -1,6 +1,7 @@
 // 3D IC Analytical Floorplanner - 主程式入口
 // 用法：./analytical <block_file> <net_file> [output_file] [constraint_file]
 #include "floorplanner.h"
+#include "util.h"
 
 #include <iostream>
 #include <string>
@@ -68,6 +69,9 @@ int main(int argc, char* argv[])
     std::cout << "\n[Solve] Starting analytical placement...\n";
     engine.solve();
 
+    // ---- 記錄 analytical 完成後的 module 位置 ----
+    const auto snap_analytical = record_positions(engine);
+
     // ---- 建立 TSV 清單 ----
     engine.build_tsvs();
 
@@ -104,6 +108,11 @@ int main(int argc, char* argv[])
 
     // ---- TSV：依 net bbox 周長排序，在兩層 bbox 幾何區域內 first-fit 重排 ----
     engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
+
+    // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
+    const auto snap_legal = record_positions(engine);
+    write_displacement_report(snap_analytical, snap_legal,
+                              output_file + "_displacement.txt");
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();

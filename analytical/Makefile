@@ -1,7 +1,7 @@
 CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I include
 TARGET   := analytical
-SRCS     := src/main.cpp src/floorplanner.cpp src/parser.cpp src/legalize.cpp
+SRCS     := src/main.cpp src/floorplanner.cpp src/parser.cpp src/legalize.cpp src/util.cpp
 OBJS     := $(SRCS:.cpp=.o)
 
 .PHONY: all clean run
