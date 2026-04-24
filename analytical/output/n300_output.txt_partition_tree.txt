@@ -1,70 +1,72 @@
 ====== Tier 0 ======
-[T0 d=0] region=[0.0,333.0]x[0.0,333.0] mods=107 tsvs=594 split_y=128.00
-  L [T0 d=1] region=[0.0,333.0]x[0.0,128.0] mods=44 tsvs=273 split_x=158.00
-  L   L [T0 d=2] region=[0.0,158.0]x[0.0,128.0] mods=21 tsvs=103 split_x=90.00
-  L   L   L [T0 d=3] region=[0.0,90.0]x[0.0,128.0] mods=13 tsvs=41 split_y=76.00
-  L   L   L   L [T0 d=4] region=[0.0,90.0]x[0.0,76.0] mods=7 tsvs=19 [LEAF]
-  L   L   L   R [T0 d=4] region=[0.0,90.0]x[76.0,128.0] mods=6 tsvs=22 [LEAF]
-  L   L   R [T0 d=3] region=[90.0,158.0]x[0.0,128.0] mods=8 tsvs=62 [LEAF]
-  L   R [T0 d=2] region=[158.0,333.0]x[0.0,128.0] mods=23 tsvs=170 split_x=275.00
-  L   R   L [T0 d=3] region=[158.0,275.0]x[0.0,128.0] mods=16 tsvs=98 split_y=53.00
-  L   R   L   L [T0 d=4] region=[158.0,275.0]x[0.0,53.0] mods=7 tsvs=37 [LEAF]
-  L   R   L   R [T0 d=4] region=[158.0,275.0]x[53.0,128.0] mods=9 tsvs=61 [LEAF]
-  L   R   R [T0 d=3] region=[275.0,333.0]x[0.0,128.0] mods=7 tsvs=72 [LEAF]
-  R [T0 d=1] region=[0.0,333.0]x[128.0,333.0] mods=63 tsvs=321 split_x=221.00
-  R   L [T0 d=2] region=[0.0,221.0]x[128.0,333.0] mods=44 tsvs=161 split_x=141.00
-  R   L   L [T0 d=3] region=[0.0,141.0]x[128.0,333.0] mods=29 tsvs=100 split_y=222.00
-  R   L   L   L [T0 d=4] region=[0.0,141.0]x[128.0,222.0] mods=12 tsvs=57 split_x=67.00
-  R   L   L   L   L [T0 d=5] region=[0.0,67.0]x[128.0,222.0] mods=7 tsvs=23 [LEAF]
-  R   L   L   L   R [T0 d=5] region=[67.0,141.0]x[128.0,222.0] mods=5 tsvs=34 [LEAF]
-  R   L   L   R [T0 d=4] region=[0.0,141.0]x[222.0,333.0] mods=17 tsvs=43 split_x=84.00
-  R   L   L   R   L [T0 d=5] region=[0.0,84.0]x[222.0,333.0] mods=11 tsvs=27 split_y=268.00
-  R   L   L   R   L   L [T0 d=6] region=[0.0,84.0]x[222.0,268.0] mods=5 tsvs=20 [LEAF]
-  R   L   L   R   L   R [T0 d=6] region=[0.0,84.0]x[268.0,333.0] mods=6 tsvs=7 [LEAF]
-  R   L   L   R   R [T0 d=5] region=[84.0,141.0]x[222.0,333.0] mods=6 tsvs=16 [LEAF]
-  R   L   R [T0 d=3] region=[141.0,221.0]x[128.0,333.0] mods=15 tsvs=61 split_y=215.00
-  R   L   R   L [T0 d=4] region=[141.0,221.0]x[128.0,215.0] mods=7 tsvs=42 [LEAF]
-  R   L   R   R [T0 d=4] region=[141.0,221.0]x[215.0,333.0] mods=8 tsvs=19 [LEAF]
-  R   R [T0 d=2] region=[221.0,333.0]x[128.0,333.0] mods=19 tsvs=160 split_y=259.00
-  R   R   L [T0 d=3] region=[221.0,333.0]x[128.0,259.0] mods=14 tsvs=92 split_y=205.00
-  R   R   L   L [T0 d=4] region=[221.0,333.0]x[128.0,205.0] mods=8 tsvs=56 [LEAF]
-  R   R   L   R [T0 d=4] region=[221.0,333.0]x[205.0,259.0] mods=6 tsvs=36 [LEAF]
-  R   R   R [T0 d=3] region=[221.0,333.0]x[259.0,333.0] mods=5 tsvs=68 [LEAF]
+[T0 d=0] region=[0.0,333.0]x[0.0,333.0] mods=107 tsvs=594 split_y=130.00
+  L [T0 d=1] region=[0.0,333.0]x[0.0,130.0] mods=44 tsvs=278 split_x=161.00
+  L   L [T0 d=2] region=[0.0,161.0]x[0.0,130.0] mods=21 tsvs=119 split_x=93.00
+  L   L   L [T0 d=3] region=[0.0,93.0]x[0.0,130.0] mods=13 tsvs=65 split_y=76.00
+  L   L   L   L [T0 d=4] region=[0.0,93.0]x[0.0,76.0] mods=7 tsvs=30 [LEAF]
+  L   L   L   R [T0 d=4] region=[0.0,93.0]x[76.0,130.0] mods=6 tsvs=35 [LEAF]
+  L   L   R [T0 d=3] region=[93.0,161.0]x[0.0,130.0] mods=8 tsvs=54 [LEAF]
+  L   R [T0 d=2] region=[161.0,333.0]x[0.0,130.0] mods=23 tsvs=159 split_x=276.00
+  L   R   L [T0 d=3] region=[161.0,276.0]x[0.0,130.0] mods=16 tsvs=92 split_y=54.00
+  L   R   L   L [T0 d=4] region=[161.0,276.0]x[0.0,54.0] mods=7 tsvs=39 [LEAF]
+  L   R   L   R [T0 d=4] region=[161.0,276.0]x[54.0,130.0] mods=9 tsvs=53 split_x=251.00
+  L   R   L   R   L [T0 d=5] region=[161.0,251.0]x[54.0,130.0] mods=7 tsvs=42 [LEAF]
+  L   R   L   R   R [T0 d=5] region=[251.0,276.0]x[54.0,130.0] mods=2 tsvs=11 [LEAF]
+  L   R   R [T0 d=3] region=[276.0,333.0]x[0.0,130.0] mods=7 tsvs=67 [LEAF]
+  R [T0 d=1] region=[0.0,333.0]x[130.0,333.0] mods=63 tsvs=316 split_x=221.00
+  R   L [T0 d=2] region=[0.0,221.0]x[130.0,333.0] mods=44 tsvs=161 split_x=141.00
+  R   L   L [T0 d=3] region=[0.0,141.0]x[130.0,333.0] mods=29 tsvs=98 split_y=222.00
+  R   L   L   L [T0 d=4] region=[0.0,141.0]x[130.0,222.0] mods=12 tsvs=48 split_x=67.00
+  R   L   L   L   L [T0 d=5] region=[0.0,67.0]x[130.0,222.0] mods=7 tsvs=20 [LEAF]
+  R   L   L   L   R [T0 d=5] region=[67.0,141.0]x[130.0,222.0] mods=5 tsvs=28 [LEAF]
+  R   L   L   R [T0 d=4] region=[0.0,141.0]x[222.0,333.0] mods=17 tsvs=50 split_x=85.00
+  R   L   L   R   L [T0 d=5] region=[0.0,85.0]x[222.0,333.0] mods=11 tsvs=40 split_y=268.00
+  R   L   L   R   L   L [T0 d=6] region=[0.0,85.0]x[222.0,268.0] mods=5 tsvs=29 [LEAF]
+  R   L   L   R   L   R [T0 d=6] region=[0.0,85.0]x[268.0,333.0] mods=6 tsvs=11 [LEAF]
+  R   L   L   R   R [T0 d=5] region=[85.0,141.0]x[222.0,333.0] mods=6 tsvs=10 [LEAF]
+  R   L   R [T0 d=3] region=[141.0,221.0]x[130.0,333.0] mods=15 tsvs=63 split_y=215.00
+  R   L   R   L [T0 d=4] region=[141.0,221.0]x[130.0,215.0] mods=7 tsvs=36 [LEAF]
+  R   L   R   R [T0 d=4] region=[141.0,221.0]x[215.0,333.0] mods=8 tsvs=27 [LEAF]
+  R   R [T0 d=2] region=[221.0,333.0]x[130.0,333.0] mods=19 tsvs=155 split_y=261.00
+  R   R   L [T0 d=3] region=[221.0,333.0]x[130.0,261.0] mods=14 tsvs=93 split_y=207.00
+  R   R   L   L [T0 d=4] region=[221.0,333.0]x[130.0,207.0] mods=8 tsvs=60 [LEAF]
+  R   R   L   R [T0 d=4] region=[221.0,333.0]x[207.0,261.0] mods=6 tsvs=33 [LEAF]
+  R   R   R [T0 d=3] region=[221.0,333.0]x[261.0,333.0] mods=5 tsvs=62 [LEAF]
 
 ====== Tier 1 ======
 [T1 d=0] region=[0.0,333.0]x[0.0,333.0] mods=102 tsvs=489 split_x=168.00
-  L [T1 d=1] region=[0.0,168.0]x[0.0,333.0] mods=50 tsvs=260 split_y=189.00
-  L   L [T1 d=2] region=[0.0,168.0]x[0.0,189.0] mods=28 tsvs=154 split_y=77.00
-  L   L   L [T1 d=3] region=[0.0,168.0]x[0.0,77.0] mods=11 tsvs=48 split_x=68.00
-  L   L   L   L [T1 d=4] region=[0.0,68.0]x[0.0,77.0] mods=6 tsvs=16 [LEAF]
-  L   L   L   R [T1 d=4] region=[68.0,168.0]x[0.0,77.0] mods=5 tsvs=32 [LEAF]
+  L [T1 d=1] region=[0.0,168.0]x[0.0,333.0] mods=50 tsvs=269 split_y=189.00
+  L   L [T1 d=2] region=[0.0,168.0]x[0.0,189.0] mods=28 tsvs=158 split_y=77.00
+  L   L   L [T1 d=3] region=[0.0,168.0]x[0.0,77.0] mods=11 tsvs=52 split_x=70.00
+  L   L   L   L [T1 d=4] region=[0.0,70.0]x[0.0,77.0] mods=6 tsvs=26 [LEAF]
+  L   L   L   R [T1 d=4] region=[70.0,168.0]x[0.0,77.0] mods=5 tsvs=26 [LEAF]
   L   L   R [T1 d=3] region=[0.0,168.0]x[77.0,189.0] mods=17 tsvs=106 split_x=92.00
-  L   L   R   L [T1 d=4] region=[0.0,92.0]x[77.0,189.0] mods=9 tsvs=52 split_y=123.00
-  L   L   R   L   L [T1 d=5] region=[0.0,92.0]x[77.0,123.0] mods=5 tsvs=23 [LEAF]
-  L   L   R   L   R [T1 d=5] region=[0.0,92.0]x[123.0,189.0] mods=4 tsvs=29 [LEAF]
-  L   L   R   R [T1 d=4] region=[92.0,168.0]x[77.0,189.0] mods=8 tsvs=54 [LEAF]
-  L   R [T1 d=2] region=[0.0,168.0]x[189.0,333.0] mods=22 tsvs=106 split_x=64.00
-  L   R   L [T1 d=3] region=[0.0,64.0]x[189.0,333.0] mods=7 tsvs=30 [LEAF]
-  L   R   R [T1 d=3] region=[64.0,168.0]x[189.0,333.0] mods=15 tsvs=76 split_y=272.00
-  L   R   R   L [T1 d=4] region=[64.0,168.0]x[189.0,272.0] mods=9 tsvs=55 [LEAF]
-  L   R   R   R [T1 d=4] region=[64.0,168.0]x[272.0,333.0] mods=6 tsvs=21 [LEAF]
-  R [T1 d=1] region=[168.0,333.0]x[0.0,333.0] mods=52 tsvs=229 split_y=194.00
-  R   L [T1 d=2] region=[168.0,333.0]x[0.0,194.0] mods=30 tsvs=141 split_y=85.00
-  R   L   L [T1 d=3] region=[168.0,333.0]x[0.0,85.0] mods=13 tsvs=46 split_x=255.00
-  R   L   L   L [T1 d=4] region=[168.0,255.0]x[0.0,85.0] mods=6 tsvs=28 [LEAF]
-  R   L   L   R [T1 d=4] region=[255.0,333.0]x[0.0,85.0] mods=7 tsvs=18 [LEAF]
-  R   L   R [T1 d=3] region=[168.0,333.0]x[85.0,194.0] mods=17 tsvs=95 split_x=237.00
-  R   L   R   L [T1 d=4] region=[168.0,237.0]x[85.0,194.0] mods=7 tsvs=45 [LEAF]
-  R   L   R   R [T1 d=4] region=[237.0,333.0]x[85.0,194.0] mods=10 tsvs=50 split_y=128.00
-  R   L   R   R   L [T1 d=5] region=[237.0,333.0]x[85.0,128.0] mods=4 tsvs=21 [LEAF]
-  R   L   R   R   R [T1 d=5] region=[237.0,333.0]x[128.0,194.0] mods=6 tsvs=29 [LEAF]
-  R   R [T1 d=2] region=[168.0,333.0]x[194.0,333.0] mods=22 tsvs=88 split_x=256.00
-  R   R   L [T1 d=3] region=[168.0,256.0]x[194.0,333.0] mods=11 tsvs=51 split_y=262.00
-  R   R   L   L [T1 d=4] region=[168.0,256.0]x[194.0,262.0] mods=4 tsvs=29 [LEAF]
+  L   L   R   L [T1 d=4] region=[0.0,92.0]x[77.0,189.0] mods=9 tsvs=64 split_y=125.00
+  L   L   R   L   L [T1 d=5] region=[0.0,92.0]x[77.0,125.0] mods=5 tsvs=39 [LEAF]
+  L   L   R   L   R [T1 d=5] region=[0.0,92.0]x[125.0,189.0] mods=4 tsvs=25 [LEAF]
+  L   L   R   R [T1 d=4] region=[92.0,168.0]x[77.0,189.0] mods=8 tsvs=42 [LEAF]
+  L   R [T1 d=2] region=[0.0,168.0]x[189.0,333.0] mods=22 tsvs=111 split_x=64.00
+  L   R   L [T1 d=3] region=[0.0,64.0]x[189.0,333.0] mods=7 tsvs=39 [LEAF]
+  L   R   R [T1 d=3] region=[64.0,168.0]x[189.0,333.0] mods=15 tsvs=72 split_y=271.00
+  L   R   R   L [T1 d=4] region=[64.0,168.0]x[189.0,271.0] mods=9 tsvs=50 [LEAF]
+  L   R   R   R [T1 d=4] region=[64.0,168.0]x[271.0,333.0] mods=6 tsvs=22 [LEAF]
+  R [T1 d=1] region=[168.0,333.0]x[0.0,333.0] mods=52 tsvs=220 split_y=194.00
+  R   L [T1 d=2] region=[168.0,333.0]x[0.0,194.0] mods=30 tsvs=140 split_y=85.00
+  R   L   L [T1 d=3] region=[168.0,333.0]x[0.0,85.0] mods=13 tsvs=49 split_x=254.00
+  R   L   L   L [T1 d=4] region=[168.0,254.0]x[0.0,85.0] mods=6 tsvs=25 [LEAF]
+  R   L   L   R [T1 d=4] region=[254.0,333.0]x[0.0,85.0] mods=7 tsvs=24 [LEAF]
+  R   L   R [T1 d=3] region=[168.0,333.0]x[85.0,194.0] mods=17 tsvs=91 split_x=237.00
+  R   L   R   L [T1 d=4] region=[168.0,237.0]x[85.0,194.0] mods=7 tsvs=43 [LEAF]
+  R   L   R   R [T1 d=4] region=[237.0,333.0]x[85.0,194.0] mods=10 tsvs=48 split_y=127.00
+  R   L   R   R   L [T1 d=5] region=[237.0,333.0]x[85.0,127.0] mods=4 tsvs=13 [LEAF]
+  R   L   R   R   R [T1 d=5] region=[237.0,333.0]x[127.0,194.0] mods=6 tsvs=35 [LEAF]
+  R   R [T1 d=2] region=[168.0,333.0]x[194.0,333.0] mods=22 tsvs=80 split_x=256.00
+  R   R   L [T1 d=3] region=[168.0,256.0]x[194.0,333.0] mods=11 tsvs=46 split_y=262.00
+  R   R   L   L [T1 d=4] region=[168.0,256.0]x[194.0,262.0] mods=4 tsvs=24 [LEAF]
   R   R   L   R [T1 d=4] region=[168.0,256.0]x[262.0,333.0] mods=7 tsvs=22 [LEAF]
-  R   R   R [T1 d=3] region=[256.0,333.0]x[194.0,333.0] mods=11 tsvs=37 split_y=255.00
-  R   R   R   L [T1 d=4] region=[256.0,333.0]x[194.0,255.0] mods=6 tsvs=22 [LEAF]
-  R   R   R   R [T1 d=4] region=[256.0,333.0]x[255.0,333.0] mods=5 tsvs=15 [LEAF]
+  R   R   R [T1 d=3] region=[256.0,333.0]x[194.0,333.0] mods=11 tsvs=34 split_y=254.00
+  R   R   R   L [T1 d=4] region=[256.0,333.0]x[194.0,254.0] mods=6 tsvs=17 [LEAF]
+  R   R   R   R [T1 d=4] region=[256.0,333.0]x[254.0,333.0] mods=5 tsvs=17 [LEAF]
 
 ====== Tier 2 ======
 [T2 d=0] region=[0.0,333.0]x[0.0,333.0] mods=91 tsvs=0 split_x=171.00

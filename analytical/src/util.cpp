@@ -6,7 +6,6 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
-
 std::vector<ModuleSnapshot> record_positions(const PlacementEngine& engine)
 {
     std::vector<ModuleSnapshot> snap;
@@ -101,4 +100,77 @@ void write_displacement_report(
 
     std::cout << "[Displacement] Report -> " << filepath
               << "  (" << entries.size() << " modules)\n";
+}
+
+// ============================================================
+// compute_intra_die_hpwl
+// ============================================================
+IntraDieStats compute_intra_die_hpwl(const PlacementEngine& engine)
+{
+    const auto& nets    = engine.nets();
+    const auto& modules = engine.modules();
+    const auto& weights = engine.tier_net_weights();
+    const int   nd      = engine.num_dies();
+
+    IntraDieStats s;
+    s.total_hpwl  = 0.0;
+    s.tier_hpwl.assign(nd, 0.0);
+    s.tier_count.assign(nd, 0);
+
+    for (const Net& net : nets) {
+        // 判斷所有 pin 是否都在同一層
+        int  common_tier = -2;
+        bool cross       = false;
+        for (int pid : net.pins) {
+            const Module& m = modules[pid];
+            int t = m.is_terminal ? 0 : m.tier_id;
+            if (common_tier == -2) { common_tier = t; }
+            else if (common_tier != t) { cross = true; break; }
+        }
+        if (cross || common_tier < 0) continue;
+
+        // 計算此 net 的 2D HPWL
+        double x_min =  1e18, x_max = -1e18;
+        double y_min =  1e18, y_max = -1e18;
+        for (int pid : net.pins) {
+            const Module& m = modules[pid];
+            x_min = std::min(x_min, m.x);
+            x_max = std::max(x_max, m.x);
+            y_min = std::min(y_min, m.y);
+            y_max = std::max(y_max, m.y);
+        }
+        if (x_min > x_max) continue;
+
+        // die weight（來源與 compute_hpwl() 相同）
+        double w = 1.0;
+        if (common_tier >= 0 && common_tier < nd &&
+            static_cast<int>(weights.size()) == nd)
+            w = weights[static_cast<size_t>(common_tier)];
+
+        const double hpwl = w * ((x_max - x_min) + (y_max - y_min));
+        s.total_hpwl += hpwl;
+        if (common_tier >= 0 && common_tier < nd) {
+            s.tier_hpwl[common_tier]  += hpwl;
+            s.tier_count[common_tier] += 1;
+        }
+    }
+    return s;
+}
+
+// ============================================================
+// print_intra_die_stats
+// ============================================================
+void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os)
+{
+    os << "  Intra-die HPWL (same-tier nets only): "
+       << stats.total_hpwl << "\n";
+    const int nd = static_cast<int>(stats.tier_hpwl.size());
+    for (int t = 0; t < nd; ++t) {
+        const int    cnt = stats.tier_count[t];
+        const double h   = stats.tier_hpwl[t];
+        os << "    Die " << t
+           << "  HPWL=" << h
+           << "  nets=" << cnt
+           << "  avg=" << (cnt > 0 ? h / cnt : 0.0) << "\n";
+    }
 }

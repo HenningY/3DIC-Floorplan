@@ -28,26 +28,22 @@ int main(int argc, char* argv[])
     cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 32;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 24;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
-    cfg.lambda_init_mult       = 200.0; // 初始倍率（從極小值出發，讓 WL 先主導）default 0.001
-    cfg.lambda_increase_rate   = 1.001;   // 每次更新倍增 20% default 1.2
+    cfg.lambda_init_mult       = 200.0; // 初始倍率（從極小值出發，讓 WL 先主導）default 0.001, n100: 200.0
+    cfg.lambda_increase_rate   = 1.001;   // 每次更新倍增 20% default 1.2, n100: 1.001
     cfg.lambda_update_interval = 20;    // 每 20 次迭代更新一次
     // 1.2^k = 200/0.001 → k ≈ 66 updates = 1320 iters 後達到上限，之後保持穩定
-    cfg.lambda_max_mult        = 300.0; // λ 倍率上限
+    cfg.lambda_max_mult        = 300.0; // λ 倍率上限, n100: 300.0
 
     // ---- 動態平滑半徑 σ ----
-    cfg.sigma_start_frac = 0.4;   // 初始 = 20% die 寬（=53.6 for 268） 0.4
-    cfg.sigma_end_frac   = 0.04;   // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） 0.04
+    cfg.sigma_start_frac = 0.4;   // 初始 = 20% die 寬（=53.6 for 268） n100: 0.4
+    cfg.sigma_end_frac   = 0.04;   // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
 
     // 每層 Die 的密度懲罰係數基礎值（與 lambda_mult 相乘）
     cfg.tier_lambdas    = {0.0087, 0.0087, 0.009};
-
-    // LSE wirelength：module pin 權重 > terminal pin 權重（可調）
-    cfg.wl_pin_weight_module   = 1.0;
-    cfg.wl_pin_weight_terminal = 1.0;
 
     // ---- 初始化引擎 ----
     PlacementEngine engine(cfg);
@@ -58,9 +54,15 @@ int main(int argc, char* argv[])
     if (!engine.parse_blocks(block_file)) return 1;
     if (!engine.parse_nets(nets_file))    return 1;
 
+    // compute_hpwl() 每層乘數：預設用 .block 的 Weight:。
+    // 僅覆寫「報告用 HPWL」時在 parse 之後呼叫：engine.set_hpwl_die_weight_override({...});
+    // analytical（LSE）線長權重始終只用 .block 的 Weight:。
+
     // ---- 讀取 constraint 檔（選填），套用前必須在 parse_blocks 之後 ----
     if (!constraint_file.empty())
         engine.parse_constraints(constraint_file);
+
+    // engine.set_hpwl_die_weight_override({1.5, 1, 1});
 
     // ---- 初始化位置 ----
     engine.initialize_positions();
@@ -77,50 +79,53 @@ int main(int argc, char* argv[])
 
     // ---- TSV Analytical Placement ---- 目前沒有用到
     TsvPlacementConfig tcfg;
-    tcfg.max_iterations = 1000;
-    tcfg.init_step_size = 2.0;
-    tcfg.step_decay     = 0.998;
-    tcfg.momentum       = 0.9;
-    tcfg.tsv_width      = 3.0;   // TSV 物理寬度（die 座標單位）
-    tcfg.tsv_height     = 3.0;   // TSV 物理高度
-    tcfg.tsv_lambda     = 0.3;   // 密度排斥力強度
-    tcfg.tsv_sigma      = 0.0;   // 0 = 自動設為 bin_w
-    tcfg.print_interval = 200;   // 每 200 次印一次進度
+    tcfg.tsv_width      = 0.1;   // TSV 物理寬度（die 座標單位）
+    tcfg.tsv_height     = 0.1;   // TSV 物理高度
+    // TSV cost 每層乘數：留空則與 .block 的 Weight: 相同；若要覆寫例如：
+    tcfg.tsv_die_weights = {1, 1, 1};
     engine.solve_tsvs(tcfg);
 
     // ---- Recursive Bi-partitioning（Legalization 前準備）----
     PartitionConfig pcfg;
     pcfg.leaf_threshold  = 8;     // ≤ 8 個 module 的區域停止遞迴
-    pcfg.min_modules_per_region = 2; // partition 後每個子區域至少 3 個 modules
-    pcfg.min_split_ratio = 0.4;   // 切割比例限制 [0.1, 0.9]
+    pcfg.min_modules_per_region = 1; // partition 後每個子區域至少 2 個 modules
+    pcfg.min_split_ratio = 0.4;   // 切割比例限制 [0.4, 0.6]
     pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數
     pcfg.max_split_retries = 32;
-    pcfg.tsv_width       = 3.0;   // TSV 物理尺寸（與 solve_tsvs 一致）
-    pcfg.tsv_height      = 3.0;
+    pcfg.tsv_width       = 0.1;   // TSV 物理尺寸 3x3（與 solve_tsvs 一致）
+    pcfg.tsv_height      = 0.1;
     pcfg.log_tree        = true;
-    pcfg.log_file        = output_file + "_partition_tree.txt";
+    // pcfg.log_file        = output_file + "_partition_tree.txt";
     pcfg.write_positions = true;
-    pcfg.positions_file  = output_file + "_partition_positions.txt";
+    // pcfg.positions_file  = output_file + "_partition_positions.txt";
 
     // ---- Recursive Bi-partitioning and Legalization ----
-    engine.partition_all_tiers(pcfg);
+    // engine.partition_all_tiers(pcfg);
 
     // ---- TSV：依 net bbox 周長排序，在兩層 bbox 幾何區域內 first-fit 重排 ----
-    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
+    // engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
-    const auto snap_legal = record_positions(engine);
-    write_displacement_report(snap_analytical, snap_legal,
-                              output_file + "_displacement.txt");
+    // const auto snap_legal = record_positions(engine);
+    // write_displacement_report(snap_analytical, snap_legal,
+    //                           output_file + "_displacement.txt");
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
 
     // ---- 最終統計 ----
+    // true  = 只計算「整條 net 的所有 pin 都在同一層」的 HPWL（跨層 net 排除）
+    // false = 計算完整 HPWL（含跨層 net，行為與原本相同）
+    const bool intra_die_hpwl_only = true;
+
     std::cout << "\n========== Summary ==========\n";
     std::cout << "  Total time   : " << elapsed << " s\n";
-    std::cout << "  Final HPWL   : " << engine.compute_hpwl() << "\n";
+    if (intra_die_hpwl_only) {
+        print_intra_die_stats(compute_intra_die_hpwl(engine));
+    } else {
+        std::cout << "  Final HPWL   : " << engine.compute_hpwl() << "\n";
+    }
     std::cout << "  Num dies     : " << engine.num_dies() << "\n";
     std::cout << "  Num modules  : " << engine.modules().size() << "\n";
     std::cout << "  Num nets     : " << engine.nets().size() << "\n";
@@ -176,18 +181,18 @@ int main(int argc, char* argv[])
         }
 
         std::cout << "  Tier " << t << " overlaps: " << ov_pairs.size() << " pairs\n";
-        for (const auto& pr : ov_pairs) {
-            const auto& a = items[pr.first];
-            const auto& b = items[pr.second];
+        // for (const auto& pr : ov_pairs) {
+        //     const auto& a = items[pr.first];
+        //     const auto& b = items[pr.second];
 
-            std::cout << "    - ";
-            if (a.kind == 'M') std::cout << "Module#" << a.id;
-            else                std::cout << "TSV#" << a.id;
-            std::cout << "  <->  ";
-            if (b.kind == 'M') std::cout << "Module#" << b.id;
-            else                std::cout << "TSV#" << b.id;
-            std::cout << "\n";
-        }
+        //     std::cout << "    - ";
+        //     if (a.kind == 'M') std::cout << "Module#" << a.id;
+        //     else                std::cout << "TSV#" << a.id;
+        //     std::cout << "  <->  ";
+        //     if (b.kind == 'M') std::cout << "Module#" << b.id;
+        //     else                std::cout << "TSV#" << b.id;
+        //     std::cout << "\n";
+        // }
     }
 
     // Die 使用率統計
@@ -210,7 +215,7 @@ int main(int argc, char* argv[])
 
     // ---- 輸出各 tier 的 bin 密度圖（供除錯檢查）----
     // 產生 <output_file>_density_tier0.txt / tier1.txt / ...
-    engine.write_density_map(output_file);
+    // engine.write_density_map(output_file);
 
     return 0;
 }

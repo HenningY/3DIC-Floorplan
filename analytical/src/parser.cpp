@@ -2,6 +2,8 @@
 // 支援 .block 與 .nets 格式（與 PA2 輸入規格相容）
 #include "floorplanner.h"
 
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -15,6 +17,7 @@
 //   Outline: <W> <H>    (重複 N 次)
 //   NumBlocks: <B>
 //   NumTerminals: <T>
+//   Weight: <w0> <w1> ... <w_{N-1}>   (選填，N = NumDie；不分大小寫 Weight:)
 //
 //   <name> <width> <height> <tier_id>    (方塊，共 B 個)
 //
@@ -56,8 +59,8 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
         }
     }
 
-    // 初始化 Die 結構（第一個 Die 的尺寸，各層相同）
-    setup_dies(num_dies, die_widths[0], die_heights[0]);
+    // 初始化 Die 結構（每層使用各自的 Outline 尺寸）
+    setup_dies(num_dies, die_widths, die_heights);
 
     // 讀 NumBlocks 和 NumTerminals
     while (std::getline(fin, line)) {
@@ -71,12 +74,50 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
         }
     }
 
+    // ---- 選填：每層 die 的 net 權重（Weight: w0 w1 ...）----
+    tier_net_weights_.assign(static_cast<size_t>(num_dies), 1.0);
+    std::string pending_first_block_line;
+    while (std::getline(fin, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream ss(line);
+        ss >> token;
+        std::string key = token;
+        const auto colon = key.find(':');
+        if (colon != std::string::npos)
+            key.resize(colon);
+        std::transform(key.begin(), key.end(), key.begin(),
+                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (key == "weight") {
+            std::vector<double> w;
+            double v = 0.0;
+            while (ss >> v)
+                w.push_back(v);
+            if (w.size() != static_cast<size_t>(num_dies)) {
+                std::cerr << "[Parser] Weight line expects " << num_dies
+                          << " value(s), got " << w.size()
+                          << ". Keeping default weight 1.0 per tier.\n";
+                tier_net_weights_.assign(static_cast<size_t>(num_dies), 1.0);
+            } else {
+                tier_net_weights_ = std::move(w);
+            }
+            continue;
+        }
+        pending_first_block_line = std::move(line);
+        break;
+    }
+
     // ---- 解析方塊與 terminal ----
     modules_.clear();
     name_to_id_.clear();
 
     int id_counter = 0;
-    while (std::getline(fin, line)) {
+    while (true) {
+        if (!pending_first_block_line.empty()) {
+            line = std::move(pending_first_block_line);
+            pending_first_block_line.clear();
+        } else if (!std::getline(fin, line)) {
+            break;
+        }
         if (line.empty() || line[0] == '#') continue;
 
         std::istringstream ss(line);
@@ -123,6 +164,12 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
     std::cout << "[Parser] Loaded " << num_dies      << " dies, "
               << num_blocks   << " blocks, "
               << num_terminals << " terminals.\n";
+    std::cout << "[Parser] Tier net weights (" << tier_net_weights_.size() << "): ";
+    for (size_t i = 0; i < tier_net_weights_.size(); ++i) {
+        if (i) std::cout << ' ';
+        std::cout << tier_net_weights_[i];
+    }
+    std::cout << "\n";
 
     // 驗證讀取數量
     int actual_blocks    = 0, actual_terminals = 0;

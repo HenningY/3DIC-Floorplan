@@ -3,6 +3,7 @@
 
 #include "floorplanner.h"
 
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -25,3 +26,17 @@ void write_displacement_report(
     const std::vector<ModuleSnapshot>& before,
     const std::vector<ModuleSnapshot>& after,
     const std::string&                 filepath);
+
+// ============================================================
+// Intra-die HPWL：只計算所有 pin 都在同一層的 net
+// ============================================================
+struct IntraDieStats {
+    double              total_hpwl;  // 全部層加總（已乘 die weight）
+    std::vector<double> tier_hpwl;   // 每層加權 HPWL
+    std::vector<int>    tier_count;  // 每層 intra-die net 數量
+};
+
+IntraDieStats compute_intra_die_hpwl(const PlacementEngine& engine);
+
+// 在 std::ostream 上列印 IntraDieStats 的逐層明細
+void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os = std::cout);

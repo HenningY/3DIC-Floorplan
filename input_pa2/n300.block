@@ -4,6 +4,7 @@ Outline: 333 333
 Outline: 333 333
 NumBlocks: 300
 NumTerminals: 569
+Weight: 1 1 1
 
 sb0          27       15     2
 sb1          27       16     1

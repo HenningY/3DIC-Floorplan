@@ -1965,10 +1965,94 @@ void PlacementEngine::partition_all_tiers(const PartitionConfig& pcfg)
                     legalize_leaf(node, modules_, tsvs_, pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
                 return;
             }
-            if (node.left) dfs_legalize(*node.left);
+            if (node.left)  dfs_legalize(*node.left);
             if (node.right) dfs_legalize(*node.right);
         };
         dfs_legalize(root);
+
+        // ---- Post-legalize retry：擴展至 parent bbox 重排仍有重疊的 leaf ----
+        //
+        // 在第一輪 dfs_legalize 完成後，掃描所有仍有重疊的葉節點。
+        // 對每個失敗 leaf：
+        //   1. 以其 parent 節點的 bounding box 作為新的 legalization 區域
+        //   2. 此 tier 中「不屬於本 leaf」的所有其他可動 module 全部加入 fixed 障礙物
+        //   3. 在擴大後的區域重新呼叫 legalize_leaf
+        //
+        // DFS 時同步攜帶 parent bbox（四個 double），root 的 parent bbox = 自己的 bbox
+        struct FailLeaf {
+            PartitionNode* node;
+            double par_xmin, par_ymin, par_xmax, par_ymax;
+        };
+        std::vector<FailLeaf> fail_leaves;
+
+        std::function<void(PartitionNode&, double, double, double, double)> collect_fail;
+        collect_fail = [&](PartitionNode& nd,
+                           double pxmin, double pymin,
+                           double pxmax, double pymax) {
+            if (nd.is_leaf()) {
+                const bool has_ov = entity_group_has_overlap(
+                    nd.module_ids, nd.tsv_ids, modules_, tsvs_,
+                    pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
+                if (has_ov)
+                    fail_leaves.push_back({ &nd, pxmin, pymin, pxmax, pymax });
+                return;
+            }
+            // 本節點的 bbox 作為子節點的 parent bbox
+            if (nd.left)  collect_fail(*nd.left,  nd.xmin, nd.ymin, nd.xmax, nd.ymax);
+            if (nd.right) collect_fail(*nd.right, nd.xmin, nd.ymin, nd.xmax, nd.ymax);
+        };
+        collect_fail(root, root.xmin, root.ymin, root.xmax, root.ymax);
+
+        if (!fail_leaves.empty()) {
+            std::cout << "[Legalize] post_retry: " << fail_leaves.size()
+                      << " overlapping leaf(ves) in tier " << t << "\n";
+
+            for (FailLeaf& fl : fail_leaves) {
+                PartitionNode& leaf = *fl.node;
+
+                // 建立 extended_fixed = 原有 fixed + 此 tier 中不屬於本 leaf 的所有可動 module
+                std::vector<int> ext_fixed = fixed_ids;
+                for (const Module& m : modules_) {
+                    if (m.is_terminal || m.tier_id != t || m.is_fixed) continue;
+                    // 判斷是否屬於本 leaf（leaf_threshold 通常很小，線性掃描即可）
+                    bool in_leaf = false;
+                    for (int lid : leaf.module_ids)
+                        if (lid == m.id) { in_leaf = true; break; }
+                    if (!in_leaf)
+                        ext_fixed.push_back(m.id);
+                }
+
+                // 以 parent bbox 建立暫時葉節點
+                PartitionNode parent_region;
+                parent_region.tier_id    = leaf.tier_id;
+                parent_region.depth      = leaf.depth;
+                parent_region.xmin       = fl.par_xmin;
+                parent_region.xmax       = fl.par_xmax;
+                parent_region.ymin       = fl.par_ymin;
+                parent_region.ymax       = fl.par_ymax;
+                parent_region.module_ids = leaf.module_ids;
+                parent_region.tsv_ids    = leaf.tsv_ids;
+
+                std::cout << "[Legalize] post_retry T" << leaf.tier_id
+                          << " d=" << leaf.depth
+                          << " mods=" << leaf.module_ids.size()
+                          << " leaf=[" << std::fixed << std::setprecision(1)
+                          << leaf.xmin << "," << leaf.xmax
+                          << "]x[" << leaf.ymin << "," << leaf.ymax << "]"
+                          << " parent=[" << fl.par_xmin << "," << fl.par_xmax
+                          << "]x[" << fl.par_ymin << "," << fl.par_ymax << "]\n"
+                          << std::defaultfloat;
+
+                legalize_leaf(parent_region, modules_, tsvs_,
+                              pcfg.tsv_width, pcfg.tsv_height, ext_fixed);
+
+                const bool still_ov = entity_group_has_overlap(
+                    leaf.module_ids, leaf.tsv_ids, modules_, tsvs_,
+                    pcfg.tsv_width, pcfg.tsv_height, fixed_ids);
+                std::cout << "[Legalize] post_retry -> "
+                          << (still_ov ? "STILL overlapping" : "SUCCESS") << "\n";
+            }
+        }
 
         // ---- 統計葉節點數 ----
         std::function<int(const PartitionNode&)> count_leaves;

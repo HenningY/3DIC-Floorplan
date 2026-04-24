@@ -110,13 +110,6 @@ struct PlacementConfig {
     int    bin_resolution   = 16;      // 每層 bin 數量 (bin_resolution x bin_resolution)
     double convergence_tol  = 1e-4;    // 收斂容忍度（相對 HPWL 變化）
 
-    // ---- LSE wirelength：pin 權重（可移動 module vs 固定 terminal）----
-    // 在 softmax 近似中，terminal 權重較小 → 對 bbox 的影響較弱，
-    // 可移動 module 之間的「相對」吸引力會強於 module–terminal。
-    // 需滿足：wl_pin_weight_terminal <= wl_pin_weight_module
-    double wl_pin_weight_module   = 1.0;
-    double wl_pin_weight_terminal = 0.2;
-
     // ---- λ 遞增排程 ----
     // lambda_mult 每 lambda_update_interval 次迭代乘以 lambda_increase_rate，
     // 但不超過 lambda_max_mult（防止密度力爆炸）
@@ -132,6 +125,11 @@ struct PlacementConfig {
 
     // 每層的密度懲罰係數 λ；若向量長度 < num_dies 則用最後一個值填充
     std::vector<double> tier_lambdas = {0.01, 0.01, 0.01};
+
+    // 僅影響 compute_hpwl() 報告／評估用乘數（長度須等於 num_dies 才會生效）：
+    // 若為空，compute_hpwl 使用 .block 的 Weight:（tier_net_weights_）。
+    // LSE / analytical 線長梯度始終只用 .block 的 Weight:，不受此欄位影響。
+    std::vector<double> hpwl_die_weights;
 };
 
 // ============================================================
@@ -156,6 +154,10 @@ struct TsvPlacementConfig {
 
     // 印出 progress 的間隔（0 = 不印）
     int    print_interval = 100;
+
+    // TSV placement / compute_tsv_cost：每層 die 乘數（長度須等於 num_dies 才生效）。
+    // 若為空，則與 .block 的 Weight:（PlacementEngine::tier_net_weights_）一致。
+    std::vector<double> tsv_die_weights;
 };
 
 // ============================================================
@@ -245,7 +247,8 @@ public:
     void solve_tsvs(const TsvPlacementConfig& tcfg = TsvPlacementConfig());
 
     // 計算目前 TSV 的總 wirelength cost（評估用）
-    // = Σ_tsv [dist(tsv, bbox_lower) + dist(tsv, bbox_upper)]
+    // = Σ_tsv [ w_lo*dist(tsv,B_lower) + w_hi*dist(tsv,B_upper) ]；
+    // w_lo/w_hi 見最近一次 solve_tsvs 的 TsvPlacementConfig::tsv_die_weights（空則用 .block）
     double compute_tsv_cost() const;
 
     // Legalization 完成後：依所屬 net 全體 bbox 之周長（小→大）排序，
@@ -288,6 +291,16 @@ public:
     const std::vector<TSV>&    tsvs()     const { return tsvs_; }
     int                        num_dies() const { return static_cast<int>(dies_.size()); }
 
+    // 由 .block 的 Weight: 行讀入；每層 die 一個係數（供之後 weighted net 使用）
+    const std::vector<double>& tier_net_weights() const { return tier_net_weights_; }
+
+    // 僅覆寫 compute_hpwl() 的每層乘數；analytical（LSE）仍只用 .block 的 Weight:
+    void set_hpwl_die_weight_override(std::vector<double> w) { cfg_.hpwl_die_weights = std::move(w); }
+
+    // 覆寫 TSV placement 用的每層乘數（可不經 solve_tsvs 先設）；tsv_die_weights 空則跟 .block
+    void set_tsv_placement_config(const TsvPlacementConfig& cfg) { tsv_placement_cfg_ = cfg; }
+    const TsvPlacementConfig& tsv_placement_config() const { return tsv_placement_cfg_; }
+
 private:
     PlacementConfig cfg_;
 
@@ -295,6 +308,12 @@ private:
     std::vector<Net>    nets_;
     std::vector<Die>    dies_;
     std::vector<TSV>    tsvs_;  // 跨層 net 產生的 TSV，供後續 TSV placement 使用
+
+    // 每層 die 的 net 權重（.block 中 Weight: w0 w1 ...；預設全為 1.0）
+    std::vector<double> tier_net_weights_;
+
+    // 最近一次 solve_tsvs(tcfg) 的設定（含 tsv_die_weights）；供 compute_tsv_cost 等使用
+    TsvPlacementConfig tsv_placement_cfg_;
 
     // 名稱 → 模組索引的映射（解析 .nets 用）
     std::unordered_map<std::string, int> name_to_id_;
@@ -311,8 +330,10 @@ private:
 
     // ---- 內部輔助函式 ----
 
-    // 初始化 Die 的 Bin 網格
-    void setup_dies(int num_dies, double die_w, double die_h);
+    // 初始化 Die 的 Bin 網格（每層可獨立指定寬高）
+    void setup_dies(int num_dies,
+                    const std::vector<double>& die_ws,
+                    const std::vector<double>& die_hs);
 
     // 二次型 Bell 函數（平滑緊支撐密度核）
     // Φ(d, r) = 1 - (d/r)^2   if |d| <= r
@@ -336,4 +357,16 @@ private:
 
     // 記錄每次迭代的 HPWL 用於收斂判斷
     double prev_hpwl_ = std::numeric_limits<double>::max();
+
+    // 僅供 compute_hpwl：cfg 覆寫優先，否則 .block 的 tier_net_weights_
+    double hpwl_die_weight(int tier) const;
+
+    // analytical / LSE：僅用 .block 的 tier_net_weights_（不受 hpwl_die_weights 覆寫）
+    double analytical_tier_net_weight(int tier) const;
+
+    // LSE：依 net 所跨 tier 對 analytical_tier_net_weight 取算術平均
+    double net_wirelength_die_weight(const Net& net) const;
+
+    // TSV cost：tier 乘數（tsv_die_weights 若滿長度則覆寫，否則 tier_net_weights_）
+    double tsv_placement_tier_weight(int tier) const;
 };

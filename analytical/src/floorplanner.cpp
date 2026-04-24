@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <numeric>
 #include <random>
+#include <set>
 #include <stdexcept>
 
 // ============================================================
@@ -23,12 +24,16 @@ PlacementEngine::PlacementEngine(const PlacementConfig& cfg)
 // setup_dies: 根據解析結果初始化各 Die 的 Bin 網格
 // 在 parse_blocks() 完成後由內部呼叫
 // ============================================================
-void PlacementEngine::setup_dies(int num_dies, double die_w, double die_h)
+void PlacementEngine::setup_dies(int num_dies,
+                                 const std::vector<double>& die_ws,
+                                 const std::vector<double>& die_hs)
 {
     dies_.resize(num_dies);
 
     for (int t = 0; t < num_dies; ++t) {
         Die& d      = dies_[t];
+        double die_w = die_ws[t];
+        double die_h = die_hs[t];
         d.id        = t;
         d.width     = die_w;
         d.height    = die_h;
@@ -129,8 +134,12 @@ void PlacementEngine::solve()
     // λ 從 init_mult 出發，每 interval 次迭代乘以 increase_rate
     lambda_mult_ = cfg_.lambda_init_mult;
 
-    // σ 平滑半徑：以第一個 Die 的寬度為基準（各層同尺寸）
-    const double die_w       = dies_.empty() ? 268.0 : dies_[0].width;
+    // σ 平滑半徑：以各層 Die 寬度最大值為基準
+    double die_w = 268.0;
+    if (!dies_.empty()) {
+        die_w = 0.0;
+        for (const Die& d : dies_) die_w = std::max(die_w, d.width);
+    }
     const double sigma_start = cfg_.sigma_start_frac * die_w;
     const double sigma_end   = cfg_.sigma_end_frac   * die_w;
 
@@ -367,6 +376,222 @@ static bool tsv_placement_rect_from_two_bboxes(const BBox& a, const BBox& b,
     return rx0 <= rx1 + eps && ry0 <= ry1 + eps;
 }
 
+// 依 die weight 調整 TSV 初值（solve_tsvs 用）：
+// - B_lower 與 B_upper 二維有交集：與 tsv_position_from_two_bboxes 相同（交集中心）
+// - 無交集且 w_lo≈w_hi：仍用 tsv_position_from_two_bboxes（中間兩邊所圍矩形中心）
+// - 無交集且 w_lo≠w_hi：取「中間矩形 R」與權重較大那一側 bbox 的交集之中心
+static void tsv_position_from_two_bboxes_weighted(
+    const BBox& b_lo, const BBox& b_hi, double w_lo, double w_hi,
+    double& tx, double& ty)
+{
+    const double eps = 1e-9;
+    const double ix0 = std::max(b_lo.xmin, b_hi.xmin);
+    const double ix1 = std::min(b_lo.xmax, b_hi.xmax);
+    const double iy0 = std::max(b_lo.ymin, b_hi.ymin);
+    const double iy1 = std::min(b_lo.ymax, b_hi.ymax);
+    if (ix0 <= ix1 + eps && iy0 <= iy1 + eps) {
+        tsv_position_from_two_bboxes(b_lo, b_hi, tx, ty);
+        return;
+    }
+    if (std::fabs(w_lo - w_hi) <= eps * std::max(1.0, std::max(w_lo, w_hi))) {
+        tsv_position_from_two_bboxes(b_lo, b_hi, tx, ty);
+        return;
+    }
+    double rx0, ry0, rx1, ry1;
+    if (!tsv_placement_rect_from_two_bboxes(b_lo, b_hi, rx0, ry0, rx1, ry1)) {
+        tsv_position_from_two_bboxes(b_lo, b_hi, tx, ty);
+        return;
+    }
+    const BBox& fav = (w_lo > w_hi) ? b_lo : b_hi;
+    const double ox0 = std::max(rx0, fav.xmin);
+    const double ox1 = std::min(rx1, fav.xmax);
+    const double oy0 = std::max(ry0, fav.ymin);
+    const double oy1 = std::min(ry1, fav.ymax);
+    if (ox0 <= ox1 + eps && oy0 <= oy1 + eps) {
+        tx = 0.5 * (ox0 + ox1);
+        ty = 0.5 * (oy0 + oy1);
+    } else {
+        tsv_position_from_two_bboxes(b_lo, b_hi, tx, ty);
+    }
+}
+
+// R 與 bbox 交集寫入 [ox0,ox1]×[oy0,oy1]（夾在 die 內）；無交集則回傳 false
+static bool rect_intersect_bbox_clamped(double rx0,
+                                         double ry0,
+                                         double rx1,
+                                         double ry1,
+                                         const BBox& b,
+                                         double die_w,
+                                         double die_h,
+                                         double& ox0,
+                                         double& oy0,
+                                         double& ox1,
+                                         double& oy1)
+{
+    const double eps = 1e-9;
+    ox0 = std::max(rx0, b.xmin);
+    ox1 = std::min(rx1, b.xmax);
+    oy0 = std::max(ry0, b.ymin);
+    oy1 = std::min(ry1, b.ymax);
+    ox0 = std::max(0.0, std::min(die_w, ox0));
+    ox1 = std::max(0.0, std::min(die_w, ox1));
+    oy0 = std::max(0.0, std::min(die_h, oy0));
+    oy1 = std::max(0.0, std::min(die_h, oy1));
+    if (ox0 > ox1) std::swap(ox0, ox1);
+    if (oy0 > oy1) std::swap(oy0, oy1);
+    return ox0 <= ox1 + eps && oy0 <= oy1 + eps;
+}
+
+// 與 TSV 相鄰之 tier_below() 或 tier_above() 其中至少一層無此 net 的 pin 時啟用（兩層都有則不走此路）。
+// n_tier 等邏輯不變；回傳目標矩形為 R∩B_lower 或 R∩B_upper（R：兩側 aggregate 皆有效時為兩框之中間矩形，
+// 否則為單側 bbox）。交集失敗且對側 bbox 無效時退回 R 全範圍。
+static bool tsv_gap_one_side_target_rect(const Net& net,
+                                         const std::vector<Module>& modules,
+                                         int num_tiers,
+                                         int layer_L,
+                                         const std::vector<double>& tier_w,
+                                         const BBox& b_lo,
+                                         const BBox& b_hi,
+                                         bool lo_ok,
+                                         bool hi_ok,
+                                         double die_w,
+                                         double die_h,
+                                         double& rx0,
+                                         double& ry0,
+                                         double& rx1,
+                                         double& ry1)
+{
+    const int    tier_b = layer_L;
+    const int    tier_a = layer_L + 1;
+    bool         pin_on_tier_below = false;
+    bool         pin_on_tier_above = false;
+    for (int pid : net.pins) {
+        const Module& m = modules[pid];
+        int           mt = m.is_terminal ? 0 : m.tier_id;
+        if (mt == tier_b) pin_on_tier_below = true;
+        if (mt == tier_a) pin_on_tier_above = true;
+    }
+    if (pin_on_tier_below && pin_on_tier_above) return false;
+
+    // std::cout << "[TSV gap-pins] net \"" << net.name << "\" (id=" << net.id << ") layer_index="
+    //           << layer_L << "  tier_below(" << tier_b << ")_pin=" << (pin_on_tier_below ? "yes" : "no")
+    //           << "  tier_above(" << tier_a << ")_pin=" << (pin_on_tier_above ? "yes" : "no") << "\n";
+
+    std::vector<char> has(static_cast<size_t>(num_tiers), 0);
+    for (int pid : net.pins) {
+        const Module& m = modules[pid];
+        int           mt = m.is_terminal ? 0 : m.tier_id;
+        if (mt >= 0 && mt < num_tiers) has[static_cast<size_t>(mt)] = 1;
+    }
+
+    int a = -1;
+    for (int t = 0; t <= layer_L; ++t) {
+        if (has[static_cast<size_t>(t)]) a = t;
+    }
+    int b = -1;
+    for (int t = layer_L + 1; t < num_tiers; ++t) {
+        if (has[static_cast<size_t>(t)]) {
+            b = t;
+            break;
+        }
+    }
+
+    int span_lo = 0, span_hi = num_tiers - 1;
+    if (a >= 0 && b >= 0) {
+        span_lo = std::min(a, b);
+        span_hi = std::max(a, b);
+    } else if (a >= 0) {
+        span_lo = a;
+        span_hi = layer_L;
+    } else if (b >= 0) {
+        span_lo = layer_L + 1;
+        span_hi = b;
+    } else {
+        return false;
+    }
+
+    int    n_tier = -1;
+    double best_w = std::numeric_limits<double>::infinity();
+    for (int t = span_lo; t <= span_hi; ++t) {
+        if (!has[static_cast<size_t>(t)]) continue;
+        const double w = tier_w[static_cast<size_t>(t)];
+        if (w < best_w - 1e-15 || (std::fabs(w - best_w) <= 1e-15 && (n_tier < 0 || t < n_tier))) {
+            best_w = w;
+            n_tier = t;
+        }
+    }
+    if (n_tier < 0) return false;
+
+    double Rx0 = 0.0, Ry0 = 0.0, Rx1 = die_w, Ry1 = die_h;
+    if (lo_ok && hi_ok) {
+        if (!tsv_placement_rect_from_two_bboxes(b_lo, b_hi, Rx0, Ry0, Rx1, Ry1)) return false;
+    } else if (lo_ok) {
+        Rx0 = b_lo.xmin;
+        Rx1 = b_lo.xmax;
+        Ry0 = b_lo.ymin;
+        Ry1 = b_lo.ymax;
+    } else if (hi_ok) {
+        Rx0 = b_hi.xmin;
+        Rx1 = b_hi.xmax;
+        Ry0 = b_hi.ymin;
+        Ry1 = b_hi.ymax;
+    } else {
+        return false;
+    }
+
+    Rx0 = std::max(0.0, std::min(die_w, Rx0));
+    Rx1 = std::max(0.0, std::min(die_w, Rx1));
+    Ry0 = std::max(0.0, std::min(die_h, Ry0));
+    Ry1 = std::max(0.0, std::min(die_h, Ry1));
+    if (Rx0 > Rx1) std::swap(Rx0, Rx1);
+    if (Ry0 > Ry1) std::swap(Ry0, Ry1);
+
+    const bool pick_lo = (layer_L < n_tier);
+    if (pick_lo) {
+        if (lo_ok && rect_intersect_bbox_clamped(Rx0, Ry0, Rx1, Ry1, b_lo, die_w, die_h, rx0, ry0, rx1,
+                                                 ry1))
+            return true;
+        rx0 = Rx0;
+        ry0 = Ry0;
+        rx1 = Rx1;
+        ry1 = Ry1;
+        return true;
+    }
+    if (hi_ok && rect_intersect_bbox_clamped(Rx0, Ry0, Rx1, Ry1, b_hi, die_w, die_h, rx0, ry0, rx1, ry1))
+        return true;
+    rx0 = Rx0;
+    ry0 = Ry0;
+    rx1 = Rx1;
+    ry1 = Ry1;
+    return true;
+}
+
+// 相鄰 tier 缺 pin 時：見 tsv_gap_one_side_target_rect；此處取目標矩形中心。
+static bool solve_tsv_gap_one_side_pin_span(const Net& net,
+                                            const std::vector<Module>& modules,
+                                            int num_tiers,
+                                            int layer_L,
+                                            const std::vector<double>& tier_w,
+                                            const BBox& b_lo,
+                                            const BBox& b_hi,
+                                            bool lo_ok,
+                                            bool hi_ok,
+                                            double die_w,
+                                            double die_h,
+                                            double& tx,
+                                            double& ty)
+{
+    double rx0 = 0.0, ry0 = 0.0, rx1 = 0.0, ry1 = 0.0;
+    if (!tsv_gap_one_side_target_rect(net, modules, num_tiers, layer_L, tier_w, b_lo, b_hi, lo_ok,
+                                       hi_ok, die_w, die_h, rx0, ry0, rx1, ry1))
+        return false;
+    tx = 0.5 * (rx0 + rx1);
+    ty = 0.5 * (ry0 + ry1);
+    tx = std::max(0.0, std::min(die_w, tx));
+    ty = std::max(0.0, std::min(die_h, ty));
+    return true;
+}
+
 struct PlacedRect {
     double lx, ly, rx, ry;
 };
@@ -560,6 +785,87 @@ static bool nearest_free_tsv_to_rect(const std::vector<PlacedRect>& placed,
     return found;
 }
 
+// weighted asym 時 R∩較重側 bbox 可能只是一條線（或近似線）：先在該線附近狹帶 first-fit，
+// 再沿線擴成整 die 向之狹帶；仍無則以狹帶為目標做 nearest（避免直接整個 R 內 first-fit）。
+static bool reflow_weighted_pref_line_corridor_fit(const std::vector<PlacedRect>& placed,
+                                                    double pref_rx0,
+                                                    double pref_ry0,
+                                                    double pref_rx1,
+                                                    double pref_ry1,
+                                                    double die_w,
+                                                    double die_h,
+                                                    double hw,
+                                                    double hh,
+                                                    double& out_cx,
+                                                    double& out_cy)
+{
+    const double le = std::max(1e-9, 1e-7 * std::max(die_w, die_h));
+    const bool   vline = (pref_rx1 - pref_rx0) <= le;
+    const bool   hline = (pref_ry1 - pref_ry0) <= le;
+
+    auto clamp_rect = [&](double& x0, double& x1, double& y0, double& y1) {
+        x0 = std::max(0.0, std::min(die_w, x0));
+        x1 = std::max(0.0, std::min(die_w, x1));
+        y0 = std::max(0.0, std::min(die_h, y0));
+        y1 = std::max(0.0, std::min(die_h, y1));
+        if (x0 > x1) std::swap(x0, x1);
+        if (y0 > y1) std::swap(y0, y1);
+    };
+
+    auto try_ff = [&](double x0, double x1, double y0, double y1) -> bool {
+        clamp_rect(x0, x1, y0, y1);
+        return first_fit_tsv_in_region(placed, x0, y0, x1, y1, hw, hh, out_cx, out_cy);
+    };
+
+    constexpr double k_strip = 2.5;
+
+    if (!vline && !hline) {
+        double px0 = pref_rx0, px1 = pref_rx1, py0 = pref_ry0, py1 = pref_ry1;
+        clamp_rect(px0, px1, py0, py1);
+        return first_fit_tsv_in_region(placed, px0, py0, px1, py1, hw, hh, out_cx, out_cy);
+    }
+
+    if (vline && !hline) {
+        const double xm = 0.5 * (pref_rx0 + pref_rx1);
+        const double x_lo = xm - k_strip * hw;
+        const double x_hi = xm + k_strip * hw;
+        if (try_ff(x_lo, x_hi, pref_ry0, pref_ry1)) return true;
+        if (try_ff(x_lo, x_hi, hh, die_h - hh)) return true;
+        double nx0 = xm - (k_strip + 1.0) * hw;
+        double nx1 = xm + (k_strip + 1.0) * hw;
+        double ty0 = hh, ty1 = die_h - hh;
+        clamp_rect(nx0, nx1, ty0, ty1);
+        if (ty0 > ty1 + 1e-12 || nx0 > nx1 + 1e-12) return false;
+        return nearest_free_tsv_to_rect(placed, nx0, ty0, nx1, ty1, die_w, die_h, hw, hh, out_cx,
+                                        out_cy);
+    }
+
+    if (hline && !vline) {
+        const double ym = 0.5 * (pref_ry0 + pref_ry1);
+        const double y_lo = ym - k_strip * hh;
+        const double y_hi = ym + k_strip * hh;
+        if (try_ff(pref_rx0, pref_rx1, y_lo, y_hi)) return true;
+        if (try_ff(hw, die_w - hw, y_lo, y_hi)) return true;
+        double my0 = ym - (k_strip + 1.0) * hh;
+        double my1 = ym + (k_strip + 1.0) * hh;
+        double sx0 = hw, sx1 = die_w - hw;
+        clamp_rect(sx0, sx1, my0, my1);
+        if (sx0 > sx1 + 1e-12 || my0 > my1 + 1e-12) return false;
+        return nearest_free_tsv_to_rect(placed, sx0, my0, sx1, my1, die_w, die_h, hw, hh, out_cx,
+                                        out_cy);
+    }
+
+    const double xm = 0.5 * (pref_rx0 + pref_rx1);
+    const double ym = 0.5 * (pref_ry0 + pref_ry1);
+    if (try_ff(xm - k_strip * hw, xm + k_strip * hw, ym - k_strip * hh, ym + k_strip * hh))
+        return true;
+    double p0 = xm - k_strip * hw, p1 = xm + k_strip * hw;
+    double q0 = ym - k_strip * hh, q1 = ym + k_strip * hh;
+    clamp_rect(p0, p1, q0, q1);
+    if (p0 > p1 + 1e-12 || q0 > q1 + 1e-12) return false;
+    return nearest_free_tsv_to_rect(placed, p0, q0, p1, q1, die_w, die_h, hw, hh, out_cx, out_cy);
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -568,7 +874,7 @@ static bool nearest_free_tsv_to_rect(const std::vector<PlacedRect>& placed,
 // 對每個 TSV，取所屬 net 上下兩側的 BBox：
 //   B_lower = bbox of pins on tiers ≤ layer_index
 //   B_upper = bbox of pins on tiers ≥ layer_index+1
-// cost = dist(tsv, B_lower) + dist(tsv, B_upper)
+// cost = w_lo * dist(tsv, B_lower) + w_hi * dist(tsv, B_upper)
 // ============================================================
 double PlacementEngine::compute_tsv_cost() const
 {
@@ -582,10 +888,28 @@ double PlacementEngine::compute_tsv_cost() const
             if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
             if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
-        if (b_lo.valid()) total += b_lo.dist(tsv.x, tsv.y);
-        if (b_hi.valid()) total += b_hi.dist(tsv.x, tsv.y);
+        if (b_lo.valid())
+            total += tsv_placement_tier_weight(tsv.tier_below()) * b_lo.dist(tsv.x, tsv.y);
+        if (b_hi.valid())
+            total += tsv_placement_tier_weight(tsv.tier_above()) * b_hi.dist(tsv.x, tsv.y);
     }
     return total;
+}
+
+// ============================================================
+// tsv_placement_tier_weight: TSV cost 用的 tier 乘數
+//   tsv_placement_cfg_.tsv_die_weights 長度 == num_dies 時覆寫；否則 .block tier_net_weights_
+// ============================================================
+double PlacementEngine::tsv_placement_tier_weight(int tier) const
+{
+    const int n = static_cast<int>(dies_.size());
+    if (tier < 0 || tier >= n) return 1.0;
+    const auto& ov = tsv_placement_cfg_.tsv_die_weights;
+    if (static_cast<int>(ov.size()) == n)
+        return ov[static_cast<size_t>(tier)];
+    if (static_cast<int>(tier_net_weights_.size()) == n)
+        return tier_net_weights_[static_cast<size_t>(tier)];
+    return 1.0;
 }
 
 // ============================================================
@@ -595,14 +919,19 @@ double PlacementEngine::compute_tsv_cost() const
 //   B_lower = bbox of pins on tiers ≤ layer_index
 //   B_upper = bbox of pins on tiers ≥ layer_index+1
 //
-// 兩側皆有效時：
-//   - 若 B_lower 與 B_upper 在二維上重疊 → TSV 置於「重疊矩形」正中心
-//   - 否則 → 兩框各兩條 x 邊、兩條 y 邊共八條界線；x 四值排序取中間兩條、
-//     y 四值排序取中間兩條，所圍成矩形之正中心
-// 僅一側有效 → 該側 bbox 中心；最後夾取到對應 die 邊界。
+// 兩側皆有效時（見 tsv_position_from_two_bboxes_weighted）：
+//   - 若 B_lower 與 B_upper 二維重疊 → 重疊矩形中心
+//   - 若無重疊且兩側 die weight 不同 →「中間矩形 R」與權重較大側 bbox 的交集中心
+//   - 若無重疊且兩側 weight 視為相同 → 維持原版中間矩形中心
+// 相鄰 tier_below() 或 tier_above() 至少一層無此 net 的 pin：見 solve_tsv_gap_one_side_pin_span
+//   （最近下／上 pin tier 所夾區間內找最小 weight tier n；layer_index < n 則 R∩B_lower 中心，否則
+//   R∩B_upper 中心；兩側 aggregate 皆有效時 R 為兩框之中間矩形）。其餘 fallback 為單側 bbox 中心。
+// 最後夾取到對應 die 邊界。
 // ============================================================
-void PlacementEngine::solve_tsvs(const TsvPlacementConfig& /*tcfg*/)
+void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
 {
+    tsv_placement_cfg_ = tcfg;
+
     const int N = static_cast<int>(tsvs_.size());
     if (N == 0) {
         std::cout << "[SolveTSV] No TSVs to place.\n";
@@ -611,9 +940,15 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& /*tcfg*/)
 
     std::cout << "[SolveTSV] Direct center placement for " << N << " TSVs.\n";
 
+    const int nt = static_cast<int>(dies_.size());
+    std::vector<double> tier_w(static_cast<size_t>(nt));
+    for (int i = 0; i < nt; ++i)
+        tier_w[static_cast<size_t>(i)] = tsv_placement_tier_weight(i);
+
     for (TSV& tsv : tsvs_) {
         const Net& net = nets_[tsv.net_id];
-        BBox b_lo, b_hi;
+        const Die& die = dies_[tsv.layer_index];
+        BBox         b_lo, b_hi;
         for (int pid : net.pins) {
             const Module& m = modules_[pid];
             int mt = m.is_terminal ? 0 : m.tier_id;
@@ -621,22 +956,26 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& /*tcfg*/)
             if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
 
-        double tx = tsv.x, ty = tsv.y;
-        const bool lo_ok = b_lo.valid();
-        const bool hi_ok = b_hi.valid();
+        double       tx = tsv.x, ty = tsv.y;
+        const bool   lo_ok = b_lo.valid();
+        const bool   hi_ok = b_hi.valid();
 
-        if (lo_ok && hi_ok) {
-            tsv_position_from_two_bboxes(b_lo, b_hi, tx, ty);
-        } else if (lo_ok) {
-            tx = 0.5 * (b_lo.xmin + b_lo.xmax);
-            ty = 0.5 * (b_lo.ymin + b_lo.ymax);
-        } else if (hi_ok) {
-            tx = 0.5 * (b_hi.xmin + b_hi.xmax);
-            ty = 0.5 * (b_hi.ymin + b_hi.ymax);
+        if (!solve_tsv_gap_one_side_pin_span(net, modules_, nt, tsv.layer_index, tier_w, b_lo, b_hi,
+                                             lo_ok, hi_ok, die.width, die.height, tx, ty)) {
+            if (lo_ok && hi_ok) {
+                const double w_lo = tsv_placement_tier_weight(tsv.tier_below());
+                const double w_hi = tsv_placement_tier_weight(tsv.tier_above());
+                tsv_position_from_two_bboxes_weighted(b_lo, b_hi, w_lo, w_hi, tx, ty);
+            } else if (lo_ok) {
+                tx = 0.5 * (b_lo.xmin + b_lo.xmax);
+                ty = 0.5 * (b_lo.ymin + b_lo.ymax);
+            } else if (hi_ok) {
+                tx = 0.5 * (b_hi.xmin + b_hi.xmax);
+                ty = 0.5 * (b_hi.ymin + b_hi.ymax);
+            }
         }
 
-        const Die& die = dies_[tsv.layer_index];
-        tsv.x = std::max(0.0, std::min(die.width,  tx));
+        tsv.x = std::max(0.0, std::min(die.width, tx));
         tsv.y = std::max(0.0, std::min(die.height, ty));
     }
 
@@ -648,7 +987,12 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& /*tcfg*/)
 // reflow_tsvs_after_legalize:
 //   忽略既有 TSV 位置，依「所屬 net 全體 pin 之 bbox 周長」由小到大排序，
 //   各 TSV 在 B_lower/B_upper 決定之目標區域（與 solve_tsvs 相同之兩框幾何）內 first-fit；
-//   若區域內無空位，則在整張 die 上找 L1 距離至該目標矩形最近之可行位置。
+//   若相鄰 tier_below()／tier_above() 至少一層無 net pin：與 solve_tsvs 相同，在 R∩B_lower 或 R∩B_upper
+//   之矩形內 first-fit；
+//   若兩層 bbox 無交集且 die weight 不同：先在 R∩較重側 bbox 上／沿該線附近狹帶找空位（交集為線時
+//   不在整個 R 內 first-fit）。若仍無空位：令 ratio = w_lo / w_hi；ratio>2 或 ratio<0.5 時以較重側 bbox
+//   為 nearest 目標，
+//   否則（0.5≤ratio≤2）以較輕側 bbox 為 nearest 目標；其餘情況仍以 R 為 nearest 目標。
 //   障礙物為同層 module + 本輪已放置之 TSV。
 // ============================================================
 void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
@@ -692,6 +1036,9 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
 
     const int nlayer = static_cast<int>(dies_.size());
     std::vector<std::vector<PlacedRect>> tsv_placed_by_layer(nlayer);
+    std::vector<double> tier_w(static_cast<size_t>(nlayer));
+    for (int i = 0; i < nlayer; ++i)
+        tier_w[static_cast<size_t>(i)] = tsv_placement_tier_weight(i);
 
     std::cout << "[ReflowTSV] Post-legalize reflow " << Nt
               << " TSVs (net bbox perimeter order; in-region first-fit, else nearest off-region).\n";
@@ -715,8 +1062,13 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
 
         double rx0 = 0.0, ry0 = 0.0, rx1 = die.width, ry1 = die.height;
         bool   have_region = false;
+        bool   gap_one_side = false;
 
-        if (lo_ok && hi_ok) {
+        if (tsv_gap_one_side_target_rect(net, modules_, nlayer, layer, tier_w, b_lo, b_hi, lo_ok, hi_ok,
+                                         die.width, die.height, rx0, ry0, rx1, ry1)) {
+            have_region   = true;
+            gap_one_side = true;
+        } else if (lo_ok && hi_ok) {
             have_region = tsv_placement_rect_from_two_bboxes(b_lo, b_hi, rx0, ry0, rx1, ry1);
         } else if (lo_ok) {
             rx0 = b_lo.xmin;
@@ -747,6 +1099,33 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
         if (rx0 > rx1) std::swap(rx0, rx1);
         if (ry0 > ry1) std::swap(ry0, ry1);
 
+        double       w_lo = 1.0, w_hi = 1.0;
+        bool         weighted_asym = false;
+        bool         pref_rect_valid = false;
+        double       pref_rx0 = 0.0, pref_ry0 = 0.0, pref_rx1 = 0.0, pref_ry1 = 0.0;
+        const double epsw = 1e-9;
+
+        if (!gap_one_side && lo_ok && hi_ok) {
+            w_lo = tsv_placement_tier_weight(tsv.tier_below());
+            w_hi = tsv_placement_tier_weight(tsv.tier_above());
+            const double ix0 = std::max(b_lo.xmin, b_hi.xmin);
+            const double ix1 = std::min(b_lo.xmax, b_hi.xmax);
+            const double iy0 = std::max(b_lo.ymin, b_hi.ymin);
+            const double iy1 = std::min(b_lo.ymax, b_hi.ymax);
+            const bool   overlap2d = (ix0 <= ix1 + epsw && iy0 <= iy1 + epsw);
+            const bool   wdiff     = std::fabs(w_lo - w_hi)
+                                   > epsw * std::max(1.0, std::max(w_lo, w_hi));
+            weighted_asym = !overlap2d && wdiff;
+            if (weighted_asym) {
+                const BBox& fav = (w_lo > w_hi) ? b_lo : b_hi;
+                pref_rx0        = std::max(rx0, fav.xmin);
+                pref_rx1        = std::min(rx1, fav.xmax);
+                pref_ry0        = std::max(ry0, fav.ymin);
+                pref_ry1        = std::min(ry1, fav.ymax);
+                pref_rect_valid = (pref_rx0 <= pref_rx1 + epsw && pref_ry0 <= pref_ry1 + epsw);
+            }
+        }
+
         std::vector<PlacedRect> placed;
         placed.reserve(static_cast<int>(modules_.size()) + 16);
         for (const Module& m : modules_) {
@@ -762,9 +1141,33 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
                       tsv_placed_by_layer[layer].end());
 
         double cx = 0.0, cy = 0.0;
-        const bool in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy);
+        bool   in_region = false;
+        const bool skip_full_r_first_fit = !gap_one_side && weighted_asym && pref_rect_valid;
+        if (skip_full_r_first_fit) {
+            in_region = reflow_weighted_pref_line_corridor_fit(placed, pref_rx0, pref_ry0, pref_rx1,
+                                                                pref_ry1, die.width, die.height, hw,
+                                                                hh, cx, cy);
+        } else {
+            in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy);
+        }
         if (!in_region) {
-            if (!nearest_free_tsv_to_rect(placed, rx0, ry0, rx1, ry1,
+            double nx0 = rx0, ny0 = ry0, nx1 = rx1, ny1 = ry1;
+            if (!gap_one_side && weighted_asym) {
+                // const double wh    = std::max(w_hi, 1e-300);
+                // const double ratio = w_lo / wh;
+                // const bool   strong_asym = (ratio > 2.0 + 1e-12) || (ratio < 0.5 - 1e-12);
+                const bool   strong_asym = true;
+                const BBox&  heavy_bbox = (w_lo >= w_hi) ? b_lo : b_hi;
+                const BBox&  light_bbox = (w_lo <= w_hi) ? b_lo : b_hi;
+                const BBox&  fav_fb     = strong_asym ? heavy_bbox : light_bbox;
+                nx0 = std::max(0.0, std::min(die.width, fav_fb.xmin));
+                nx1 = std::max(0.0, std::min(die.width, fav_fb.xmax));
+                ny0 = std::max(0.0, std::min(die.height, fav_fb.ymin));
+                ny1 = std::max(0.0, std::min(die.height, fav_fb.ymax));
+                if (nx0 > nx1) std::swap(nx0, nx1);
+                if (ny0 > ny1) std::swap(ny0, ny1);
+            }
+            if (!nearest_free_tsv_to_rect(placed, nx0, ny0, nx1, ny1,
                                           die.width, die.height, hw, hh, cx, cy)) {
                 cx = std::max(hw, std::min(die.width - hw, die.width * 0.5));
                 cy = std::max(hh, std::min(die.height - hh, die.height * 0.5));
@@ -786,19 +1189,17 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
 //   LSE 近似 HPWL 的目標函數值
 //   WL(e) = γ * [ln Σ exp(xi/γ) + ln Σ exp(-xi/γ)
 //              + ln Σ exp(yi/γ) + ln Σ exp(-yi/γ)]
+//   每條 net 再乘以 net_wirelength_die_weight(net)（與梯度一致）
 // ============================================================
 double PlacementEngine::compute_lse_wirelength() const
 {
     double total = 0.0;
     const double g = cfg_.gamma;
 
-    auto pin_wl_w = [this](int pid) -> double {
-        return modules_[pid].is_terminal ? cfg_.wl_pin_weight_terminal
-                                         : cfg_.wl_pin_weight_module;
-    };
-
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
+
+        const double w_net = net_wirelength_die_weight(net);
 
         double sum_exp_x  = 0.0, sum_exp_nx = 0.0;
         double sum_exp_y  = 0.0, sum_exp_ny = 0.0;
@@ -814,29 +1215,29 @@ double PlacementEngine::compute_lse_wirelength() const
         }
 
         for (int id : net.pins) {
-            const double wi = pin_wl_w(id);
             double xi = modules_[id].x;
             double yi = modules_[id].y;
-            sum_exp_x  += wi * std::exp((xi - max_x) / g);
-            sum_exp_nx += wi * std::exp((min_x - xi) / g);
-            sum_exp_y  += wi * std::exp((yi - max_y) / g);
-            sum_exp_ny += wi * std::exp((min_y - yi) / g);
+            sum_exp_x  += std::exp((xi - max_x) / g);
+            sum_exp_nx += std::exp((min_x - xi) / g);
+            sum_exp_y  += std::exp((yi - max_y) / g);
+            sum_exp_ny += std::exp((min_y - yi) / g);
         }
 
         // WL_e = γ * [ln(Σe^{xi/γ}) + ln(Σe^{-xi/γ}) + ...]
         //      = γ * [max_x/γ + ln(Σe^{(xi-max_x)/γ}) + ...]  等效形式
-        total += g * (std::log(sum_exp_x)  + max_x  / g
+        const double wl_e = g * (std::log(sum_exp_x)  + max_x  / g
                     + std::log(sum_exp_nx) + (-min_x) / g
                     + std::log(sum_exp_y)  + max_y  / g
                     + std::log(sum_exp_ny) + (-min_y) / g);
+        total += w_net * wl_e;
     }
     return total;
 }
 
 // ============================================================
 // calculate_wirelength_gradient:
-//   ∂WL/∂xj = exp(xj/γ)/Σexp(xi/γ) - exp(-xj/γ)/Σexp(-xi/γ)
-//   同理 y 方向
+//   ∂WL/∂xj = w_net * (exp(xj/γ)/Σexp(xi/γ) - exp(-xj/γ)/Σexp(-xi/γ))
+//   同理 y 方向；w_net = net_wirelength_die_weight(net)
 // ============================================================
 void PlacementEngine::calculate_wirelength_gradient(
     std::vector<double>& gx, std::vector<double>& gy) const
@@ -846,13 +1247,10 @@ void PlacementEngine::calculate_wirelength_gradient(
 
     const double g = cfg_.gamma;
 
-    auto pin_wl_w = [this](int pid) -> double {
-        return modules_[pid].is_terminal ? cfg_.wl_pin_weight_terminal
-                                         : cfg_.wl_pin_weight_module;
-    };
-
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
+
+        const double w_net = net_wirelength_die_weight(net);
 
         // 數值穩定：找各方向最大最小值
         double max_x = -1e18, min_x = 1e18;
@@ -864,30 +1262,28 @@ void PlacementEngine::calculate_wirelength_gradient(
             min_y = std::min(min_y, modules_[id].y);
         }
 
-        // 加權分母 Z = Σ w_i exp(...)
+        // 分母 Z = Σ exp(...)（每個 pin 權重相同）
         double Z_px = 0.0, Z_nx = 0.0;
         double Z_py = 0.0, Z_ny = 0.0;
         for (int id : net.pins) {
-            const double wi = pin_wl_w(id);
-            Z_px += wi * std::exp((modules_[id].x - max_x) / g);
-            Z_nx += wi * std::exp((min_x - modules_[id].x) / g);
-            Z_py += wi * std::exp((modules_[id].y - max_y) / g);
-            Z_ny += wi * std::exp((min_y - modules_[id].y) / g);
+            Z_px += std::exp((modules_[id].x - max_x) / g);
+            Z_nx += std::exp((min_x - modules_[id].x) / g);
+            Z_py += std::exp((modules_[id].y - max_y) / g);
+            Z_ny += std::exp((min_y - modules_[id].y) / g);
         }
 
         // 計算每個 pin 的梯度貢獻
         for (int id : net.pins) {
             if (modules_[id].is_terminal) continue;  // terminal 固定，跳過
 
-            const double wj = pin_wl_w(id);
             double ex  = std::exp((modules_[id].x - max_x) / g);
             double enx = std::exp((min_x - modules_[id].x) / g);
             double ey  = std::exp((modules_[id].y - max_y) / g);
             double eny = std::exp((min_y - modules_[id].y) / g);
 
-            // Weighted LSE: ∂WL/∂xj = wj * (ex/Z_px - enx/Z_nx)（γ=g 時與目標一致）
-            gx[id] += wj * (ex / Z_px - enx / Z_nx);
-            gy[id] += wj * (ey / Z_py - eny / Z_ny);
+            // LSE: ∂(w_net * WL)/∂xj = w_net * (ex/Z_px - enx/Z_nx)
+            gx[id] += w_net * (ex / Z_px - enx / Z_nx);
+            gy[id] += w_net * (ey / Z_py - eny / Z_ny);
         }
     }
 }
@@ -998,19 +1394,62 @@ void PlacementEngine::calculate_density_gradient(
 }
 
 // ============================================================
+// hpwl_die_weight: 僅供 compute_hpwl 的每層乘數
+//   cfg_.hpwl_die_weights 長度 == num_dies 時優先；否則用 .block 的 tier_net_weights_
+// ============================================================
+double PlacementEngine::hpwl_die_weight(int tier) const
+{
+    const int n = static_cast<int>(dies_.size());
+    if (tier < 0 || tier >= n) return 1.0;
+    const auto& ov = cfg_.hpwl_die_weights;
+    if (static_cast<int>(ov.size()) == n)
+        return ov[static_cast<size_t>(tier)];
+    if (static_cast<int>(tier_net_weights_.size()) == n)
+        return tier_net_weights_[static_cast<size_t>(tier)];
+    return 1.0;
+}
+
+// ============================================================
+// analytical_tier_net_weight: LSE / analytical 專用，僅讀 .block 的 tier_net_weights_
+// ============================================================
+double PlacementEngine::analytical_tier_net_weight(int tier) const
+{
+    const int n = static_cast<int>(dies_.size());
+    if (tier < 0 || tier >= n) return 1.0;
+    if (static_cast<int>(tier_net_weights_.size()) == n)
+        return tier_net_weights_[static_cast<size_t>(tier)];
+    return 1.0;
+}
+
+// ============================================================
+// net_wirelength_die_weight: 該 net 在 LSE 中的 die weight 乘數
+//   收集所有 pin 所在 tier（terminal 視為 tier 0），對相異 tier 的
+//   analytical_tier_net_weight 取算術平均；單層 net 即為該層 .block weight。
+// ============================================================
+double PlacementEngine::net_wirelength_die_weight(const Net& net) const
+{
+    std::set<int> tiers;
+    for (int id : net.pins) {
+        const Module& m = modules_[id];
+        const int     mt = m.is_terminal ? 0 : m.tier_id;
+        tiers.insert(mt);
+    }
+    if (tiers.empty()) return 1.0;
+    double sum_w = 0.0;
+    for (int t : tiers)
+        sum_w += analytical_tier_net_weight(t);
+    return sum_w / static_cast<double>(tiers.size());
+}
+
+// ============================================================
 // compute_hpwl: 計算精確 HPWL（含 terminal、module、TSV）
 //
-// 若尚無任何 TSV（例如 analytical 階段尚未 build_tsvs）：
-//   將每條 net 視為同一平面，對所有 pin 建單一 bbox 算 HPWL（不分 tier）。
+// 無 TSV（例如尚未 build_tsvs）：
+//   每條 net 所有 pin 壓成單一 2D bbox，半周長 (Δx+Δy) 乘以
+//   「該 net 有 pin 的各層」之 hpwl_die_weight 的算術平均 (Σw / n)。
 //
-// 若有 TSV：3D IC 逐層累加。對第 t 層，納入：
-//   - 位於該層的 module 中心（tier_id == t）
-//   - terminal（is_terminal == true，全部視為 tier 0）
-//   - 連接第 t 層與第 t+1 層的 TSV（layer_index == t）：出現在 tier t 的 bbox
-//   - 連接第 t-1 層與第 t 層的 TSV（layer_index == t-1）：出現在 tier t 的 bbox
-// 即每個 TSV 同時計入其 tier_below 與 tier_above 兩層的 bbox 中，
-// 反映「此層需要在 pin 與 TSV 之間佈線」的真實線長。
-// 跨越多層的 net 每一層都會各算一次 HPWL 後累加。
+// 有 TSV：逐層 bbox（module + terminal@tier0 + 該層相關 TSV），
+//   每層 (Δx+Δy) * hpwl_die_weight(t) 後累加。
 // ============================================================
 double PlacementEngine::compute_hpwl() const
 {
@@ -1021,15 +1460,29 @@ double PlacementEngine::compute_hpwl() const
         for (const Net& net : nets_) {
             double x_min = 1e18, x_max = -1e18;
             double y_min = 1e18, y_max = -1e18;
+            std::set<int> tiers_seen;
+
             for (int id : net.pins) {
                 const Module& m = modules_[id];
                 x_min = std::min(x_min, m.x);
                 x_max = std::max(x_max, m.x);
                 y_min = std::min(y_min, m.y);
                 y_max = std::max(y_max, m.y);
+                const int mt = m.is_terminal ? 0 : m.tier_id;
+                tiers_seen.insert(mt);
             }
-            if (x_min <= x_max && y_min <= y_max)
-                total += (x_max - x_min) + (y_max - y_min);
+
+            if (x_min <= x_max && y_min <= y_max) {
+                const double flat_hpwl = (x_max - x_min) + (y_max - y_min);
+                double w_avg = 1.0;
+                if (!tiers_seen.empty()) {
+                    double sum_w = 0.0;
+                    for (int t : tiers_seen)
+                        sum_w += hpwl_die_weight(t);
+                    w_avg = sum_w / static_cast<double>(tiers_seen.size());
+                }
+                total += w_avg * flat_hpwl;
+            }
         }
         return total;
     }
@@ -1046,25 +1499,22 @@ double PlacementEngine::compute_hpwl() const
                 y_max = std::max(y_max, y);
             };
 
-            // 納入此層的 module 與 terminal（terminal 視為 tier 0）
             for (int id : net.pins) {
                 const Module& m = modules_[id];
-                int mt = m.is_terminal ? 0 : m.tier_id;
+                const int mt = m.is_terminal ? 0 : m.tier_id;
                 if (mt == t) expand(m.x, m.y);
             }
 
-            // 納入與此層相鄰的 TSV：
-            //   tier_below() == t → 從 tier t 往上的 TSV，屬於 tier t 的出口
-            //   tier_above() == t → 從 tier t-1 往上的 TSV，屬於 tier t 的入口
             for (const TSV& tsv : tsvs_) {
                 if (tsv.net_id != net.id) continue;
                 if (tsv.tier_below() == t || tsv.tier_above() == t)
                     expand(tsv.x, tsv.y);
             }
 
-            // 此層有至少兩個點才會有非零線長
-            if (x_min <= x_max && y_min <= y_max)
-                total += (x_max - x_min) + (y_max - y_min);
+            if (x_min <= x_max && y_min <= y_max) {
+                const double layer_hpwl = (x_max - x_min) + (y_max - y_min);
+                total += hpwl_die_weight(t) * layer_hpwl;
+            }
         }
     }
     return total;
@@ -1088,9 +1538,9 @@ void PlacementEngine::clamp_to_die(Module& m, const Die& die) const
 //   Line 1: total_cost（此處以 HPWL 代替，無 TSV 項）
 //   Line 2: hpwl
 //   Line 3: bounding_box_area  (bbox_w * bbox_h)
-//   Line 4: bbox_w  bbox_h     (所有可移動方塊的最大外框)
+//   Line 4: bbox_w  bbox_h     (所有可移動方塊的最大外框，浮點寬高)
 //   Line 5: runtime (秒)
-//   Line 6+: <name> <die_id> <x_ll> <y_ll> <x_ur> <y_ur>
+//   Line 6+: <name> <die_id> <x_ll> <y_ll> <x_ur> <y_ur>（浮點座標）
 // ============================================================
 void PlacementEngine::write_output(const std::string& filename,
                                    double runtime) const
@@ -1111,10 +1561,12 @@ void PlacementEngine::write_output(const std::string& filename,
         g_ymin = std::min(g_ymin, m.ly());
         g_ymax = std::max(g_ymax, m.ry());
     }
-    // 整數化邊界
-    int bbox_w = static_cast<int>(std::ceil(g_xmax) - std::floor(g_xmin));
-    int bbox_h = static_cast<int>(std::ceil(g_ymax) - std::floor(g_ymin));
-    double bbox_area = static_cast<double>(bbox_w) * bbox_h;
+    double bbox_w = 0.0, bbox_h = 0.0, bbox_area = 0.0;
+    if (g_xmin <= g_xmax && g_ymin <= g_ymax) {
+        bbox_w    = g_xmax - g_xmin;
+        bbox_h    = g_ymax - g_ymin;
+        bbox_area = bbox_w * bbox_h;
+    }
 
     double hpwl       = compute_hpwl();  // 含 terminal、module、TSV 的 bbox
     double total_cost = hpwl;
@@ -1123,20 +1575,16 @@ void PlacementEngine::write_output(const std::string& filename,
     std::fprintf(fp, "%f\n",   total_cost);
     std::fprintf(fp, "%f\n",   hpwl);
     std::fprintf(fp, "%f\n",   bbox_area);
-    std::fprintf(fp, "%d %d\n", bbox_w, bbox_h);
+    std::fprintf(fp, "%.15g %.15g\n", bbox_w, bbox_h);
     std::fprintf(fp, "%f\n",   runtime);
 
     // ---- 逐一輸出每個可移動方塊 ----
-    // <name> <die_id> <x_ll> <y_ll> <x_ur> <y_ur>（整數座標）
+    // <name> <die_id> <x_ll> <y_ll> <x_ur> <y_ur>
     for (const Module& m : modules_) {
         if (m.is_terminal) continue;
-        int x_ll = static_cast<int>(std::round(m.lx()));
-        int y_ll = static_cast<int>(std::round(m.ly()));
-        int x_ur = static_cast<int>(std::round(m.rx()));
-        int y_ur = static_cast<int>(std::round(m.ry()));
-        std::fprintf(fp, "%s %d %d %d %d %d\n",
+        std::fprintf(fp, "%s %d %.15g %.15g %.15g %.15g\n",
                      m.name.c_str(), m.tier_id,
-                     x_ll, y_ll, x_ur, y_ur);
+                     m.lx(), m.ly(), m.rx(), m.ry());
     }
 
     // ---- TSV Assignments ----
