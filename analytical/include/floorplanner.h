@@ -24,6 +24,7 @@ struct Module {
     int         tier_id;      // 所屬 Die（0-indexed），terminal 為 -1
     bool        is_terminal;  // 是否為固定 I/O 端點
     bool        is_fixed = false; // 是否被 constraint 固定（位置不可移動）
+    double      move_weight = 1.0; // heuristic legalize 權重（越大越不希望與其重疊）
 
     double area() const { return width * height; }
     double lx()   const { return x - width  * 0.5; }   // 左邊界
@@ -286,6 +287,7 @@ public:
 
     // ---- 訪問器 ----
     const std::vector<Module>& modules()  const { return modules_; }
+    std::vector<Module>&       modules_mutable() { return modules_; }
     const std::vector<Net>&    nets()     const { return nets_; }
     const std::vector<Die>&    dies()     const { return dies_; }
     const std::vector<TSV>&    tsvs()     const { return tsvs_; }

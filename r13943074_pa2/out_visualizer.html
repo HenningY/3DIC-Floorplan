@@ -83,6 +83,9 @@
         .btn.secondary:hover { background-color: #fff; color: #2563eb; }
         .btn.loaded { background-color: #16a34a; border-color: #16a34a; }
         .btn.loaded:hover { background-color: #fff; color: #16a34a; }
+        .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .btn:disabled:hover { background-color: #000; color: #fff; }
+        .btn.secondary:disabled:hover { background-color: #2563eb; color: #fff; }
 
         #scale-slider { width: 160px; }
 
@@ -92,6 +95,13 @@
 
         #die-select {
             padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid #999;
+            font-size: 13px;
+        }
+        .coord-input {
+            width: 90px;
+            padding: 4px 6px;
             border-radius: 4px;
             border: 1px solid #999;
             font-size: 13px;
@@ -189,8 +199,14 @@
             <label><input type="checkbox" id="showTerminalsCheck" checked> Terminals</label>
             <label><input type="checkbox" id="showTsvStripsCheck" checked> TSV Strips</label>
             <label><input type="checkbox" id="showTsvPointsCheck" checked> TSV Points</label>
+            <label title="顯示 TSV strip 名稱與 TSV assignment 的 net 文字（圖上）">
+                <input type="checkbox" id="showTsvLabelsCheck" checked> TSV labels
+            </label>
             <label title="勾選後，連接 tier d→d+1 的 TSV 只在 Die d（下層）顯示">
                 <input type="checkbox" id="tsvLowerTierOnlyCheck"> TSV 下層優先
+            </label>
+            <label title="顯示目前選取 die 的 intra-die net 連線（不含跨層 net）">
+                <input type="checkbox" id="showNetsCheck"> Nets
             </label>
         </div>
 
@@ -199,6 +215,11 @@
             <span class="ctrl-group-label">Edit</span>
             <button class="btn loaded" id="resetPositionsBtn" type="button">Reset positions</button>
             <button class="btn" id="rotateSelectedBtn" type="button" title="Rotate selected module by 90 degrees (anchor: module bottom-left).">Rotate 90°</button>
+            <label for="moduleCenterXInput">Cx</label>
+            <input id="moduleCenterXInput" class="coord-input" type="number" step="0.5" placeholder="center x">
+            <label for="moduleCenterYInput">Cy</label>
+            <input id="moduleCenterYInput" class="coord-input" type="number" step="0.5" placeholder="center y">
+            <button class="btn" id="moveSelectedCenterBtn" type="button" title="Move selected module center to (Cx, Cy)">Move to Center</button>
             <button class="btn secondary" id="recomputeHpwlBtn" type="button" title="Recompute HPWL using uploaded .nets + current edited positions">Recompute HPWL</button>
         </div>
 
@@ -216,6 +237,21 @@
                 <option value="all">All (overlap)</option>
             </select>
         </div>
+
+        <!-- .process file -->
+        <div class="ctrl-group">
+            <span class="ctrl-group-label">.process</span>
+            <label class="btn" id="loadProcessLabel" for="processFileInput">Load .process</label>
+            <input type="file" id="processFileInput" accept=".txt,.process" style="display:none">
+        </div>
+
+        <!-- Legalize replay (hidden until loaded) -->
+        <div class="ctrl-group" id="legalizePlaybackGroup" style="display:none">
+            <span class="ctrl-group-label">Replay</span>
+            <button class="btn" id="legalizeBackBtn" type="button" title="Previous step (←)">◀</button>
+            <span id="legalizeStepInfo" style="font-size:12px;min-width:200px;text-align:center;line-height:1.4">—</span>
+            <button class="btn" id="legalizeForwardBtn" type="button" title="Next step (→)">▶</button>
+        </div>
     </div>
 
     <div id="legend"></div>
@@ -231,6 +267,6 @@
 
     <div id="tooltip"></div>
 
-    <script src="out_visualizer.js?v=9"></script>
+    <script src="out_visualizer.js?v=17"></script>
 </body>
 </html>

@@ -174,3 +174,53 @@ void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os)
            << "  avg=" << (cnt > 0 ? h / cnt : 0.0) << "\n";
     }
 }
+
+// ============================================================
+// print_overlap_report
+// ============================================================
+void print_overlap_report(const PlacementEngine& engine,
+                          double                 tsv_width,
+                          double                 tsv_height,
+                          std::ostream&          os)
+{
+    struct ItemRect {
+        char   kind; // 'M' = Module, 'T' = TSV
+        int    id;
+        double lx, ly, rx, ry;
+    };
+
+    auto overlaps = [](const ItemRect& a, const ItemRect& b) -> bool {
+        constexpr double eps = 1e-9;
+        if (a.rx <= b.lx + eps || b.rx <= a.lx + eps) return false;
+        if (a.ry <= b.ly + eps || b.ry <= a.ly + eps) return false;
+        return true;
+    };
+
+    const double tsv_hw = tsv_width  * 0.5;
+    const double tsv_hh = tsv_height * 0.5;
+
+    for (int t = 0; t < engine.num_dies(); ++t) {
+        std::vector<ItemRect> items;
+
+        for (const Module& m : engine.modules()) {
+            if (!m.is_terminal && m.tier_id == t)
+                items.push_back({ 'M', m.id, m.lx(), m.ly(), m.rx(), m.ry() });
+        }
+        for (const TSV& tsv : engine.tsvs()) {
+            if (tsv.layer_index == t)
+                items.push_back({ 'T', tsv.id,
+                                   tsv.x - tsv_hw, tsv.y - tsv_hh,
+                                   tsv.x + tsv_hw, tsv.y + tsv_hh });
+        }
+
+        int ov_count = 0;
+        for (size_t i = 0; i < items.size(); ++i)
+            for (size_t j = i + 1; j < items.size(); ++j)
+                if (overlaps(items[i], items[j])) ++ov_count;
+
+        if (ov_count == 0)
+            os << "  Tier " << t << " overlaps: none\n";
+        else
+            os << "  Tier " << t << " overlaps: " << ov_count << " pairs\n";
+    }
+}

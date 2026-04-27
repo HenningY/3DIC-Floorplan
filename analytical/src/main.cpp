@@ -1,6 +1,7 @@
 // 3D IC Analytical Floorplanner - 主程式入口
 // 用法：./analytical <block_file> <net_file> [output_file] [constraint_file]
 #include "floorplanner.h"
+#include "legalize_heu.h"
 #include "util.h"
 
 #include <iostream>
@@ -28,7 +29,7 @@ int main(int argc, char* argv[])
     cfg.step_decay      = 0.999;  // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;     // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.85;     // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 24;      // Bin 格數（每層 16x16）
+    cfg.bin_resolution  = 72;      // Bin 格數（每層 16x16）
     cfg.convergence_tol = 1e-5;    // 收斂容忍度 default 1e-5
 
     // ---- λ 遞增排程 ----
@@ -79,8 +80,8 @@ int main(int argc, char* argv[])
 
     // ---- TSV Analytical Placement ---- 目前沒有用到
     TsvPlacementConfig tcfg;
-    tcfg.tsv_width      = 0.1;   // TSV 物理寬度（die 座標單位）
-    tcfg.tsv_height     = 0.1;   // TSV 物理高度
+    tcfg.tsv_width      = 3;   // TSV 物理寬度（die 座標單位）
+    tcfg.tsv_height     = 3;   // TSV 物理高度
     // TSV cost 每層乘數：留空則與 .block 的 Weight: 相同；若要覆寫例如：
     tcfg.tsv_die_weights = {1, 1, 1};
     engine.solve_tsvs(tcfg);
@@ -93,18 +94,22 @@ int main(int argc, char* argv[])
     pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數
     pcfg.max_split_retries = 32;
-    pcfg.tsv_width       = 0.1;   // TSV 物理尺寸 3x3（與 solve_tsvs 一致）
-    pcfg.tsv_height      = 0.1;
+    pcfg.tsv_width       = 3;   // TSV 物理尺寸 3x3（與 solve_tsvs 一致）
+    pcfg.tsv_height      = 3;
     pcfg.log_tree        = true;
     // pcfg.log_file        = output_file + "_partition_tree.txt";
     pcfg.write_positions = true;
     // pcfg.positions_file  = output_file + "_partition_positions.txt";
 
+    // ---- Heuristic legalization flow (WIP) ----
+    // 目前只先找出每層最靠近該層 module-bbox 中心的 module
+    run_legalize_heu(engine, pcfg);
+
     // ---- Recursive Bi-partitioning and Legalization ----
     // engine.partition_all_tiers(pcfg);
 
     // ---- TSV：依 net bbox 周長排序，在兩層 bbox 幾何區域內 first-fit 重排 ----
-    // engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
+    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
     // const auto snap_legal = record_positions(engine);
@@ -117,7 +122,7 @@ int main(int argc, char* argv[])
     // ---- 最終統計 ----
     // true  = 只計算「整條 net 的所有 pin 都在同一層」的 HPWL（跨層 net 排除）
     // false = 計算完整 HPWL（含跨層 net，行為與原本相同）
-    const bool intra_die_hpwl_only = true;
+    const bool intra_die_hpwl_only = false;
 
     std::cout << "\n========== Summary ==========\n";
     std::cout << "  Total time   : " << elapsed << " s\n";
@@ -133,67 +138,7 @@ int main(int argc, char* argv[])
     std::cout << "  TSV cost     : " << engine.compute_tsv_cost() << "\n";
 
     // ---- 最終重疊檢查（summary 印出每一層 overlap pairs）----
-    // 說明：這裡比對的是同一 tier 的 modules（tier_id==t）與該 tier interface 的 TSV（layer_index==t）。
-    struct ItemRect {
-        char   kind; // 'M' = Module, 'T' = TSV
-        int    id;   // global id
-        double lx, ly, rx, ry;
-    };
-
-    auto rects_overlap_xy = [&](const ItemRect& a, const ItemRect& b) -> bool {
-        const double eps = 1e-9;
-        if (a.rx <= b.lx + eps || b.rx <= a.lx + eps) return false;
-        if (a.ry <= b.ly + eps || b.ry <= a.ly + eps) return false;
-        return true;
-    };
-
-    const double tsv_hw = pcfg.tsv_width * 0.5;
-    const double tsv_hh = pcfg.tsv_height * 0.5;
-
-    for (int t = 0; t < engine.num_dies(); ++t) {
-        std::vector<ItemRect> items;
-
-        for (const Module& m : engine.modules()) {
-            if (!m.is_terminal && m.tier_id == t) {
-                items.push_back({ 'M', m.id, m.lx(), m.ly(), m.rx(), m.ry() });
-            }
-        }
-        for (const TSV& tsv : engine.tsvs()) {
-            if (tsv.layer_index == t) {
-                items.push_back({ 'T', tsv.id,
-                                   tsv.x - tsv_hw, tsv.y - tsv_hh,
-                                   tsv.x + tsv_hw, tsv.y + tsv_hh });
-            }
-        }
-
-        std::vector<std::pair<int, int>> ov_pairs;
-        for (size_t i = 0; i < items.size(); ++i) {
-            for (size_t j = i + 1; j < items.size(); ++j) {
-                if (rects_overlap_xy(items[i], items[j])) {
-                    ov_pairs.push_back({ static_cast<int>(i), static_cast<int>(j) });
-                }
-            }
-        }
-
-        if (ov_pairs.empty()) {
-            std::cout << "  Tier " << t << " overlaps: none\n";
-            continue;
-        }
-
-        std::cout << "  Tier " << t << " overlaps: " << ov_pairs.size() << " pairs\n";
-        // for (const auto& pr : ov_pairs) {
-        //     const auto& a = items[pr.first];
-        //     const auto& b = items[pr.second];
-
-        //     std::cout << "    - ";
-        //     if (a.kind == 'M') std::cout << "Module#" << a.id;
-        //     else                std::cout << "TSV#" << a.id;
-        //     std::cout << "  <->  ";
-        //     if (b.kind == 'M') std::cout << "Module#" << b.id;
-        //     else                std::cout << "TSV#" << b.id;
-        //     std::cout << "\n";
-        // }
-    }
+    print_overlap_report(engine, pcfg.tsv_width, pcfg.tsv_height);
 
     // Die 使用率統計
     for (int t = 0; t < engine.num_dies(); ++t) {

@@ -40,3 +40,13 @@ IntraDieStats compute_intra_die_hpwl(const PlacementEngine& engine);
 
 // 在 std::ostream 上列印 IntraDieStats 的逐層明細
 void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os = std::cout);
+
+// ============================================================
+// Overlap 檢查：module 與 TSV 的重疊對數統計
+// ============================================================
+// 印出每一層的 overlap pair 數量（module-module / module-TSV / TSV-TSV 全部算）
+// tsv_width / tsv_height：TSV 的物理尺寸（用來建矩形邊界）
+void print_overlap_report(const PlacementEngine& engine,
+    double                 tsv_width,
+    double                 tsv_height,
+    std::ostream&          os = std::cout);

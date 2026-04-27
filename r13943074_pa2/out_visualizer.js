@@ -25,7 +25,9 @@ let showOutline    = true;
 let showTerminals  = true;
 let showTsvStrips     = true;
 let showTsvPoints     = true;
+let showTsvLabels     = true;   // TSV strip 名稱、TSV assignment 的 net 文字（畫在圖上）
 let tsvLowerTierOnly  = false;  // true = tier d→d+1 的 TSV 只在 die d（下層）顯示
+let showNets          = false;  // 顯示同層 intra-die net 連線
 
 // 畫面上 terminal 的像素位置（供 hover 檢測）
 let terminalPixels = [];   // [{name, cx, cy, worldX, worldY}]
@@ -47,12 +49,16 @@ let dragOffsetX = 0;
 let dragOffsetY = 0;
 let currentView = null; // { wMinX, wMinY, ch, scale }
 
+// ── Legalize process replay ────────────────────────────────────────────────────
+let legalizeData        = null;  // { tierData: {N: {steps,moves}}, tier0Steps, tier0Moves }
+let legalizeStepIndex   = -1;    // -1 = initial; 0..N-1 = after applying step i
+let legalizeCache       = [];    // [0]=initial die state; [i+1]=state after step i
+let legalizeCurrentTier = 0;     // 目前播放中的 tier（與 die-select 同步）
+let die0ModuleMap       = new Map(); // module_id(number) -> blockIndex in current tier die
+let legalizeBaseDims    = {};    // module_id -> {w, h}（保留但不用於旋轉判斷）
+
 function deepCopy(obj) {
     return JSON.parse(JSON.stringify(obj));
-}
-
-function snapInt(v) {
-    return Math.round(v);
 }
 
 // TSV centers 在既有輸出中通常是 .0/.5；用 0.5 網格對齊，確保 3x3 正方形四邊落在整數座標。
@@ -123,6 +129,9 @@ function setupUI() {
     const terminalCheck = document.getElementById('showTerminalsCheck');
     const resetBtn      = document.getElementById('resetPositionsBtn');
     const rotateBtn     = document.getElementById('rotateSelectedBtn');
+    const moveCenterBtn = document.getElementById('moveSelectedCenterBtn');
+    const moduleCenterXInput = document.getElementById('moduleCenterXInput');
+    const moduleCenterYInput = document.getElementById('moduleCenterYInput');
     const recomputeHpwlBtn = document.getElementById('recomputeHpwlBtn');
     const tooltip       = document.getElementById('tooltip');
 
@@ -134,10 +143,14 @@ function setupUI() {
             try {
                 outDataOriginal = parseOutContent(text);
                 outData = deepCopy(outDataOriginal);
+                buildDie0ModuleMap();
+                // 重新載入 .out 後重置 legalize replay 狀態
+                if (legalizeData) resetLegalizeReplay();
                 selected = null;
                 dragging = false;
                 hoveredTerminal = null;
                 hoveredTsv = null;
+                syncSelectedModuleCenterInputs();
                 outLabel.textContent = `✓ ${file.name}`;
                 outLabel.classList.add('loaded');
                 updateDieSelect();
@@ -158,6 +171,7 @@ function setupUI() {
         readFile(file, text => {
             try {
                 blockData = parseBlockContent(text);
+                buildLegalizeBaseDims();
                 blockLabel.textContent = `✓ ${file.name}`;
                 blockLabel.classList.add('loaded');
                 // 若還沒載入 .out，也能根據 .block 單獨顯示
@@ -201,6 +215,12 @@ function setupUI() {
     dieSelect.addEventListener('change', () => {
         updateInfoPanel();
         redraw();
+        // 換 die 時同步切換 legalize replay 到對應 tier
+        if (legalizeData) {
+            const val = dieSelect.value;
+            const tierNum = (val === 'all') ? legalizeCurrentTier : parseInt(val, 10);
+            switchLegalizeTier(tierNum);
+        }
     });
 
     // ── 顯示選項 ──
@@ -216,8 +236,14 @@ function setupUI() {
     document.getElementById('showTsvPointsCheck').addEventListener('change', e => {
         showTsvPoints = e.target.checked; redraw();
     });
+    document.getElementById('showTsvLabelsCheck').addEventListener('change', e => {
+        showTsvLabels = e.target.checked; redraw();
+    });
     document.getElementById('tsvLowerTierOnlyCheck').addEventListener('change', e => {
         tsvLowerTierOnly = e.target.checked; redraw();
+    });
+    document.getElementById('showNetsCheck').addEventListener('change', e => {
+        showNets = e.target.checked; redraw();
     });
 
     // ── Edit: Reset / Rotate ───────────────────────────────────────────────
@@ -228,6 +254,7 @@ function setupUI() {
         dragging = false;
         hoveredTerminal = null;
         hoveredTsv = null;
+        syncSelectedModuleCenterInputs();
         tooltip.style.display = 'none';
         redraw();
         updateInfoPanel();
@@ -239,11 +266,38 @@ function setupUI() {
         if (!die) return;
         const b = die.blocks[selected.blockIndex];
         if (!b) return;
-        // Rotation 規則 A：以 (x,y) 左下角為 anchor，只交換 width/height
+        // 以 module 中心點為 anchor 旋轉 90°（交換 w/h 並回推左下角）
+        const cx = b.x + b.width / 2;
+        const cy = b.y + b.height / 2;
         const oldW = b.width;
         b.width = b.height;
         b.height = oldW;
-        // x,y 不變
+        b.x = cx - b.width / 2;
+        b.y = cy - b.height / 2;
+        syncSelectedModuleCenterInputs();
+        redraw();
+        updateInfoPanel();
+    });
+
+    moveCenterBtn.addEventListener('click', () => {
+        if (!outData || !selected || selected.type !== 'module') {
+            alert('Please select a module first.');
+            return;
+        }
+        const cx = parseFloat(moduleCenterXInput.value);
+        const cy = parseFloat(moduleCenterYInput.value);
+        if (!Number.isFinite(cx) || !Number.isFinite(cy)) {
+            alert('Please input valid center coordinates (Cx, Cy).');
+            return;
+        }
+
+        const die = outData.dies[selected.dieId];
+        if (!die) return;
+        const b = die.blocks[selected.blockIndex];
+        if (!b) return;
+        b.x = cx - b.width / 2;
+        b.y = cy - b.height / 2;
+        syncSelectedModuleCenterInputs();
         redraw();
         updateInfoPanel();
     });
@@ -264,6 +318,43 @@ function setupUI() {
             console.error(err);
             alert('Failed to recompute HPWL: ' + err.message);
         }
+    });
+
+    // ── .process 檔案載入 + Replay 按鈕 ─────────────────────────────────────
+    const processInput     = document.getElementById('processFileInput');
+    const processLabel     = document.getElementById('loadProcessLabel');
+    const legalizeBackBtn  = document.getElementById('legalizeBackBtn');
+    const legalizeForwardBtn = document.getElementById('legalizeForwardBtn');
+
+    processInput.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        readFile(file, text => {
+            try {
+                legalizeData = parseLegalizeProcess(text);
+                processLabel.textContent = `✓ ${file.name}`;
+                processLabel.classList.add('loaded');
+                buildDie0ModuleMap();
+                buildLegalizeBaseDims();
+                resetLegalizeReplay();
+                updateLegalizeUI();
+            } catch (err) {
+                console.error(err);
+                alert('Failed to parse .process file: ' + err.message);
+            }
+        });
+    });
+
+    legalizeBackBtn.addEventListener('click', () => legalizeGoBack());
+    legalizeForwardBtn.addEventListener('click', () => legalizeGoForward());
+
+    // 鍵盤快捷鍵：← / → 控制 replay（input 焦點時不攔截）
+    document.addEventListener('keydown', e => {
+        if (!legalizeData) return;
+        const tag = document.activeElement && document.activeElement.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        if (e.key === 'ArrowRight') { e.preventDefault(); legalizeGoForward(); }
+        if (e.key === 'ArrowLeft')  { e.preventDefault(); legalizeGoBack(); }
     });
 
     // ── Canvas edit（點選/拖曳）────────────────────────────────────────────
@@ -330,6 +421,7 @@ function setupUI() {
             hoveredTerminal = null;
             hoveredTsv = null;
             tooltip.style.display = 'none';
+            syncSelectedModuleCenterInputs();
             redraw();
             updateInfoPanel();
             return;
@@ -343,6 +435,7 @@ function setupUI() {
             hoveredTerminal = null;
             hoveredTsv = null;
             tooltip.style.display = 'none';
+            syncSelectedModuleCenterInputs();
             redraw();
             updateInfoPanel();
             return;
@@ -353,6 +446,7 @@ function setupUI() {
         hoveredTerminal = null;
         hoveredTsv = null;
         tooltip.style.display = 'none';
+        syncSelectedModuleCenterInputs();
         redraw();
         updateInfoPanel();
     });
@@ -386,6 +480,7 @@ function setupUI() {
                     // b.y = snapInt(targetY);
                     b.x = worldX - dragOffsetX;
                     b.y = worldY - dragOffsetY;
+                    syncSelectedModuleCenterInputs();
                 }
             } else if (selected.type === 'tsv') {
                 const a = outData && outData.tsvAssignments ? outData.tsvAssignments[selected.assignmentIndex] : null;
@@ -476,6 +571,30 @@ function readFile(file, cb) {
     const reader = new FileReader();
     reader.onload = () => cb(reader.result);
     reader.readAsText(file);
+}
+
+function syncSelectedModuleCenterInputs() {
+    const xInput = document.getElementById('moduleCenterXInput');
+    const yInput = document.getElementById('moduleCenterYInput');
+    if (!xInput || !yInput) return;
+
+    if (!outData || !selected || selected.type !== 'module') {
+        xInput.value = '';
+        yInput.value = '';
+        return;
+    }
+
+    const die = outData.dies[selected.dieId];
+    const b = die && die.blocks ? die.blocks[selected.blockIndex] : null;
+    if (!b) {
+        xInput.value = '';
+        yInput.value = '';
+        return;
+    }
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height / 2;
+    xInput.value = cx.toFixed(2);
+    yInput.value = cy.toFixed(2);
 }
 
 // ── 解析 .out 檔 ───────────────────────────────────────────────────────────────
@@ -1213,7 +1332,7 @@ function redraw() {
             ctx.strokeRect(sx, sy, sw, sh);
 
             // 名稱（夠大才顯示）
-            if (scale >= 1.5 && sw > 16 && sh > 8) {
+            if (showTsvLabels && scale >= 1.5 && sw > 16 && sh > 8) {
                 ctx.fillStyle = '#78350f';
                 ctx.font      = '9px Arial';
                 ctx.fillText(s.blockName, sx + 2, sy + 10);
@@ -1275,6 +1394,11 @@ function redraw() {
                 }
             });
         });
+    }
+
+    // ── 2.6. 畫 Intra-die Nets（.nets）──
+    if (showNets && netsData && netsData.nets && outData) {
+        drawIntraDieNets(toCanvasX, toCanvasY);
     }
 
     // ── 2.5. TSV hover：該 net 在上下相鄰層的 bounding box（需 .nets）
@@ -1343,7 +1467,7 @@ function redraw() {
             const isSelected = selected && selected.type === 'tsv' && selected.assignmentIndex === assignmentIndex;
 
             // TSV 實際佔地：世界座標 (x±1.5, y±1.5)，畫布對應 3*scale 大小
-            let tsv_size = 1;
+            let tsv_size = 3;
             const sqX = toCanvasX(a.x - tsv_size / 2);
             const sqY = toCanvasY(a.y + tsv_size / 2);   // y+1.5 = world 上方 = canvas 上方
             const sqW = Math.max(tsv_size, tsv_size * scale);
@@ -1371,8 +1495,8 @@ function redraw() {
                 ctx.lineWidth   = 1;
             }
 
-            // hover 時顯示 net 名稱
-            if (isHovered || scale >= 2.5) {
+            // hover 或高 zoom 時顯示 net 名稱
+            if (showTsvLabels && (isHovered || scale >= 2.5)) {
                 ctx.fillStyle = '#1a1a1a';
                 ctx.font      = '9px Arial';
                 ctx.fillText(a.netId, sqX + sqW + 2, sqY + sqH * 0.7);
@@ -1390,6 +1514,88 @@ function redraw() {
 
     // ── 5. 座標軸刻度標示（可選的方向感）──
     drawAxisTicks(toCanvasX, toCanvasY, wMinX, wMinY, wMaxX, wMaxY);
+}
+
+// ── Intra-die Net 連線 ───────────────────────────────────────────────────────
+function drawIntraDieNets(toCanvasX, toCanvasY) {
+    if (!netsData || !outData) return;
+
+    // 建立 moduleName → {cx, cy, dieId} 對照表
+    const modulePos = new Map();
+    Object.keys(outData.dies).forEach(dStr => {
+        const dId = parseInt(dStr, 10);
+        outData.dies[dId].blocks.forEach(b => {
+            modulePos.set(b.name, {
+                cx: b.x + b.width  / 2,
+                cy: b.y + b.height / 2,
+                dieId: dId,
+            });
+        });
+    });
+
+    // 建立 terminalName → {cx, cy, dieId=0} 對照表（I/O pin 歸屬 die 0）
+    const terminalPos = new Map();
+    if (blockData && blockData.terminals) {
+        blockData.terminals.forEach(t => {
+            terminalPos.set(t.name, { cx: t.x, cy: t.y, dieId: 0 });
+        });
+    }
+
+    // 目前選取的 die（-1 代表 all）
+    const selDie = (() => {
+        const v = document.getElementById('die-select').value;
+        return v === 'all' ? -1 : parseInt(v, 10);
+    })();
+
+    ctx.save();
+    ctx.lineWidth = 0.8;
+
+    netsData.nets.forEach(terms => {
+        if (!terms || terms.length < 2) return;
+
+        const pins = [];
+        let netDie = -1;
+        let valid  = true;
+
+        for (const name of terms) {
+            let pos = modulePos.get(name) ?? terminalPos.get(name) ?? null;
+            if (!pos) { valid = false; break; }
+            if (netDie === -1) netDie = pos.dieId;
+            else if (pos.dieId !== netDie) { valid = false; break; }  // 跨層 → 跳過
+            pins.push(pos);
+        }
+
+        if (!valid || pins.length < 2) return;
+        if (selDie !== -1 && netDie !== selDie) return;  // 只畫目前選取層
+
+        // 使用該層 palette 顏色（半透明）
+        const p = getPalette(netDie);
+        ctx.strokeStyle = p.stroke;
+        ctx.globalAlpha = 0.3;
+
+        if (pins.length === 2) {
+            // 兩端點直連
+            ctx.beginPath();
+            ctx.moveTo(toCanvasX(pins[0].cx), toCanvasY(pins[0].cy));
+            ctx.lineTo(toCanvasX(pins[1].cx), toCanvasY(pins[1].cy));
+            ctx.stroke();
+        } else {
+            // 多端點：star topology（各端點連至重心）
+            const gcx = pins.reduce((s, q) => s + q.cx, 0) / pins.length;
+            const gcy = pins.reduce((s, q) => s + q.cy, 0) / pins.length;
+            const ccx = toCanvasX(gcx);
+            const ccy = toCanvasY(gcy);
+            for (const pin of pins) {
+                ctx.beginPath();
+                ctx.moveTo(ccx, ccy);
+                ctx.lineTo(toCanvasX(pin.cx), toCanvasY(pin.cy));
+                ctx.stroke();
+            }
+        }
+    });
+
+    ctx.globalAlpha = 1;
+    ctx.restore();
 }
 
 // ── 座標軸刻度 ─────────────────────────────────────────────────────────────────
@@ -1434,6 +1640,231 @@ function niceStep(rawStep) {
     if (r < 3.5) return 2 * mag;
     if (r < 7.5) return 5 * mag;
     return 10 * mag;
+}
+
+// ── Legalize Process Replay ────────────────────────────────────────────────────
+
+// 解析 legalize_process.txt，解析所有 Tier
+// 回傳：
+//   tierData  : { [tierNum]: { steps:[{label,moves}], moves:[扁平單步] } }
+//   tier0Steps / tier0Moves : 向下相容，等同 tierData[0]
+function parseLegalizeProcess(text) {
+    const lines = text.split(/\r?\n/);
+    const tierData = {};
+    let cur = null;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        const tierMatch = line.match(/^Tier\s+(\d+)\s+\[.+?\]/);
+        if (tierMatch) {
+            if (cur) {
+                const td = tierData[cur.tier] || (tierData[cur.tier] = { steps: [], moves: [] });
+                td.steps.push({ label: cur.label, moves: cur.moves });
+            }
+            cur = { tier: parseInt(tierMatch[1], 10), label: line, moves: [] };
+            continue;
+        }
+        if (!cur) continue;
+        const m = line.match(/\[move_apply\]\s+module_id=(\d+)\s+center=\(([^,]+),\s*([^)]+)\).*?rot90=(\d+)/);
+        if (m) {
+            cur.moves.push({
+                module_id: parseInt(m[1], 10),
+                cx:        parseFloat(m[2]),
+                cy:        parseFloat(m[3]),
+                rot90:     parseInt(m[4], 10),
+            });
+        }
+    }
+    if (cur) {
+        const td = tierData[cur.tier] || (tierData[cur.tier] = { steps: [], moves: [] });
+        td.steps.push({ label: cur.label, moves: cur.moves });
+    }
+
+    // 每個 tier 展平為單步陣列，附加 pass 資訊
+    Object.keys(tierData).forEach(tierNum => {
+        const td = tierData[tierNum];
+        td.steps.forEach((step, passIdx) => {
+            step.moves.forEach((mv, moveIdxInPass) => {
+                td.moves.push({
+                    ...mv,
+                    passIdx,
+                    passLabel:     step.label,
+                    moveIdxInPass,
+                    passTotal:     step.moves.length,
+                });
+            });
+        });
+    });
+
+    const td0 = tierData[0] || { steps: [], moves: [] };
+    return { tierData, tier0Steps: td0.steps, tier0Moves: td0.moves };
+}
+
+// 依 outData.dies[dieId] 建立 module_id -> blockIndex 映射
+function buildDie0ModuleMap(dieId = 0) {
+    die0ModuleMap = new Map();
+    const die = outData && outData.dies && outData.dies[dieId];
+    if (!die) return;
+    die.blocks.forEach((b, bi) => {
+        const m = b.name.match(/(\d+)$/);
+        if (m) die0ModuleMap.set(parseInt(m[1], 10), bi);
+    });
+}
+
+// 從 blockData.modules 建立 module_id -> {w, h}（目前僅供參考，旋轉已改用 relative 邏輯）
+function buildLegalizeBaseDims() {
+    legalizeBaseDims = {};
+    if (!blockData || !blockData.modules) return;
+    blockData.modules.forEach(mod => {
+        const m = mod.name.match(/(\d+)$/);
+        if (m) legalizeBaseDims[parseInt(m[1], 10)] = { w: mod.w, h: mod.h };
+    });
+}
+
+// 重置 replay 到初始狀態，tier 預設回 0
+function resetLegalizeReplay() {
+    legalizeCurrentTier = 0;
+    buildDie0ModuleMap(0);
+    legalizeStepIndex = -1;
+    legalizeCache = [];
+    const die = outData && outData.dies && outData.dies[0];
+    if (die) legalizeCache[0] = die.blocks.map(b => ({ ...b }));
+    updateLegalizeUI();
+}
+
+// 切換 replay 到指定 tier（換 die 時呼叫）
+function switchLegalizeTier(tierNum) {
+    if (!legalizeData) return;
+    const td = legalizeData.tierData[tierNum];
+    if (!td || td.moves.length === 0) return; // 沒有該 tier 的資料就不切換
+
+    legalizeCurrentTier = tierNum;
+    buildDie0ModuleMap(tierNum);
+    legalizeStepIndex = -1;
+    legalizeCache = [];
+    const die = outData && outData.dies && outData.dies[tierNum];
+    if (die) legalizeCache[0] = die.blocks.map(b => ({ ...b }));
+    selected = null;
+    syncSelectedModuleCenterInputs();
+    updateLegalizeUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 套用單一 move 到 outData.dies[legalizeCurrentTier]
+function applyLegalizeSingleMove(move) {
+    const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
+    if (!die) return;
+    const bi = die0ModuleMap.get(move.module_id);
+    if (bi === undefined) return;
+    const b = die.blocks[bi];
+
+    // 旋轉處理（relative rot90：1=swap，0=不動）
+    if (move.rot90 === 1) {
+        const tmp = b.width; b.width = b.height; b.height = tmp;
+    }
+
+    b.x = move.cx - b.width  / 2;
+    b.y = move.cy - b.height / 2;
+}
+
+// 前進一個 [move_apply]
+function legalizeGoForward() {
+    const td = legalizeData && legalizeData.tierData[legalizeCurrentTier];
+    if (!td || !outData || !outData.dies || !outData.dies[legalizeCurrentTier]) return;
+    const moves = td.moves;
+    if (legalizeStepIndex >= moves.length - 1) return;
+
+    legalizeStepIndex++;
+    const die = outData.dies[legalizeCurrentTier];
+
+    if (legalizeCache[legalizeStepIndex + 1]) {
+        die.blocks = legalizeCache[legalizeStepIndex + 1].map(b => ({ ...b }));
+    } else {
+        const prev = legalizeCache[legalizeStepIndex];
+        if (prev) die.blocks = prev.map(b => ({ ...b }));
+        applyLegalizeSingleMove(moves[legalizeStepIndex]);
+        legalizeCache[legalizeStepIndex + 1] = die.blocks.map(b => ({ ...b }));
+    }
+
+    selectCurrentLegalizeModule();
+    syncSelectedModuleCenterInputs();
+    updateLegalizeUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 後退一個 [move_apply]
+function legalizeGoBack() {
+    if (!legalizeData || legalizeStepIndex < 0) return;
+    const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
+    if (!die) return;
+
+    legalizeStepIndex--;
+    const cached = legalizeCache[legalizeStepIndex + 1];
+    if (cached) die.blocks = cached.map(b => ({ ...b }));
+
+    selectCurrentLegalizeModule();
+    syncSelectedModuleCenterInputs();
+    updateLegalizeUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 將目前步驟的 module 設為 selected（綠色高亮）
+function selectCurrentLegalizeModule() {
+    const td = legalizeData && legalizeData.tierData[legalizeCurrentTier];
+    const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
+    if (!td || legalizeStepIndex < 0 || !die) { selected = null; return; }
+    const mv = td.moves[legalizeStepIndex];
+    const bi = die0ModuleMap.get(mv.module_id);
+    if (bi === undefined) { selected = null; return; }
+    selected = { type: 'module', dieId: legalizeCurrentTier, blockIndex: bi, name: die.blocks[bi].name };
+}
+
+// 更新 Replay ctrl-group 顯示
+function updateLegalizeUI() {
+    const grp     = document.getElementById('legalizePlaybackGroup');
+    const backBtn = document.getElementById('legalizeBackBtn');
+    const fwdBtn  = document.getElementById('legalizeForwardBtn');
+    const info    = document.getElementById('legalizeStepInfo');
+    if (!grp) return;
+
+    if (!legalizeData) { grp.style.display = 'none'; return; }
+    grp.style.display = '';
+
+    const td = legalizeData.tierData[legalizeCurrentTier];
+    if (!td || td.moves.length === 0) {
+        backBtn.disabled = true;
+        fwdBtn.disabled  = true;
+        info.textContent = `Tier ${legalizeCurrentTier}: no data`;
+        return;
+    }
+
+    const moves = td.moves;
+    const N     = moves.length;
+    backBtn.disabled = (legalizeStepIndex < 0);
+    fwdBtn.disabled  = (legalizeStepIndex >= N - 1);
+
+    if (legalizeStepIndex < 0) {
+        info.textContent = `Tier ${legalizeCurrentTier} initial  (0 / ${N} moves, ${td.steps.length} passes)`;
+        return;
+    }
+
+    const mv = moves[legalizeStepIndex];
+    const pm = mv.passLabel.match(/(\[.+?\]\s+init_w=[\d.]+)/);
+    const passShort = pm ? pm[1] : mv.passLabel.replace(/^Tier\s+\d+\s+/, '');
+    const passIdx1  = mv.passIdx + 1;
+    const passTotal = td.steps.length;
+    const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
+    const bi  = die0ModuleMap.get(mv.module_id);
+    const blockName = (die && bi !== undefined) ? die.blocks[bi].name : `id=${mv.module_id}`;
+
+    info.innerHTML =
+        `<b>Tier ${legalizeCurrentTier} &nbsp; Pass ${passIdx1}/${passTotal}</b> ${passShort}<br>` +
+        `move ${mv.moveIdxInPass + 1}/${mv.passTotal} &nbsp;` +
+        `<span style="color:#888">(step ${legalizeStepIndex + 1}/${N})</span> &nbsp;` +
+        `<b style="color:#16a34a">▶ ${blockName}</b>`;
 }
 
 // ── 訊息畫面 ───────────────────────────────────────────────────────────────────
