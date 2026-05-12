@@ -29,12 +29,14 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg);
 // 找出 tier 內有重疊的 module，對其「附近」（距離 <= radius）的 movable module
 // 以 rotate_prob 的機率執行 90° 旋轉（以中心點為軸，clamp 回 die 邊界）。
 // 回傳實際旋轉的 module 數量。
+// log != nullptr 時，每次旋轉都會寫一行 [shake_rot] 到該 stream（僅寫檔，不進 terminal）
 int shake_nearby_rotations(std::vector<Module>&    modules,
                            const std::vector<Die>& dies,
                            int                     tier,
                            double                  radius      = 50.0,
                            double                  rotate_prob = 0.5,
-                           unsigned                seed        = 42);
+                           unsigned                seed        = 42,
+                           std::ostream*           log         = nullptr);
 
 // 在其他 module 固定下，對指定 module 做 local 1D+1D 最佳化：
 // 先找 x 最佳位移，再以更新後位置找 y 最佳位移。

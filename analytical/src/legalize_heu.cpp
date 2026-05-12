@@ -320,6 +320,7 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         }
     }
     if (target_idx < 0 || modules[target_idx].is_terminal) return {};
+    if (modules[target_idx].is_fixed) return {}; // constraint 固定，不移動
     const Module& target = modules[target_idx];
 
     // 評估一種 orientation（0° 或 90°），回傳最佳位移結果
@@ -429,7 +430,8 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
                            int                     tier,
                            double                  radius,
                            double                  rotate_prob,
-                           unsigned                seed)
+                           unsigned                seed,
+                           std::ostream*           log)
 {
     // 找有重疊的 module id
     const auto overlap_ids = collect_overlap_module_ids(modules, tier);
@@ -449,7 +451,7 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
     int rotated_count = 0;
 
     for (Module& m : modules) {
-        if (m.is_terminal || m.tier_id != tier) continue;
+        if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
 
         // 判斷是否在任一重疊 module 的 radius 內
         bool nearby = false;
@@ -471,6 +473,11 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
         m.x = std::clamp(m.x, half_w,             die.width  - half_w);
         m.y = std::clamp(m.y, half_h,             die.height - half_h);
 
+        if (log) {
+            *log << "    [shake_rot] module_id=" << m.id
+                 << " new_size=(" << m.width << "x" << m.height << ")"
+                 << " center=(" << m.x << ", " << m.y << ")\n";
+        }
         ++rotated_count;
     }
     return rotated_count;
@@ -529,15 +536,20 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                      double moved_weight_mul)
     {
         // 重設該層 module 的初始 move_weight
+        // is_fixed module 視為「已移動過的障礙物」：weight 乘上 moved_weight_mul（不受 init_weight 覆寫）
         for (Module& m : modules) {
             if (m.is_terminal || m.tier_id != tier) continue;
-            m.move_weight = init_weight;
+            if (m.is_fixed)
+                m.move_weight = std::min(lcfg.max_module_weight,
+                                         m.move_weight * moved_weight_mul);
+            else
+                m.move_weight = init_weight;
         }
 
-        // 以當下位置建立排序
+        // 以當下位置建立排序（is_fixed module 不加入待處理清單）
         std::vector<std::pair<double, int>> key_id;
         for (const Module& m : modules) {
-            if (m.is_terminal || m.tier_id != tier) continue;
+            if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
             key_id.push_back({ key_fn(m), m.id });
         }
         if (ascending)
@@ -621,8 +633,9 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
 
             // ---- 還有重疊：shake 擾動（對重疊 module 附近做隨機旋轉）----
             const unsigned shake_seed = static_cast<unsigned>(iter * 997 + t * 31);
+            std::cout << "  Tier " << t << " [shake rotations]\n";
             const int n_rot = shake_nearby_rotations(
-                modules, dies, t, kShakeRadius, kShakeProb, shake_seed);
+                modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
             std::cout << "  Tier " << t << " [iter=" << iter
                       << "] shake rotated=" << n_rot << " modules\n";
         }

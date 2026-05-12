@@ -111,6 +111,15 @@ struct PlacementConfig {
     int    bin_resolution   = 16;      // 每層 bin 數量 (bin_resolution x bin_resolution)
     double convergence_tol  = 1e-4;    // 收斂容忍度（相對 HPWL 變化）
 
+    // ---- 提早停止：密度 overflow 穩定判斷（每 50 iter 記錄一次時比較）----
+    // 若連續 convergence_overflow_stable_steps 次（每次相隔 50 iter）皆滿足：
+    //   |Δ max_overflow| < convergence_max_overflow_delta_tol
+    //   且 |Δ TotalOverflow| < convergence_total_overflow_delta_tol
+    // 則視為 overflow 已穩定（搭配 iter 下限與 rel_change 使用）。
+    int    convergence_overflow_stable_steps      = 3;     // 連續 n 次「每 50 iter」檢查
+    double convergence_max_overflow_delta_tol     = 0.001; // max_overflow 相鄰兩次變化上限
+    double convergence_total_overflow_delta_tol   = 1.5;   // TotalOverflow 相鄰兩次變化上限
+
     // ---- λ 遞增排程 ----
     // lambda_mult 每 lambda_update_interval 次迭代乘以 lambda_increase_rate，
     // 但不超過 lambda_max_mult（防止密度力爆炸）
@@ -126,6 +135,18 @@ struct PlacementConfig {
 
     // 每層的密度懲罰係數 λ；若向量長度 < num_dies 則用最後一個值填充
     std::vector<double> tier_lambdas = {0.01, 0.01, 0.01};
+
+    // ---- 週期性旋轉優化（以 bin density overflow 做代理指標）----
+    // rotation_start_iter : 從第幾個 iter 開始嘗試旋轉（0 = 停用）
+    // rotation_interval   : 之後每隔幾個 iter 做一次（0 = 停用）
+    int rotation_start_iter = 4000;
+    int rotation_interval   = 500;
+
+    // ---- analytical 進度追蹤寫檔（與 [Iter ...] 同頻率，每 50 iter）----
+    // dump_analytical_iter_trace = true 時，每次印 [Iter N] 同時把該輪所有**非 terminal**
+    // module 的 name llx lly urx ury 附加寫入 analytical_iter_trace_path（同一檔案累加）。
+    bool        dump_analytical_iter_trace = false;
+    std::string analytical_iter_trace_path;
 
     // 僅影響 compute_hpwl() 報告／評估用乘數（長度須等於 num_dies 才會生效）：
     // 若為空，compute_hpwl 使用 .block 的 Weight:（tier_net_weights_）。

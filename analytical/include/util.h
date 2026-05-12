@@ -42,6 +42,12 @@ IntraDieStats compute_intra_die_hpwl(const PlacementEngine& engine);
 void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os = std::cout);
 
 // ============================================================
+// 正方化：將所有 non-terminal movable module 的長寬改成等面積的正方形
+// 只改 width / height，不改中心座標 (x, y)。
+// ============================================================
+void squarify_modules(PlacementEngine& engine);
+
+// ============================================================
 // Overlap 檢查：module 與 TSV 的重疊對數統計
 // ============================================================
 // 印出每一層的 overlap pair 數量（module-module / module-TSV / TSV-TSV 全部算）

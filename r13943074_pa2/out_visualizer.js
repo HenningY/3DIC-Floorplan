@@ -50,12 +50,19 @@ let dragOffsetY = 0;
 let currentView = null; // { wMinX, wMinY, ch, scale }
 
 // ── Legalize process replay ────────────────────────────────────────────────────
-let legalizeData        = null;  // { tierData: {N: {steps,moves}}, tier0Steps, tier0Moves }
-let legalizeStepIndex   = -1;    // -1 = initial; 0..N-1 = after applying step i
-let legalizeCache       = [];    // [0]=initial die state; [i+1]=state after step i
-let legalizeCurrentTier = 0;     // 目前播放中的 tier（與 die-select 同步）
-let die0ModuleMap       = new Map(); // module_id(number) -> blockIndex in current tier die
-let legalizeBaseDims    = {};    // module_id -> {w, h}（保留但不用於旋轉判斷）
+let legalizeData              = null;   // { tierData: {N: {steps,moves}}, tier0Steps, tier0Moves }
+let legalizeStepIndex         = -1;    // -1 = initial; 0..N-1 = after applying step i
+let legalizeCache             = [];    // [0]=initial die state; [i+1]=state after step i
+let legalizeCurrentTier       = 0;     // 目前播放中的 tier（與 die-select 同步）
+let die0ModuleMap             = new Map(); // module_id(number) -> blockIndex in current tier die
+let legalizeBaseDims          = {};    // module_id -> {w, h}（保留但不用於旋轉判斷）
+let legalizeCurrentMoveIsShakeRot = false; // 目前步驟是否為 shake_rot（用來顯示紅色邊框）
+
+// ── Analytical iter replay ─────────────────────────────────────────────────────
+let iterData          = null;   // [{ iterNum, modules: [{name,x,y,w,h}] }]
+let iterFrameIndex    = -1;     // -1 = initial（原始 outData）
+let iterModuleMap     = new Map(); // module name -> { dieId, blockIndex }
+let iterInitialBlocks = null;   // { dieId: [{...block}] } 播放前的原始狀態快照
 
 function deepCopy(obj) {
     return JSON.parse(JSON.stringify(obj));
@@ -204,11 +211,31 @@ function setupUI() {
         });
     });
 
-    // ── Zoom ──
+    // ── Zoom（縮放以目前可見區域中心為錨點）──
+    const zoomContainer = document.getElementById('canvas-container');
     scaleSlider.addEventListener('input', () => {
+        // 縮放前：記錄可見區域中心對應的世界座標
+        let anchorWx = null, anchorWy = null;
+        if (currentView) {
+            const canvasLeft = canvas.offsetLeft;
+            const canvasTop  = canvas.offsetTop;
+            const visCx = zoomContainer.scrollLeft + zoomContainer.clientWidth  / 2 - canvasLeft;
+            const visCy = zoomContainer.scrollTop  + zoomContainer.clientHeight / 2 - canvasTop;
+            anchorWx = canvasToWorldX(visCx);
+            anchorWy = canvasToWorldY(visCy);
+        }
+
         scale = parseFloat(scaleSlider.value);
         scaleValue.textContent = scale.toFixed(2) + 'x';
         redraw();
+
+        // 縮放後：捲動讓同一世界座標回到視窗中心
+        if (anchorWx !== null && currentView) {
+            const newCx = PADDING + (anchorWx - currentView.wMinX) * currentView.scale;
+            const newCy = currentView.ch - PADDING - (anchorWy - currentView.wMinY) * currentView.scale;
+            zoomContainer.scrollLeft = canvas.offsetLeft + newCx - zoomContainer.clientWidth  / 2;
+            zoomContainer.scrollTop  = canvas.offsetTop  + newCy - zoomContainer.clientHeight / 2;
+        }
     });
 
     // ── Die 選擇 ──
@@ -230,9 +257,7 @@ function setupUI() {
     terminalCheck.addEventListener('change', () => {
         showTerminals = terminalCheck.checked; redraw();
     });
-    document.getElementById('showTsvStripsCheck').addEventListener('change', e => {
-        showTsvStrips = e.target.checked; redraw();
-    });
+    // TSV Strips 勾選已移除，showTsvStrips 固定為 true
     document.getElementById('showTsvPointsCheck').addEventListener('change', e => {
         showTsvPoints = e.target.checked; redraw();
     });
@@ -348,13 +373,63 @@ function setupUI() {
     legalizeBackBtn.addEventListener('click', () => legalizeGoBack());
     legalizeForwardBtn.addEventListener('click', () => legalizeGoForward());
 
-    // 鍵盤快捷鍵：← / → 控制 replay（input 焦點時不攔截）
+    // ── .iter 檔案載入 + Iter Replay 按鈕 ───────────────────────────────────
+    const iterFileInput = document.getElementById('iterFileInput');
+    const iterLabel     = document.getElementById('loadIterLabel');
+
+    iterFileInput.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (!file) return;
+        readFile(file, text => {
+            try {
+                iterData = parseIterFile(text);
+                iterLabel.textContent = `✓ ${file.name}`;
+                iterLabel.classList.add('loaded');
+                initIterReplay();
+            } catch (err) {
+                console.error(err);
+                alert('Failed to parse iter file: ' + err.message);
+            }
+        });
+    });
+
+    document.getElementById('iterBackBtn').addEventListener('click', () => iterGoBack());
+    document.getElementById('iterForwardBtn').addEventListener('click', () => iterGoForward());
+
+    // 鍵盤快捷鍵：← / → = legalize replay；Shift+← / Shift+→ = iter replay
     document.addEventListener('keydown', e => {
-        if (!legalizeData) return;
         const tag = document.activeElement && document.activeElement.tagName;
         if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-        if (e.key === 'ArrowRight') { e.preventDefault(); legalizeGoForward(); }
-        if (e.key === 'ArrowLeft')  { e.preventDefault(); legalizeGoBack(); }
+
+        if (e.shiftKey) {
+            // Shift + 方向鍵 → iter replay
+            if (!iterData) return;
+            if (e.key === 'ArrowRight') { e.preventDefault(); iterGoForward(); }
+            if (e.key === 'ArrowLeft')  { e.preventDefault(); iterGoBack(); }
+        } else {
+            // 方向鍵 → legalize replay
+            if (!legalizeData) return;
+            if (e.key === 'ArrowRight') { e.preventDefault(); legalizeGoForward(); }
+            if (e.key === 'ArrowLeft')  { e.preventDefault(); legalizeGoBack(); }
+        }
+    });
+
+    // ── View panel toggle（眼睛 button）──────────────────────────────────────
+    const viewToggleBtn = document.getElementById('viewToggleBtn');
+    const viewPanel     = document.getElementById('view-panel');
+    viewToggleBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const isOpen = viewPanel.style.display !== 'none';
+        viewPanel.style.display = isOpen ? 'none' : '';
+        viewToggleBtn.classList.toggle('active', !isOpen);
+    });
+    // 點擊 view panel 以外的地方自動收起
+    document.addEventListener('click', e => {
+        if (viewPanel.style.display === 'none') return;
+        if (!viewPanel.contains(e.target) && e.target !== viewToggleBtn) {
+            viewPanel.style.display = 'none';
+            viewToggleBtn.classList.remove('active');
+        }
     });
 
     // ── Canvas edit（點選/拖曳）────────────────────────────────────────────
@@ -865,104 +940,108 @@ function updateInfoPanel() {
     }
 
     const sel = document.getElementById('die-select').value;
-    let html = '';
+    const cards = [];   // 每個元素是一段 { label, body } 的 HTML
 
+    // ── Result ──
     if (outData) {
-        html += `<strong>Cost:</strong> ${outData.cost} &nbsp;|&nbsp;
-                 <strong>HPWL:</strong> ${outData.hpwl} &nbsp;|&nbsp;
-                 <strong>Area:</strong> ${outData.area} &nbsp;|&nbsp;
-                 <strong>BBox:</strong> ${outData.width} × ${outData.height} &nbsp;|&nbsp;
-                 <strong>Runtime:</strong> ${outData.runtime.toFixed(3)} s<br><br>`;
-
-        const ids = Object.keys(outData.dies).map(Number).sort((a, b) => a - b);
-        if (sel === 'all') {
-            ids.forEach(id => {
-                const d = outData.dies[id];
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                d.blocks.forEach(b => {
-                    minX = Math.min(minX, b.x);
-                    minY = Math.min(minY, b.y);
-                    maxX = Math.max(maxX, b.x + b.width);
-                    maxY = Math.max(maxY, b.y + b.height);
-                });
-                const w = maxX - minX, h = maxY - minY;
-                html += `<span>Die ${id}: ${d.blocks.length} blocks, bbox = ${w.toFixed(0)} × ${h.toFixed(0)}</span>  `;
-            });
-        } else {
-            const id = parseInt(sel, 10);
-            const d  = outData.dies[id];
-            if (d) {
-                let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-                d.blocks.forEach(b => {
-                    minX = Math.min(minX, b.x);
-                    minY = Math.min(minY, b.y);
-                    maxX = Math.max(maxX, b.x + b.width);
-                    maxY = Math.max(maxY, b.y + b.height);
-                });
-                const w = maxX - minX, h = maxY - minY;
-                html += `<span>Die ${id}: ${d.blocks.length} blocks, bbox = ${w.toFixed(0)} × ${h.toFixed(0)}</span>`;
-            }
-        }
+        const cost = (typeof outData.cost === 'number') ? outData.cost.toFixed(2) : outData.cost;
+        const hpwl = (typeof outData.hpwl === 'number') ? outData.hpwl.toFixed(2) : outData.hpwl;
+        cards.push({
+            label: 'Result',
+            body:  `<strong>HPWL:</strong> ${cost} &nbsp;·&nbsp; ` +
+                   `<strong>Current HPWL:</strong> ${hpwl} &nbsp;·&nbsp; ` +
+                //    `<strong>Area:</strong> ${outData.area} &nbsp;·&nbsp; ` +
+                //    `<strong>BBox:</strong> ${outData.width} × ${outData.height} &nbsp;·&nbsp; ` +
+                   `<strong>Runtime:</strong> ${outData.runtime.toFixed(3)} s`,
+        });
     }
 
-    // TSV strip & assignment stats
+    // ── Dies ──
+    if (outData) {
+        const ids = Object.keys(outData.dies).map(Number).sort((a, b) => a - b);
+        const rows = [];
+        const target = sel === 'all' ? ids : [parseInt(sel, 10)];
+        target.forEach(id => {
+            const d = outData.dies[id];
+            if (!d) return;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            d.blocks.forEach(b => {
+                minX = Math.min(minX, b.x);          minY = Math.min(minY, b.y);
+                maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+            });
+            const w = maxX - minX, h = maxY - minY;
+            rows.push(`<strong>Die ${id}:</strong> ${d.blocks.length} blocks &nbsp;·&nbsp; bbox ${w.toFixed(0)} × ${h.toFixed(0)}`);
+        });
+        if (rows.length) cards.push({ label: 'Dies', body: rows.join('<br>') });
+    }
+
+    // ── TSV ──
     if (outData && outData.tsvStrips && outData.tsvStrips.length > 0) {
-        if (html) html += '<br>';
-        const strips = outData.tsvStrips;
+        const strips  = outData.tsvStrips;
         const assigns = outData.tsvAssignments || [];
         const fbCnt   = assigns.filter(a => a.fallback).length;
         const nsCnt   = assigns.filter(a => a.noSlot).length;
-
-        // 統計各 tier
         const tierCounts = {};
         assigns.forEach(a => {
-            const k = `${a.tierLo}-${a.tierHi}`;
+            const k = `${a.tierLo}→${a.tierHi}`;
             tierCounts[k] = (tierCounts[k] || 0) + 1;
         });
         const tierStr = Object.entries(tierCounts)
             .sort((a, b) => a[0].localeCompare(b[0]))
-            .map(([t, n]) => `tier${t}: ${n}`)
-            .join(' | ');
-
-        html += `<strong>TSV Strips:</strong> ${strips.length} &nbsp;|&nbsp; ` +
-                `<strong>TSV Assignments:</strong> ${assigns.length} ` +
-                `(fallback: ${fbCnt}, no_slot: ${nsCnt}) &nbsp;|&nbsp; ` +
-                `${tierStr}`;
+            .map(([t, n]) => `tier ${t}: ${n}`)
+            .join(' &nbsp;·&nbsp; ');
+        cards.push({
+            label: 'TSV',
+            body:  `<strong>Strips:</strong> ${strips.length} &nbsp;·&nbsp; ` +
+                   `<strong>Assignments:</strong> ${assigns.length} ` +
+                   `(fallback: ${fbCnt}, no_slot: ${nsCnt})<br>${tierStr}`,
+        });
     }
 
+    // ── .block ──
     if (blockData) {
-        if (html) html += '<br><br>';
-        html += `<strong>.block:</strong> ${blockData.numDie} dies, `;
-        html += `${blockData.modules.length} modules, `;
-        html += `${blockData.terminals.length} terminals &nbsp;|&nbsp; `;
-        html += `Outline: `;
-        html += blockData.outlines.map((o, i) => `Die ${i}: ${o.w} × ${o.h}`).join(', ');
+        const outlines = blockData.outlines.map((o, i) => `Die ${i}: ${o.w} × ${o.h}`).join(' &nbsp;·&nbsp; ');
+        cards.push({
+            label: '.block',
+            body:  `${blockData.numDie} dies &nbsp;·&nbsp; ` +
+                   `${blockData.modules.length} modules &nbsp;·&nbsp; ` +
+                   `${blockData.terminals.length} terminals<br>` +
+                   `<strong>Outline:</strong> ${outlines}`,
+        });
     }
 
-    // Selected info
+    // ── Selected ──
     if (selected) {
-        if (html) html += '<br><br>';
+        let selBody = '';
         if (selected.type === 'module') {
             const d = outData && outData.dies ? outData.dies[selected.dieId] : null;
             const b = d && d.blocks ? d.blocks[selected.blockIndex] : null;
             if (b) {
-                html += `<strong>Selected module:</strong> ${b.name} &nbsp; (die ${selected.dieId})<br>` +
-                        `x=${b.x}, y=${b.y}, w=${b.width}, h=${b.height}`;
+                selBody = `<strong>${b.name}</strong> &nbsp;(die ${selected.dieId})<br>` +
+                          `x=${b.x.toFixed(2)}, y=${b.y.toFixed(2)}, w=${b.width}, h=${b.height}`;
             } else {
-                html += `<strong>Selected module:</strong> (missing)`;
+                selBody = '(missing)';
             }
         } else if (selected.type === 'tsv') {
             const a = outData && outData.tsvAssignments ? outData.tsvAssignments[selected.assignmentIndex] : null;
             if (a) {
-                html += `<strong>Selected TSV:</strong> net${a.netId}  tier${a.tierLo}-${a.tierHi}<br>` +
-                        `x=${a.x}, y=${a.y}`;
+                selBody = `<strong>net${a.netId}</strong> &nbsp;tier ${a.tierLo}→${a.tierHi}<br>` +
+                          `x=${a.x}, y=${a.y}`;
             } else {
-                html += `<strong>Selected TSV:</strong> (missing)`;
+                selBody = '(missing)';
             }
         }
+        if (selBody) cards.push({ label: 'Selected', body: selBody });
     }
 
-    panel.innerHTML = html || 'No data.';
+    if (!cards.length) { panel.textContent = 'No data.'; return; }
+
+    panel.innerHTML = cards.map(c =>
+        `<div class="info-card">` +
+        `<div class="info-card-label">${c.label}</div>` +
+        `${c.body}` +
+        `</div>`
+    ).join('');
 }
 
 // ── Recompute HPWL（分層 bbox + TSV 雙邊計入）────────────────────────────────────
@@ -1366,7 +1445,10 @@ function redraw() {
                 // Selected module highlight
                 if (selected && selected.type === 'module' &&
                     selected.dieId === id && selected.blockIndex === bi) {
-                    ctx.strokeStyle = 'rgba(34,197,94,1)'; // green
+                    // shake_rot 用紅色框，一般 move_apply 用綠色框
+                    ctx.strokeStyle = legalizeCurrentMoveIsShakeRot
+                        ? 'rgba(239,68,68,1)'   // red
+                        : 'rgba(34,197,94,1)';  // green
                     ctx.lineWidth   = 3;
                     ctx.strokeRect(bx, by, bw, bh);
                     ctx.lineWidth   = 1;
@@ -1598,6 +1680,138 @@ function drawIntraDieNets(toCanvasX, toCanvasY) {
     ctx.restore();
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Analytical Iter Replay
+// ══════════════════════════════════════════════════════════════════════════════
+
+// 解析 _analytical_iter.txt → [{ iterNum, modules:[{name,x,y,w,h}] }]
+function parseIterFile(text) {
+    const lines = text.split(/\r?\n/);
+    const frames = [];
+    let cur = null;
+    for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        const im = line.match(/^\[Iter\s+(\d+)\]/);
+        if (im) {
+            if (cur) frames.push(cur);
+            cur = { iterNum: parseInt(im[1], 10), modules: [] };
+            continue;
+        }
+        if (!cur) continue;
+        const p = line.split(/\s+/);
+        if (p.length >= 5) {
+            const llx = parseFloat(p[1]), lly = parseFloat(p[2]);
+            const urx = parseFloat(p[3]), ury = parseFloat(p[4]);
+            cur.modules.push({ name: p[0], x: llx, y: lly, w: urx - llx, h: ury - lly });
+        }
+    }
+    if (cur) frames.push(cur);
+    return frames;
+}
+
+// 建立 module name -> {dieId, blockIndex} 對照
+function buildIterModuleMap() {
+    iterModuleMap = new Map();
+    if (!outData) return;
+    Object.keys(outData.dies).forEach(dStr => {
+        const dieId = parseInt(dStr, 10);
+        outData.dies[dieId].blocks.forEach((b, bi) => {
+            iterModuleMap.set(b.name, { dieId, blockIndex: bi });
+        });
+    });
+}
+
+// 初始化 iter replay（讀檔後呼叫）
+function initIterReplay() {
+    iterFrameIndex = -1;
+    buildIterModuleMap();
+    // 快照目前所有 die 的 block 狀態
+    iterInitialBlocks = {};
+    if (outData) {
+        Object.keys(outData.dies).forEach(dStr => {
+            const dieId = parseInt(dStr, 10);
+            iterInitialBlocks[dStr] = outData.dies[dieId].blocks.map(b => ({ ...b }));
+        });
+    }
+    updateIterUI();
+}
+
+// 套用指定 frame（-1 還原初始）
+function applyIterFrame(frameIdx) {
+    if (!iterInitialBlocks || !outData) return;
+    // 先還原初始快照
+    Object.keys(iterInitialBlocks).forEach(dStr => {
+        const dieId = parseInt(dStr, 10);
+        outData.dies[dieId].blocks = iterInitialBlocks[dStr].map(b => ({ ...b }));
+    });
+    if (frameIdx < 0 || !iterData) return;
+    const frame = iterData[frameIdx];
+    if (!frame) return;
+    frame.modules.forEach(m => {
+        const loc = iterModuleMap.get(m.name);
+        if (!loc) return;
+        const b = outData.dies[loc.dieId].blocks[loc.blockIndex];
+        b.x = m.x; b.y = m.y; b.width = m.w; b.height = m.h;
+    });
+    // 還原後 map 的 name→index 結構不變，不必重建
+}
+
+// 前進一個 iter frame
+function iterGoForward() {
+    if (!iterData || iterData.length === 0) return;
+    if (iterFrameIndex >= iterData.length - 1) return;
+    iterFrameIndex++;
+    applyIterFrame(iterFrameIndex);
+    updateIterUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 後退一個 iter frame
+function iterGoBack() {
+    if (!iterData || iterFrameIndex < 0) return;
+    iterFrameIndex--;
+    applyIterFrame(iterFrameIndex);
+    updateIterUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 跳到指定 frame index
+function iterJumpToFrame(idx) {
+    if (!iterData) return;
+    iterFrameIndex = Math.max(-1, Math.min(iterData.length - 1, idx));
+    applyIterFrame(iterFrameIndex);
+    updateIterUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 更新 Iter Replay UI
+function updateIterUI() {
+    const grp     = document.getElementById('iterPlaybackGroup');
+    const backBtn = document.getElementById('iterBackBtn');
+    const fwdBtn  = document.getElementById('iterForwardBtn');
+    const info    = document.getElementById('iterStepInfo');
+    if (!grp) return;
+
+    if (!iterData) { grp.style.display = 'none'; return; }
+    grp.style.display = '';
+
+    const N = iterData.length;
+    backBtn.disabled = (iterFrameIndex < 0);
+    fwdBtn.disabled  = (iterFrameIndex >= N - 1);
+
+    if (iterFrameIndex < 0) {
+        info.textContent = `Initial state  (0 / ${N} iters)`;
+    } else {
+        const frame = iterData[iterFrameIndex];
+        info.innerHTML = `<b>Iter ${frame.iterNum}</b> &nbsp;` +
+                         `<span style="color:#888">(${iterFrameIndex + 1} / ${N})</span>`;
+    }
+}
+
 // ── 座標軸刻度 ─────────────────────────────────────────────────────────────────
 function drawAxisTicks(toX, toY, minX, minY, maxX, maxY) {
     const rangeX = maxX - minX, rangeY = maxY - minY;
@@ -1668,10 +1882,23 @@ function parseLegalizeProcess(text) {
         const m = line.match(/\[move_apply\]\s+module_id=(\d+)\s+center=\(([^,]+),\s*([^)]+)\).*?rot90=(\d+)/);
         if (m) {
             cur.moves.push({
+                type:      'move_apply',
                 module_id: parseInt(m[1], 10),
                 cx:        parseFloat(m[2]),
                 cy:        parseFloat(m[3]),
                 rot90:     parseInt(m[4], 10),
+            });
+        }
+        // [shake_rot] module_id=X new_size=(WxH) center=(cx, cy)
+        const sr = line.match(/\[shake_rot\]\s+module_id=(\d+)\s+new_size=\((\d+)x(\d+)\)\s+center=\(([^,]+),\s*([^)]+)\)/);
+        if (sr) {
+            cur.moves.push({
+                type:      'shake_rot',
+                module_id: parseInt(sr[1], 10),
+                w:         parseInt(sr[2], 10),
+                h:         parseInt(sr[3], 10),
+                cx:        parseFloat(sr[4]),
+                cy:        parseFloat(sr[5]),
             });
         }
     }
@@ -1759,9 +1986,15 @@ function applyLegalizeSingleMove(move) {
     if (bi === undefined) return;
     const b = die.blocks[bi];
 
-    // 旋轉處理（relative rot90：1=swap，0=不動）
-    if (move.rot90 === 1) {
-        const tmp = b.width; b.width = b.height; b.height = tmp;
+    if (move.type === 'shake_rot') {
+        // shake_rot：直接使用絕對尺寸
+        b.width  = move.w;
+        b.height = move.h;
+    } else {
+        // move_apply：relative rot90（1=swap，0=不動）
+        if (move.rot90 === 1) {
+            const tmp = b.width; b.width = b.height; b.height = tmp;
+        }
     }
 
     b.x = move.cx - b.width  / 2;
@@ -1811,15 +2044,86 @@ function legalizeGoBack() {
     updateInfoPanel();
 }
 
-// 將目前步驟的 module 設為 selected（綠色高亮）
+// 直接跳到指定的全域 step index（-1 = initial）
+function legalizeJumpToStep(targetIdx) {
+    const td = legalizeData && legalizeData.tierData[legalizeCurrentTier];
+    const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
+    if (!td || !die) return;
+
+    const moves = td.moves;
+    targetIdx = Math.max(-1, Math.min(moves.length - 1, targetIdx));
+
+    if (legalizeCache[targetIdx + 1]) {
+        // 直接從 cache 恢復
+        die.blocks = legalizeCache[targetIdx + 1].map(b => ({ ...b }));
+    } else {
+        // 找最近已快取的狀態，再往前播
+        let startFrom = -1;
+        for (let i = targetIdx; i >= -1; i--) {
+            if (legalizeCache[i + 1]) { startFrom = i; break; }
+        }
+        die.blocks = legalizeCache[startFrom + 1].map(b => ({ ...b }));
+        for (let i = startFrom + 1; i <= targetIdx; i++) {
+            applyLegalizeSingleMove(moves[i]);
+            if (!legalizeCache[i + 1]) {
+                legalizeCache[i + 1] = die.blocks.map(b => ({ ...b }));
+            }
+        }
+    }
+
+    legalizeStepIndex = targetIdx;
+    selectCurrentLegalizeModule();
+    syncSelectedModuleCenterInputs();
+    updateLegalizeUI();
+    redraw();
+    updateInfoPanel();
+}
+
+// 將目前步驟的 module 設為 selected，並記錄是否為 shake_rot
 function selectCurrentLegalizeModule() {
     const td = legalizeData && legalizeData.tierData[legalizeCurrentTier];
     const die = outData && outData.dies && outData.dies[legalizeCurrentTier];
-    if (!td || legalizeStepIndex < 0 || !die) { selected = null; return; }
+    if (!td || legalizeStepIndex < 0 || !die) {
+        selected = null;
+        legalizeCurrentMoveIsShakeRot = false;
+        return;
+    }
     const mv = td.moves[legalizeStepIndex];
     const bi = die0ModuleMap.get(mv.module_id);
-    if (bi === undefined) { selected = null; return; }
+    if (bi === undefined) {
+        selected = null;
+        legalizeCurrentMoveIsShakeRot = false;
+        return;
+    }
     selected = { type: 'module', dieId: legalizeCurrentTier, blockIndex: bi, name: die.blocks[bi].name };
+    legalizeCurrentMoveIsShakeRot = (mv.type === 'shake_rot');
+}
+
+// 判斷 pass label 是否應顯示為分隔線（iter 邊界資訊，非可跳轉的掃描段）
+function isPassDivider(label) {
+    return /running sweeps/.test(label) ||
+           /overlaps cleared after sweep/.test(label) ||
+           /shake rotated=\d+ modules/.test(label);
+}
+
+// 在 passBtns 容器裡產生一個 pass 的 UI 元素（按鈕或分隔線）
+function appendPassItem(passBtns, step, globalOffset, isActive) {
+    const label = step.label.replace(/^Tier\s+\d+\s+/, '');
+    if (isPassDivider(label)) {
+        const div = document.createElement('div');
+        div.className = 'pass-divider';
+        div.textContent = label;
+        passBtns.appendChild(div);
+    } else {
+        const startGlobal = globalOffset;
+        const btn = document.createElement('button');
+        btn.className = 'btn' + (isActive ? ' loaded' : '');   // 灰色底（非 secondary）
+        btn.style.cssText = 'font-size:10px;padding:2px 6px;white-space:nowrap';
+        btn.textContent = `${label} (${step.moves.length})`;
+        btn.title = `跳到 ${step.label} 第一步`;
+        btn.addEventListener('click', () => legalizeJumpToStep(startGlobal - 1));
+        passBtns.appendChild(btn);
+    }
 }
 
 // 更新 Replay ctrl-group 顯示
@@ -1848,6 +2152,16 @@ function updateLegalizeUI() {
 
     if (legalizeStepIndex < 0) {
         info.textContent = `Tier ${legalizeCurrentTier} initial  (0 / ${N} moves, ${td.steps.length} passes)`;
+        // initial 狀態也要顯示區段按鈕
+        const passBtns = document.getElementById('legalizePassButtons');
+        if (passBtns) {
+            passBtns.innerHTML = '';
+            let globalOffset = 0;
+            td.steps.forEach((step) => {
+                appendPassItem(passBtns, step, globalOffset, false);
+                globalOffset += step.moves.length;
+            });
+        }
         return;
     }
 
@@ -1860,11 +2174,23 @@ function updateLegalizeUI() {
     const bi  = die0ModuleMap.get(mv.module_id);
     const blockName = (die && bi !== undefined) ? die.blocks[bi].name : `id=${mv.module_id}`;
 
+    const moveColor = legalizeCurrentMoveIsShakeRot ? '#dc2626' : '#16a34a';
     info.innerHTML =
-        `<b>Tier ${legalizeCurrentTier} &nbsp; Pass ${passIdx1}/${passTotal}</b> ${passShort}<br>` +
+        `<b>Tier ${legalizeCurrentTier} &nbsp; Pass ${passIdx1}/${passTotal}</b> <br>` +
         `move ${mv.moveIdxInPass + 1}/${mv.passTotal} &nbsp;` +
         `<span style="color:#888">(step ${legalizeStepIndex + 1}/${N})</span> &nbsp;` +
-        `<b style="color:#16a34a">▶ ${blockName}</b>`;
+        `<b style="color:${moveColor}">▶ ${blockName}</b>`;
+
+    // ── 區段跳轉按鈕 ──
+    const passBtns = document.getElementById('legalizePassButtons');
+    if (passBtns) {
+        passBtns.innerHTML = '';
+        let globalOffset = 0;
+        td.steps.forEach((step, pi) => {
+            appendPassItem(passBtns, step, globalOffset, mv.passIdx === pi);
+            globalOffset += step.moves.length;
+        });
+    }
 }
 
 // ── 訊息畫面 ───────────────────────────────────────────────────────────────────

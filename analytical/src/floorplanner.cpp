@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cassert>
+#include <fstream>
 #include <iostream>
 #include <iomanip>
 #include <numeric>
@@ -121,6 +122,7 @@ void PlacementEngine::initialize_positions()
 //   4. RMS 正規化，使 WL 與 Density 梯度量級一致後相加
 //   5. 更新位置並夾取至 Die 邊界
 // ============================================================
+
 void PlacementEngine::solve()
 {
     const int    max_iter = cfg_.max_iterations;
@@ -147,6 +149,11 @@ void PlacementEngine::solve()
     std::vector<double> gx_d(n),  gy_d(n);    // Density 梯度
     std::vector<double> gx(n),    gy(n);       // 合併梯度
     std::vector<double> look_x(n), look_y(n);  // NAG lookahead 暫存
+
+    double prev_max_overflow   = 0.0;
+    double prev_total_overflow = 0.0;
+    bool   have_prev_overflow  = false;
+    int    overflow_stable_streak = 0;
 
     for (int iter = 0; iter < max_iter; ++iter) {
 
@@ -218,22 +225,90 @@ void PlacementEngine::solve()
 
         step *= decay;
 
+        // ---- Step 5b: 週期性旋轉優化（pairwise 重疊面積）----
+        // 在 rotation_start_iter 之後，每隔 rotation_interval 次對所有可動 module
+        // 試旋轉 90°（以中心點為軸），比較旋轉前後與同 tier 所有其他 module 的
+        // 重疊面積總和，取較小者保留。
+        if (cfg_.rotation_start_iter > 0
+         && cfg_.rotation_interval   > 0
+         && iter >= cfg_.rotation_start_iter
+         && (iter - cfg_.rotation_start_iter) % cfg_.rotation_interval == 0)
+        {
+            // 計算 m 與同 tier 所有其他 module 的重疊面積加總
+            auto pairwise_overlap = [&](const Module& m) -> double {
+                constexpr double eps = 1e-12;
+                double total = 0.0;
+                for (const Module& o : modules_) {
+                    if (o.id == m.id || o.tier_id != m.tier_id) continue;
+                    const double ox = std::max(0.0, std::min(m.rx(), o.rx())
+                                                  - std::max(m.lx(), o.lx()));
+                    const double oy = std::max(0.0, std::min(m.ry(), o.ry())
+                                                  - std::max(m.ly(), o.ly()));
+                    total += ox * oy;
+                }
+                return total + eps; // eps 防止浮點相等時不必要旋轉
+            };
+
+            int rotated_count = 0;
+            for (Module& m : modules_) {
+                if (m.is_terminal || m.is_fixed) continue;
+                const Die& die = dies_[static_cast<size_t>(m.tier_id)];
+
+                // 旋轉後（swap 長寬）若 footprint 會超出 die，則不嘗試旋轉
+                const double hw_after = m.height * 0.5; // swap 後的半寬 = 原半高
+                const double hh_after = m.width  * 0.5; // swap 後的半高 = 原半寬
+                if (m.x < hw_after || m.x > die.width  - hw_after
+                 || m.y < hh_after || m.y > die.height - hh_after)
+                    continue;
+
+                const double ov_before = pairwise_overlap(m);
+                std::swap(m.width, m.height);
+                const double ov_after  = pairwise_overlap(m);
+
+                if (ov_after >= ov_before)
+                    std::swap(m.width, m.height); // 無改善，還原
+                else
+                    ++rotated_count;
+            }
+            std::cout << "[Rotation] iter=" << iter
+                      << " rotated_modules=" << rotated_count << "\n";
+        }
+
         // ---- Step 6: 收斂監控（每 50 次）----
         if (iter % 50 == 0) {
             double hpwl = compute_hpwl();
 
-            double max_overflow = 0.0;
-            for (const Die& die : dies_)
-                for (const Bin& b : die.bins)
-                    max_overflow = std::max(max_overflow,
-                                            b.density - b.target_density);
+            double max_overflow    = 0.0;
+            double total_overflow  = 0.0; // 所有 bin 的正超出量加總
+            for (const Die& die : dies_) {
+                for (const Bin& b : die.bins) {
+                    const double ex = b.density - b.target_density;
+                    max_overflow   = std::max(max_overflow, ex);
+                    total_overflow += std::max(0.0, ex);
+                }
+            }
 
             double rel_change = std::fabs(prev_hpwl_ - hpwl) /
                                 (prev_hpwl_ + 1e-12);
 
+            // 相鄰兩次「每 50 iter」記錄點的 overflow 變化量（連續 n 次皆小才累積）
+            if (have_prev_overflow) {
+                const double d_max = std::fabs(max_overflow - prev_max_overflow);
+                const double d_tot = std::fabs(total_overflow - prev_total_overflow);
+                if (d_max < cfg_.convergence_max_overflow_delta_tol
+                    && d_tot < cfg_.convergence_total_overflow_delta_tol)
+                    ++overflow_stable_streak;
+                else
+                    overflow_stable_streak = 0;
+            }
+            prev_max_overflow   = max_overflow;
+            prev_total_overflow = total_overflow;
+            have_prev_overflow    = true;
+
             std::cout << "[Iter " << std::setw(5) << iter << "]"
                       << " HPWL="       << std::fixed      << std::setprecision(1) << hpwl
                       << " Overflow="   << std::setprecision(3) << max_overflow
+                      << " TotalOverflow=" << std::setprecision(3) << total_overflow
                       << " λ_mult="     << std::setprecision(4) << lambda_mult_
                       << " σ="          << std::setprecision(1) << smooth_sigma_
                       << " WLrms="      << std::scientific  << std::setprecision(2) << wl_rms
@@ -241,7 +316,31 @@ void PlacementEngine::solve()
                       << " step="       << step
                       << "\n";
 
-            if (iter > 100 && rel_change < tol && max_overflow < 0.1) {
+            if (cfg_.dump_analytical_iter_trace
+                && !cfg_.analytical_iter_trace_path.empty()) {
+                std::ofstream ofs(cfg_.analytical_iter_trace_path,
+                                  (iter == 0) ? (std::ios::out | std::ios::trunc)
+                                              : (std::ios::out | std::ios::app));
+                if (ofs) {
+                    ofs << std::fixed << std::setprecision(6);
+                    ofs << "[Iter " << iter << "]\n";
+                    for (const Module& m : modules_) {
+                        if (m.is_terminal) continue;
+                        ofs << m.name << ' ' << m.lx() << ' ' << m.ly() << ' '
+                            << m.rx() << ' ' << m.ry() << '\n';
+                    }
+                    ofs << '\n';
+                } else if (iter == 0) {
+                    std::cerr << "[Solve] WARNING: cannot open analytical trace file: "
+                              << cfg_.analytical_iter_trace_path << "\n";
+                }
+            }
+
+            const bool overflow_stable =
+                (cfg_.convergence_overflow_stable_steps > 0
+                 && overflow_stable_streak >= cfg_.convergence_overflow_stable_steps);
+
+            if (iter > 1000 && rel_change < tol && overflow_stable) {
                 std::cout << "[Converged] iter=" << iter
                           << " HPWL=" << std::fixed << hpwl << "\n";
                 break;
@@ -596,11 +695,45 @@ struct PlacedRect {
     double lx, ly, rx, ry;
 };
 
-// 在矩形區域內（含邊界）對固定大小 hw,hh 做 y 下→上、x 左→右 first-fit；placed 為障礙 AABB
+// first-fit 掃描起點：對應矩形可行區的「角落」（y 向上：ymin 為下、ymax 為上）
+enum class TsvFirstFitCorner { BottomLeft, BottomRight, TopLeft, TopRight };
+
+// 比較 b_lo 與 b_hi 兩 bbox **中心點**的相對位置（象限）→ first-fit 從對應角開始掃描（reflow TSV）
+// dx = lo_x - hi_x, dy = lo_y - hi_y（y 小為下）：西南象限→左下、東南→右下、西北→左上、東北→右上
+static TsvFirstFitCorner pick_corner_from_b_lo_b_hi_center_rel(const BBox& b_lo, const BBox& b_hi)
+{
+    const double clx = 0.5 * (b_lo.xmin + b_lo.xmax);
+    const double cly = 0.5 * (b_lo.ymin + b_lo.ymax);
+    const double chx = 0.5 * (b_hi.xmin + b_hi.xmax);
+    const double chy = 0.5 * (b_hi.ymin + b_hi.ymax);
+    const double dx  = clx - chx;
+    const double dy  = cly - chy;
+    const double span = std::max(b_hi.xmax - b_hi.xmin, b_hi.ymax - b_hi.ymin);
+    const double eps  = std::max(1e-12, 1e-9 * std::max(1.0, span));
+
+    if (std::fabs(dx) <= eps) {
+        if (dy < -eps) return TsvFirstFitCorner::BottomLeft;  // lo 在 hi 正下方
+        if (dy > eps)  return TsvFirstFitCorner::TopLeft;      // lo 在 hi 正上方
+        return TsvFirstFitCorner::BottomLeft;                  // 幾乎重合
+    }
+    if (std::fabs(dy) <= eps) {
+        if (dx < -eps) return TsvFirstFitCorner::BottomLeft;   // lo 在 hi 正左方
+        if (dx > eps)  return TsvFirstFitCorner::BottomRight;  // lo 在 hi 正右方
+        return TsvFirstFitCorner::BottomLeft;
+    }
+    if (dx < -eps && dy < -eps) return TsvFirstFitCorner::BottomLeft;   // 西南
+    if (dx > eps && dy < -eps)  return TsvFirstFitCorner::BottomRight;   // 東南
+    if (dx < -eps && dy > eps)  return TsvFirstFitCorner::TopLeft;      // 西北
+    return TsvFirstFitCorner::TopRight;                                 // 東北
+}
+
+// 在矩形區域內（含邊界）對固定大小 hw,hh 做 first-fit；placed 為障礙 AABB。
+// start_corner 決定掃描順序（從哪個角開始往內填）。
 static bool first_fit_tsv_in_region(const std::vector<PlacedRect>& placed,
                                       double rx0, double ry0, double rx1, double ry1,
                                       double hw, double hh,
-                                      double& out_cx, double& out_cy)
+                                      double& out_cx, double& out_cy,
+                                      TsvFirstFitCorner start_corner = TsvFirstFitCorner::BottomLeft)
 {
     const double eps = 1e-9;
     double cx_lo = rx0 + hw;
@@ -613,7 +746,7 @@ static bool first_fit_tsv_in_region(const std::vector<PlacedRect>& placed,
         return false;
     }
 
-    auto first_free_x_at_y = [&](double cy) -> double {
+    auto first_free_x_at_y_from_left = [&](double cy) -> double {
         double cx = cx_lo;
         bool   moved = true;
         while (moved) {
@@ -627,6 +760,22 @@ static bool first_fit_tsv_in_region(const std::vector<PlacedRect>& placed,
             }
         }
         return (cx + hw > cx_hi + eps) ? -1.0 : cx;
+    };
+
+    auto first_free_x_at_y_from_right = [&](double cy) -> double {
+        double cx = cx_hi;
+        bool   moved = true;
+        while (moved) {
+            moved = false;
+            for (const PlacedRect& r : placed) {
+                if (cy - hh >= r.ry - eps || cy + hh <= r.ly + eps) continue;
+                if (cx - hw < r.rx - eps && cx + hw > r.lx + eps) {
+                    cx = r.lx - hw;
+                    moved = true;
+                }
+            }
+        }
+        return (cx - hw < cx_lo - eps) ? -1.0 : cx;
     };
 
     std::vector<double> ys;
@@ -650,8 +799,19 @@ static bool first_fit_tsv_in_region(const std::vector<PlacedRect>& placed,
                           [&](double a, double b){ return std::fabs(a - b) < tol; }),
              ys.end());
 
+    const bool y_ascending =
+        (start_corner == TsvFirstFitCorner::BottomLeft ||
+         start_corner == TsvFirstFitCorner::BottomRight);
+    if (!y_ascending)
+        std::reverse(ys.begin(), ys.end());
+
+    const bool from_left =
+        (start_corner == TsvFirstFitCorner::BottomLeft ||
+         start_corner == TsvFirstFitCorner::TopLeft);
+
     for (double cy : ys) {
-        const double cx = first_free_x_at_y(cy);
+        const double cx = from_left ? first_free_x_at_y_from_left(cy)
+                                    : first_free_x_at_y_from_right(cy);
         if (cx >= 0.0) {
             out_cx = cx;
             out_cy = cy;
@@ -866,13 +1026,27 @@ static bool reflow_weighted_pref_line_corridor_fit(const std::vector<PlacedRect>
     return nearest_free_tsv_to_rect(placed, p0, q0, p1, q1, die_w, die_h, hw, hh, out_cx, out_cy);
 }
 
+// Same net、較低 interface（layer_index 較小）已擺好的 TSV 中心點一併納入 B_lower，
+// 使上層 interface 的 TSV 幾何目標會「拉向」已固定的下層 TSV（例如 tier0–1 後擺 tier1–2）。
+static void expand_b_lo_with_prior_same_net_tsvs(const std::vector<TSV>& all_tsvs,
+                                                 const TSV&              cur,
+                                                 BBox&                   b_lo)
+{
+    for (const TSV& o : all_tsvs) {
+        if (o.net_id != cur.net_id) continue;
+        if (o.layer_index >= cur.layer_index) continue;
+        b_lo.expand(o.x, o.y);
+    }
+}
+
 } // anonymous namespace
+
 
 // ============================================================
 // compute_tsv_cost: 計算所有 TSV 的 wirelength 代價
 //
 // 對每個 TSV，取所屬 net 上下兩側的 BBox：
-//   B_lower = bbox of pins on tiers ≤ layer_index
+//   B_lower = bbox of pins on tiers ≤ layer_index，再加上同 net 已擺在較低 interface 的 TSV 中心
 //   B_upper = bbox of pins on tiers ≥ layer_index+1
 // cost = w_lo * dist(tsv, B_lower) + w_hi * dist(tsv, B_upper)
 // ============================================================
@@ -888,6 +1062,7 @@ double PlacementEngine::compute_tsv_cost() const
             if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
             if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
+        expand_b_lo_with_prior_same_net_tsvs(tsvs_, tsv, b_lo);
         if (b_lo.valid())
             total += tsv_placement_tier_weight(tsv.tier_below()) * b_lo.dist(tsv.x, tsv.y);
         if (b_hi.valid())
@@ -916,7 +1091,7 @@ double PlacementEngine::tsv_placement_tier_weight(int tier) const
 // solve_tsvs: 依上下層 BBox 幾何決定 TSV 座標（無迭代優化）
 //
 // 對每個 TSV：
-//   B_lower = bbox of pins on tiers ≤ layer_index
+//   B_lower = bbox of pins on tiers ≤ layer_index，再加上同 net 已擺在較低 interface 的 TSV 中心
 //   B_upper = bbox of pins on tiers ≥ layer_index+1
 //
 // 兩側皆有效時（見 tsv_position_from_two_bboxes_weighted）：
@@ -955,6 +1130,7 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
             if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
             if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
+        expand_b_lo_with_prior_same_net_tsvs(tsvs_, tsv, b_lo);
 
         double       tx = tsv.x, ty = tsv.y;
         const bool   lo_ok = b_lo.valid();
@@ -987,6 +1163,7 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
 // reflow_tsvs_after_legalize:
 //   忽略既有 TSV 位置，依「所屬 net 全體 pin 之 bbox 周長」由小到大排序，
 //   各 TSV 在 B_lower/B_upper 決定之目標區域（與 solve_tsvs 相同之兩框幾何）內 first-fit；
+//   B_lower 另含同 net、較低 layer_index 且本輪已更新過的 TSV 中心（使上層 interface 與下層 TSV 對齊）。
 //   若相鄰 tier_below()／tier_above() 至少一層無 net pin：與 solve_tsvs 相同，在 R∩B_lower 或 R∩B_upper
 //   之矩形內 first-fit；
 //   若兩層 bbox 無交集且 die weight 不同：先在 R∩較重側 bbox 上／沿該線附近狹帶找空位（交集為線時
@@ -994,6 +1171,8 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
 //   為 nearest 目標，
 //   否則（0.5≤ratio≤2）以較輕側 bbox 為 nearest 目標；其餘情況仍以 R 為 nearest 目標。
 //   障礙物為同層 module + 本輪已放置之 TSV。
+//   當 B_lower、B_upper 皆有效時：first-fit 掃描起點由「b_lo 中心相對 b_hi 中心」的象限決定
+//   （西南→左下、東南→右下、西北→左上、東北→右上；軸上則依正負方向對應邊）。
 // ============================================================
 void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
 {
@@ -1056,6 +1235,7 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
             if (mt <= tsv.tier_below()) b_lo.expand(m.x, m.y);
             if (mt >= tsv.tier_above()) b_hi.expand(m.x, m.y);
         }
+        expand_b_lo_with_prior_same_net_tsvs(tsvs_, tsv, b_lo);
 
         const bool lo_ok = b_lo.valid();
         const bool hi_ok = b_hi.valid();
@@ -1142,13 +1322,18 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
 
         double cx = 0.0, cy = 0.0;
         bool   in_region = false;
+        // 兩側 bbox 皆有效時：依 b_lo 中心最接近 b_hi 的哪個角，決定 first-fit 掃描起點
+        const TsvFirstFitCorner ff_corner =
+            (lo_ok && hi_ok) ? pick_corner_from_b_lo_b_hi_center_rel(b_lo, b_hi)
+                            : TsvFirstFitCorner::BottomLeft;
         const bool skip_full_r_first_fit = !gap_one_side && weighted_asym && pref_rect_valid;
         if (skip_full_r_first_fit) {
             in_region = reflow_weighted_pref_line_corridor_fit(placed, pref_rx0, pref_ry0, pref_rx1,
                                                                 pref_ry1, die.width, die.height, hw,
                                                                 hh, cx, cy);
         } else {
-            in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy);
+            in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy,
+                                                ff_corner);
         }
         if (!in_region) {
             double nx0 = rx0, ny0 = ry0, nx1 = rx1, ny1 = ry1;

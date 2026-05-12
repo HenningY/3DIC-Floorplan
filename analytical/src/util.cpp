@@ -224,3 +224,19 @@ void print_overlap_report(const PlacementEngine& engine,
             os << "  Tier " << t << " overlaps: " << ov_count << " pairs\n";
     }
 }
+
+// ============================================================
+// squarify_modules
+// ============================================================
+void squarify_modules(PlacementEngine& engine)
+{
+    int count = 0;
+    for (Module& m : engine.modules_mutable()) {
+        if (m.is_terminal || m.is_fixed) continue;
+        const double side = std::sqrt(m.width * m.height);
+        m.width  = side;
+        m.height = side;
+        ++count;
+    }
+    std::cout << "[squarify] " << count << " modules squarified\n";
+}
