@@ -147,6 +147,7 @@ void PlacementEngine::solve()
 
     std::vector<double> gx_wl(n), gy_wl(n);   // Wirelength 梯度
     std::vector<double> gx_d(n),  gy_d(n);    // Density 梯度
+    std::vector<double> gx_rep(n), gy_rep(n); // Repulsion 梯度（REPULSE constraint）
     std::vector<double> gx(n),    gy(n);       // 合併梯度
     std::vector<double> look_x(n), look_y(n);  // NAG lookahead 暫存
 
@@ -189,10 +190,11 @@ void PlacementEngine::solve()
             modules_[i].y = look_y[i];
         }
 
-        // ---- Step 3: 計算兩路梯度（fixed module 位置已正確反映在 look_x/y 中）----
+        // ---- Step 3: 計算三路梯度（fixed module 位置已正確反映在 look_x/y 中）----
         update_density_map();
         calculate_wirelength_gradient(gx_wl, gy_wl);
         calculate_density_gradient(gx_d,  gy_d);
+        calculate_repulsion_gradient(gx_rep, gy_rep); // REPULSE constraint 斥力
 
         // ---- Step 4: RMS 正規化（只統計真正可動模組）----
         double wl_sq = 0.0, d_sq = 0.0;
@@ -214,8 +216,8 @@ void PlacementEngine::solve()
 
             double lam = dies_[modules_[i].tier_id].lambda * lambda_mult_;
 
-            gx[i] = gx_wl[i] + lam * scale_d * gx_d[i];
-            gy[i] = gy_wl[i] + lam * scale_d * gy_d[i];
+            gx[i] = gx_wl[i] + gx_rep[i] + lam * scale_d * gx_d[i];
+            gy[i] = gy_wl[i] + gy_rep[i] + lam * scale_d * gy_d[i];
 
             modules_[i].x = look_x[i] - step * gx[i];
             modules_[i].y = look_y[i] - step * gy[i];
@@ -1573,6 +1575,57 @@ void PlacementEngine::calculate_density_gradient(
                 double coeff = 2.0 * overflow * A_ratio;
                 gx[i] += coeff * dphi_x * phi_y;
                 gy[i] += coeff * phi_x  * dphi_y;
+            }
+        }
+    }
+}
+
+// ============================================================
+// calculate_repulsion_gradient:
+//   對每個 RepulsionGroup 掃所有無序 pair (a, b)：
+//
+//     E_rep = k / (dx^2 + dy^2 + ε)
+//     ∂E/∂xa = -k * 2*dx / (dx^2 + dy^2 + ε)^2  → 推離 b（取正讓梯度下降時往斥力方向走）
+//
+//   跨 tier 僅用 2D 平面座標（x, y）計算，不考慮 Z 距離。
+//   is_terminal 與 is_fixed 的 module 不施加梯度（不可動）。
+//   epsilon = 1.0（與 die 座標同量綱，防止距離為 0 時梯度爆炸）。
+// ============================================================
+void PlacementEngine::calculate_repulsion_gradient(
+    std::vector<double>& gx, std::vector<double>& gy) const
+{
+    constexpr double eps = 1.0;
+
+    std::fill(gx.begin(), gx.end(), 0.0);
+    std::fill(gy.begin(), gy.end(), 0.0);
+
+    for (const RepulsionGroup& grp : repulsion_groups_) {
+        const auto& ids = grp.module_ids;
+        const double k  = grp.strength * 10000.0;
+
+        for (int a = 0; a < static_cast<int>(ids.size()); ++a) {
+            for (int b = a + 1; b < static_cast<int>(ids.size()); ++b) {
+                const int ia = ids[a];
+                const int ib = ids[b];
+
+                // 不可動的 module：仍貢獻斥力給對方（作為障礙），自身梯度不更新
+                const Module& ma = modules_[ia];
+                const Module& mb = modules_[ib];
+
+                const double dx = ma.x - mb.x;
+                const double dy = ma.y - mb.y;
+                const double d2 = dx * dx + dy * dy + eps;
+                const double coeff = k * 2.0 / (d2 * d2);
+
+                // 可動 module 才累加梯度（梯度方向 = 推離對方）
+                if (!ma.is_terminal && !ma.is_fixed) {
+                    gx[ia] += coeff * dx;
+                    gy[ia] += coeff * dy;
+                }
+                if (!mb.is_terminal && !mb.is_fixed) {
+                    gx[ib] -= coeff * dx;
+                    gy[ib] -= coeff * dy;
+                }
             }
         }
     }

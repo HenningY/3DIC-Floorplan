@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Parse PA2 .block and analytical floorplan output for 3D visualization.
+ * Parse PA2 .block and analytical floorplan output for 2D visualization.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseBlockFile = parseBlockFile;
@@ -13,13 +13,18 @@ function parseBlockFile(text) {
         throw new Error("Expected NumDie in .block file");
     }
     const numDie = parseInt(numDieLine[1], 10);
+    // Outline 允許整數或小數（例如 187 或 187.39000）
+    const outlineRe = /Outline:\s*([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s+([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/i;
     const outlines = [];
     for (let d = 0; d < numDie; d++) {
-        const m = lines[i++].match(/Outline:\s*(\d+)\s+(\d+)/i);
+        const m = lines[i++].match(outlineRe);
         if (!m) {
             throw new Error(`Expected Outline line ${d + 1}`);
         }
-        outlines.push({ width: parseInt(m[1], 10), height: parseInt(m[2], 10) });
+        outlines.push({
+            width: parseFloat(m[1]),
+            height: parseFloat(m[2]),
+        });
     }
     const nb = lines[i++].match(/NumBlocks:\s*(\d+)/i);
     if (!nb) {
@@ -30,22 +35,45 @@ function parseBlockFile(text) {
     if (!nt) {
         throw new Error("Expected NumTerminals");
     }
+    // 跳過 Weight: 等 header 行，找到第一個 block 行（格式：name w h tier）
+    while (i < lines.length) {
+        const parts = lines[i].trim().split(/\s+/);
+        if (parts.length >= 4 &&
+            !isNaN(parseFloat(parts[1])) &&
+            parts[1].toLowerCase() !== "terminal") {
+            break;
+        }
+        i++;
+    }
     const blocks = [];
-    for (let b = 0; b < numBlocks; b++) {
+    for (let b = 0; b < numBlocks && i < lines.length; b++) {
         const parts = lines[i++].trim().split(/\s+/);
         if (parts.length < 4) {
             throw new Error(`Bad block line: ${lines[i - 1]}`);
         }
-        const name = parts[0];
-        const w = parseFloat(parts[1]);
-        const h = parseFloat(parts[2]);
-        const tier = parseInt(parts[3], 10);
-        blocks.push({ name, width: w, height: h, tier });
+        blocks.push({
+            name: parts[0],
+            width: parseFloat(parts[1]),
+            height: parseFloat(parts[2]),
+            tier: parseInt(parts[3], 10),
+        });
     }
-    return { numDie, outlines, blocks };
+    // 解析 terminal 行（格式：name terminal x y）
+    const terminals = [];
+    while (i < lines.length) {
+        const parts = lines[i++].trim().split(/\s+/);
+        if (parts.length >= 4 && parts[1].toLowerCase() === "terminal") {
+            terminals.push({
+                name: parts[0],
+                x: parseFloat(parts[2]),
+                y: parseFloat(parts[3]),
+            });
+        }
+    }
+    return { numDie, outlines, blocks, terminals };
 }
 /**
- * write_output format: 5 header lines, then modules, optional NumTsvAssignments + lines.
+ * write_output 格式：5 header lines，then modules，optional NumTsvAssignments + lines。
  */
 function parseFloorplanOutput(text) {
     const lines = text.split(/\r?\n/);
@@ -64,13 +92,14 @@ function parseFloorplanOutput(text) {
         }
         const parts = line.split(/\s+/);
         if (parts.length >= 6) {
-            const name = parts[0];
-            const tier = parseInt(parts[1], 10);
-            const xll = parseInt(parts[2], 10);
-            const yll = parseInt(parts[3], 10);
-            const xur = parseInt(parts[4], 10);
-            const yur = parseInt(parts[5], 10);
-            modules.push({ name, tier, xll, yll, xur, yur });
+            modules.push({
+                name: parts[0],
+                tier: parseInt(parts[1], 10),
+                xll: parseFloat(parts[2]),
+                yll: parseFloat(parts[3]),
+                xur: parseFloat(parts[4]),
+                yur: parseFloat(parts[5]),
+            });
         }
         idx++;
     }

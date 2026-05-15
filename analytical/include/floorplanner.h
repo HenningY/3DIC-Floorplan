@@ -235,6 +235,16 @@ struct PartitionNode {
 };
 
 // ============================================================
+// RepulsionGroup: 斥力群組（來自 constraint 檔的 REPULSE 行）
+// 群組內所有 module 兩兩互斥，analytical 階段施加反平方斥力梯度
+// 支援跨 tier（以 2D 平面座標計算，不考慮層間 Z 距離）
+// ============================================================
+struct RepulsionGroup {
+    std::vector<int> module_ids; // 參與的 module 索引（解析時已過濾 terminal）
+    double           strength;   // 斥力強度係數 k（由 constraint 檔指定）
+};
+
+// ============================================================
 // PlacementEngine: 解析式擺放主引擎
 // ============================================================
 class PlacementEngine {
@@ -331,6 +341,7 @@ private:
     std::vector<Net>    nets_;
     std::vector<Die>    dies_;
     std::vector<TSV>    tsvs_;  // 跨層 net 產生的 TSV，供後續 TSV placement 使用
+    std::vector<RepulsionGroup> repulsion_groups_; // REPULSE constraint 群組
 
     // 每層 die 的 net 權重（.block 中 Weight: w0 w1 ...；預設全為 1.0）
     std::vector<double> tier_net_weights_;
@@ -392,4 +403,9 @@ private:
 
     // TSV cost：tier 乘數（tsv_die_weights 若滿長度則覆寫，否則 tier_net_weights_）
     double tsv_placement_tier_weight(int tier) const;
+
+    // REPULSE constraint：對所有斥力群組計算 pairwise inverse-square 梯度
+    // 跨 tier 以 2D 平面座標計算；is_terminal / is_fixed 的 module 不受力
+    void calculate_repulsion_gradient(std::vector<double>& gx,
+                                      std::vector<double>& gy) const;
 };

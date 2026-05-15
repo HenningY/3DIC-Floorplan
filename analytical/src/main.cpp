@@ -48,8 +48,13 @@ int main(int argc, char* argv[])
     // base value of density penalty coefficient for each tier (multiplied by lambda_mult)
     cfg.tier_lambdas    = {0.0087, 0.0087, 0.009};
 
+    // ---- convergence tolerance ----
+    cfg.convergence_overflow_stable_steps = 3;
+    cfg.convergence_max_overflow_delta_tol = 0.001;
+    cfg.convergence_total_overflow_delta_tol = 1.5;
+
     // ---- analytical iter 追蹤寫檔：true 時與 [Iter ...] 同頻率寫入非 terminal module 外框 ----
-    const bool dump_analytical_iter_trace = true;
+    const bool dump_analytical_iter_trace = false;
     if (dump_analytical_iter_trace) {
         cfg.dump_analytical_iter_trace = true;
         cfg.analytical_iter_trace_path = output_file + "_analytical_iter.txt";
@@ -173,7 +178,7 @@ int main(int argc, char* argv[])
 
     // ---- 輸出各 tier 的 bin 密度圖（供除錯檢查）----
     // 產生 <output_file>_density_tier0.txt / tier1.txt / ...
-    engine.write_density_map(output_file);
+    // engine.write_density_map(output_file);
 
     return 0;
 }
