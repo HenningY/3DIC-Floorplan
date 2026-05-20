@@ -28,6 +28,7 @@ let showTsvPoints     = true;
 let showTsvLabels     = true;   // TSV strip 名稱、TSV assignment 的 net 文字（畫在圖上）
 let tsvLowerTierOnly  = false;  // true = tier d→d+1 的 TSV 只在 die d（下層）顯示
 let showNets          = false;  // 顯示同層 intra-die net 連線
+let tsvSize           = 3;      // TSV 方塊的世界座標邊長（可在 View 面板調整）
 
 // 畫面上 terminal 的像素位置（供 hover 檢測）
 let terminalPixels = [];   // [{name, cx, cy, worldX, worldY}]
@@ -269,6 +270,10 @@ function setupUI() {
     });
     document.getElementById('showNetsCheck').addEventListener('change', e => {
         showNets = e.target.checked; redraw();
+    });
+    document.getElementById('tsvSizeInput').addEventListener('input', e => {
+        const v = parseFloat(e.target.value);
+        if (isFinite(v) && v > 0) { tsvSize = v; redraw(); }
     });
 
     // ── Edit: Reset / Rotate ───────────────────────────────────────────────
@@ -1548,8 +1553,8 @@ function redraw() {
                               hoveredTsv.tierLo === a.tierLo;
             const isSelected = selected && selected.type === 'tsv' && selected.assignmentIndex === assignmentIndex;
 
-            // TSV 實際佔地：世界座標 (x±1.5, y±1.5)，畫布對應 3*scale 大小
-            let tsv_size = 3;
+            // TSV 實際佔地：世界座標 (x±size/2, y±size/2)，畫布對應 tsvSize*scale 大小
+            let tsv_size = tsvSize;
             const sqX = toCanvasX(a.x - tsv_size / 2);
             const sqY = toCanvasY(a.y + tsv_size / 2);   // y+1.5 = world 上方 = canvas 上方
             const sqW = Math.max(tsv_size, tsv_size * scale);

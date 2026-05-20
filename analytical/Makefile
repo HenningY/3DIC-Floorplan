@@ -1,7 +1,7 @@
 CXX      := g++
-CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I include
+CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -I include -I third_party
 TARGET   := analytical
-SRCS     := src/main.cpp src/floorplanner.cpp src/tsv_placement.cpp src/parser.cpp src/legalize.cpp src/legalize_heu.cpp src/util.cpp
+SRCS     := src/main.cpp src/floorplanner.cpp src/tsv_placement.cpp src/routing_congestion.cpp src/parser.cpp src/legalize.cpp src/legalize_heu.cpp src/util.cpp
 OBJS     := $(SRCS:.cpp=.o)
 
 .PHONY: all clean run
@@ -10,6 +10,9 @@ all: $(TARGET)
 
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
+
+src/floorplanner.o: src/floorplanner.cpp include/floorplanner.h third_party/stb_image_write.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 src/%.o: src/%.cpp include/floorplanner.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<

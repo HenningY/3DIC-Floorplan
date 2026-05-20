@@ -1,6 +1,7 @@
 // 3D IC Analytical Floorplanner - TSV Placement 實作
 // 包含 build_tsvs、solve_tsvs、reflow_tsvs_after_legalize 及相關輔助函式
 #include "floorplanner.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cmath>
@@ -526,6 +527,129 @@ static std::vector<std::pair<double, double>> free_x_intervals_for_tsv_row(
     return free_iv;
 }
 
+// 收集矩形區域 R 內所有與 placed 不衝突的候選 TSV 中心（與 first_fit_tsv_in_region 相同幾何）。
+// 每個 cy 候選行：列出所有 free x 區間端點與中點，再用 placed 推擠確認可行性。
+static std::vector<std::pair<double,double>> collect_tsv_centers_in_region(
+    const std::vector<PlacedRect>& placed,
+    double rx0, double ry0, double rx1, double ry1,
+    double hw, double hh)
+{
+    const double eps = 1e-9;
+    const double cx_lo = rx0 + hw;
+    const double cx_hi = rx1 - hw;
+    const double cy_lo = ry0 + hh;
+    const double cy_hi = ry1 - hh;
+
+    std::vector<std::pair<double,double>> result;
+    if (cx_lo > cx_hi + eps || cy_lo > cy_hi + eps) return result;
+
+    std::vector<double> ys;
+    auto push_y = [&](double y) {
+        if (y >= cy_lo - eps && y <= cy_hi + eps) ys.push_back(y);
+    };
+    push_y(cy_lo);
+    push_y(cy_hi);
+    for (const PlacedRect& r : placed) {
+        push_y(r.ry + hh);
+        push_y(r.ly - hh);
+    }
+    if (ys.empty()) return result;
+    std::sort(ys.begin(), ys.end());
+    const double tol = std::max(1e-6, hh * 1e-3);
+    ys.erase(std::unique(ys.begin(), ys.end(),
+                          [&](double a, double b){ return std::fabs(a - b) < tol; }),
+             ys.end());
+
+    for (double cy : ys) {
+        auto intervals = free_x_intervals_for_tsv_row(cy, placed, hw, hh, cx_lo, cx_hi);
+        for (const auto& iv : intervals) {
+            if (iv.first > iv.second + eps) continue;
+            const double cands[] = { iv.first, iv.second, 0.5 * (iv.first + iv.second) };
+            for (double cx : cands) {
+                if (cx < iv.first - eps || cx > iv.second + eps) continue;
+                result.push_back({ cx, cy });
+            }
+        }
+    }
+    return result;
+}
+
+// 以 TSV 軸對齊矩形覆蓋到的 bin 計算 cell_avg 平均值（壅塞分數；越低越好）
+static double score_tsv_center(double cx, double cy, double hw, double hh,
+                                const Die& die,
+                                const std::vector<double>& cell_avg)
+{
+    const int    R  = die.bin_rows;
+    const int    C  = die.bin_cols;
+    const double bw = die.bin_w;
+    const double bh = die.bin_h;
+
+    const int c0 = std::max(0, static_cast<int>(std::floor((cx - hw) / bw)));
+    const int c1 = std::min(C - 1, static_cast<int>(std::floor((cx + hw) / bw)));
+    const int r0 = std::max(0, static_cast<int>(std::floor((cy - hh) / bh)));
+    const int r1 = std::min(R - 1, static_cast<int>(std::floor((cy + hh) / bh)));
+
+    if (c0 > c1 || r0 > r1) {
+        // 退化時取中心 bin
+        const int ci = std::max(0, std::min(C - 1, static_cast<int>(cx / bw)));
+        const int ri = std::max(0, std::min(R - 1, static_cast<int>(cy / bh)));
+        return cell_avg[static_cast<size_t>(ri * C + ci)];
+    }
+
+    double sum = 0.0;
+    int    cnt = 0;
+    for (int r = r0; r <= r1; ++r)
+        for (int c = c0; c <= c1; ++c) {
+            sum += cell_avg[static_cast<size_t>(r * C + c)];
+            ++cnt;
+        }
+    return (cnt > 0) ? (sum / cnt) : 0.0;
+}
+
+// 對 TSV 覆蓋 bins 計算「離合法 bbox 最近邊距的 inverse 平均」（邊界懲罰；越靠近邊界越大）
+// bx0..by1 = 合法 bbox；eps_d 避免除零（使用 die 相對量級）
+static double bbox_edge_inverse_avg_bins(double cx, double cy, double hw, double hh,
+                                          const Die& die,
+                                          double bx0, double by0, double bx1, double by1)
+{
+    const double bw = die.bin_w;
+    const double bh = die.bin_h;
+    const int    R  = die.bin_rows;
+    const int    C  = die.bin_cols;
+
+    const double eps_d = std::max(1e-12,
+        1e-6 * std::min(die.width > 0 ? die.width : 1.0,
+                         die.height > 0 ? die.height : 1.0));
+
+    const int c0 = std::max(0, static_cast<int>(std::floor((cx - hw) / bw)));
+    const int c1 = std::min(C - 1, static_cast<int>(std::floor((cx + hw) / bw)));
+    const int r0 = std::max(0, static_cast<int>(std::floor((cy - hh) / bh)));
+    const int r1 = std::min(R - 1, static_cast<int>(std::floor((cy + hh) / bh)));
+
+    // 退化時取中心 bin
+    const int cc0 = (c0 <= c1) ? c0 : std::max(0, std::min(C-1, static_cast<int>(cx / bw)));
+    const int cc1 = (c0 <= c1) ? c1 : cc0;
+    const int rr0 = (r0 <= r1) ? r0 : std::max(0, std::min(R-1, static_cast<int>(cy / bh)));
+    const int rr1 = (r0 <= r1) ? r1 : rr0;
+
+    double sum_inv = 0.0;
+    int    cnt     = 0;
+    for (int r = rr0; r <= rr1; ++r) {
+        for (int c = cc0; c <= cc1; ++c) {
+            const double px = (c + 0.5) * bw;
+            const double py = (r + 0.5) * bh;
+            const double dl = px - bx0;
+            const double dr = bx1 - px;
+            const double db = py - by0;
+            const double du = by1 - py;
+            const double m  = std::min({ dl, dr, db, du });
+            sum_inv += 1.0 / (m + eps_d);
+            ++cnt;
+        }
+    }
+    return (cnt > 0) ? (sum_inv / cnt) : 0.0;
+}
+
 // 在整張 die 上找可摆 TSV 的位置，使 L1 距離到目標矩形 R 最小（區域內無空位時用）
 static bool nearest_free_tsv_to_rect(const std::vector<PlacedRect>& placed,
                                        double tx0, double ty0, double tx1, double ty1,
@@ -827,7 +951,9 @@ void PlacementEngine::solve_tsvs(const TsvPlacementConfig& tcfg)
 //   當 B_lower、B_upper 皆有效時：first-fit 掃描起點由「b_lo 中心相對 b_hi 中心」的象限決定
 //   （西南→左下、東南→右下、西北→左上、東北→右上；軸上則依正負方向對應邊）。
 // ============================================================
-void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
+void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h,
+                                                  bool use_congestion_order,
+                                                  double congestion_bbox_edge_weight)
 {
     const int Nt = static_cast<int>(tsvs_.size());
     if (Nt == 0) {
@@ -872,8 +998,36 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
     for (int i = 0; i < nlayer; ++i)
         tier_w[static_cast<size_t>(i)] = tsv_placement_tier_weight(i);
 
+    // ---- 壅塞導向模式：建立 baseline demand + per-net 端點列表 ----
+    // [net_id][tier] → list of (x,y)
+    using NetPtsByTier = std::vector<std::vector<std::vector<std::pair<double,double>>>>;
+    BinEdgeDemands              cong_dem;
+    std::vector<std::vector<double>> cong_cell_avg;  // per tier
+    NetPtsByTier                net_pts_by_tier;
+
+    if (use_congestion_order) {
+        cong_dem = build_bin_edge_baseline_modules_only(*this);
+        cong_cell_avg.resize(static_cast<size_t>(nlayer));
+        for (int t = 0; t < nlayer; ++t)
+            bin_edge_cells_from_hv(dies_[t], cong_dem.H[t], cong_dem.V[t], cong_cell_avg[t]);
+
+        net_pts_by_tier.resize(nets_.size(),
+            std::vector<std::vector<std::pair<double,double>>>(
+                static_cast<size_t>(nlayer)));
+        for (size_t ni = 0; ni < nets_.size(); ++ni) {
+            for (int pid : nets_[ni].pins) {
+                const Module& m  = modules_[pid];
+                const int     mt = m.is_terminal ? 0 : m.tier_id;
+                if (mt >= 0 && mt < nlayer)
+                    net_pts_by_tier[ni][mt].push_back({ m.x, m.y });
+            }
+        }
+    }
+
     std::cout << "[ReflowTSV] Post-legalize reflow " << Nt
-              << " TSVs (net bbox perimeter order; in-region first-fit, else nearest off-region).\n";
+              << " TSVs (net bbox perimeter order; "
+              << (use_congestion_order ? "congestion-order" : "in-region first-fit")
+              << ", else nearest off-region).\n";
 
     for (int ord : order) {
         TSV&         tsv = tsvs_[ord];
@@ -980,21 +1134,64 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
             (lo_ok && hi_ok) ? pick_corner_from_b_lo_b_hi_center_rel(b_lo, b_hi)
                             : TsvFirstFitCorner::BottomLeft;
         const bool skip_full_r_first_fit = !gap_one_side && weighted_asym && pref_rect_valid;
-        if (skip_full_r_first_fit) {
-            in_region = reflow_weighted_pref_line_corridor_fit(placed, pref_rx0, pref_ry0, pref_rx1,
-                                                                pref_ry1, die.width, die.height, hw,
-                                                                hh, cx, cy);
+
+        if (use_congestion_order) {
+            // 壅塞導向：收集區域內所有可行插槽，依綜合分數低→高排序選最佳
+            std::vector<std::pair<double,double>> candidates;
+            double sbx0 = rx0, sby0 = ry0, sbx1 = rx1, sby1 = ry1;
+            if (skip_full_r_first_fit) {
+                // 先嘗試偏好矩形
+                candidates = collect_tsv_centers_in_region(
+                    placed, pref_rx0, pref_ry0, pref_rx1, pref_ry1, hw, hh);
+                if (!candidates.empty()) {
+                    sbx0 = pref_rx0; sby0 = pref_ry0;
+                    sbx1 = pref_rx1; sby1 = pref_ry1;
+                }
+            }
+            if (candidates.empty()) {
+                candidates = collect_tsv_centers_in_region(
+                    placed, rx0, ry0, rx1, ry1, hw, hh);
+                // sbx0..sby1 保持 rx0..ry1
+            }
+            if (!candidates.empty()) {
+                // combo score = congestion_avg + w * bbox_edge_inverse_avg
+                auto combo_score = [&](double cx_, double cy_) {
+                    const double cong = score_tsv_center(cx_, cy_, hw, hh,
+                                                         die, cong_cell_avg[layer]);
+                    if (congestion_bbox_edge_weight <= 0.0) return cong;
+                    const double edge = bbox_edge_inverse_avg_bins(
+                        cx_, cy_, hw, hh, die, sbx0, sby0, sbx1, sby1);
+                    return cong + congestion_bbox_edge_weight * edge;
+                };
+                std::sort(candidates.begin(), candidates.end(),
+                    [&](const std::pair<double,double>& a, const std::pair<double,double>& b) {
+                        const double sa = combo_score(a.first, a.second);
+                        const double sb = combo_score(b.first, b.second);
+                        if (std::fabs(sa - sb) > 1e-12) return sa < sb;
+                        if (std::fabs(a.second - b.second) > 1e-9) return a.second < b.second;
+                        return a.first < b.first;
+                    });
+                cx = candidates.front().first;
+                cy = candidates.front().second;
+                in_region = true;
+            }
         } else {
-            in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy,
-                                                ff_corner);
+            if (skip_full_r_first_fit) {
+                in_region = reflow_weighted_pref_line_corridor_fit(placed, pref_rx0, pref_ry0,
+                                                                    pref_rx1, pref_ry1,
+                                                                    die.width, die.height,
+                                                                    hw, hh, cx, cy);
+            } else {
+                in_region = first_fit_tsv_in_region(placed, rx0, ry0, rx1, ry1, hw, hh, cx, cy,
+                                                    ff_corner);
+            }
         }
+
         if (!in_region) {
+            // fallback：最近空位（兩種模式共用）
             double nx0 = rx0, ny0 = ry0, nx1 = rx1, ny1 = ry1;
             if (!gap_one_side && weighted_asym) {
-                const bool   strong_asym = true;
-                const BBox&  heavy_bbox = (w_lo >= w_hi) ? b_lo : b_hi;
-                const BBox&  light_bbox = (w_lo <= w_hi) ? b_lo : b_hi;
-                const BBox&  fav_fb     = strong_asym ? heavy_bbox : light_bbox;
+                const BBox& fav_fb = (w_lo >= w_hi) ? b_lo : b_hi;
                 nx0 = std::max(0.0, std::min(die.width, fav_fb.xmin));
                 nx1 = std::max(0.0, std::min(die.width, fav_fb.xmax));
                 ny0 = std::max(0.0, std::min(die.height, fav_fb.ymin));
@@ -1013,6 +1210,24 @@ void PlacementEngine::reflow_tsvs_after_legalize(double tsv_w, double tsv_h)
         tsv.y = std::max(hh, std::min(die.height - hh, cy));
         tsv_placed_by_layer[layer].push_back(
             { tsv.x - hw, tsv.y - hh, tsv.x + hw, tsv.y + hh });
+
+        // 增量更新壅塞 demand：對 tier_below 與 tier_above 各累加與既有端點的 pairwise demand
+        if (use_congestion_order) {
+            const int net_id = static_cast<int>(tsv.net_id);
+            const int tb = layer;
+            const int ta = layer + 1;
+            for (int tier : { tb, ta }) {
+                if (tier < 0 || tier >= nlayer) continue;
+                for (const auto& pt : net_pts_by_tier[static_cast<size_t>(net_id)][static_cast<size_t>(tier)])
+                    bin_edge_accumulate_pair(dies_[tier], tsv.x, tsv.y,
+                                            pt.first, pt.second,
+                                            cong_dem.H[tier], cong_dem.V[tier]);
+                net_pts_by_tier[static_cast<size_t>(net_id)][static_cast<size_t>(tier)]
+                    .push_back({ tsv.x, tsv.y });
+                bin_edge_cells_from_hv(dies_[tier], cong_dem.H[tier], cong_dem.V[tier],
+                                       cong_cell_avg[tier]);
+            }
+        }
     }
 
     std::cout << "[ReflowTSV] Done. TSV cost = "

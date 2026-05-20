@@ -139,6 +139,29 @@ struct PlacementConfig {
     // 若為空，compute_hpwl 使用 .block 的 Weight:（tier_net_weights_）。
     // LSE / analytical 線長梯度始終只用 .block 的 Weight:，不受此欄位影響。
     std::vector<double> hpwl_die_weights;
+
+    // ---- Routability-Driven Congestion Penalty（可微 sigmoid）----
+    // alpha = 0 → 整個壅塞懲罰關閉（early-return，不影響速度）。
+    // 懲罰能量：P = Σ_e (U(e) - routing_capacity_C)²，以 sigmoid-bbox 近似 U(e) 並對
+    // module 座標求解析梯度，不參與 density RMS 縮放，僅靠 alpha 調力道。
+    double routing_congestion_alpha      = 0.5;  // 懲罰強度；0 = 關閉
+    double routing_capacity_C            = 1.0;  // 每條邊的 routing capacity（全域常數）
+    double routing_sigmoid_eps           = 1.0;  // sigmoid 精度參數 ε
+    int    routing_bbox_margin_bins      = 1;    // bbox 裁剪外擴格數
+
+    // 週期性計算：
+    //   iter >= routing_congestion_start_iter
+    //   且 (iter - routing_congestion_start_iter) % routing_congestion_refresh_interval == 0
+    // 時重算壅塞梯度；其餘 iter 直接將 gx_rc/gy_rc 清零。
+    int routing_congestion_start_iter       = 1000;   // 從第幾個 iter 開始啟用（n）
+    int routing_congestion_refresh_interval = 100;   // 每幾個 iter 重算一次（m）
+
+    // ---- 幾何 Normalize（縮放 die/module 到目標邊長再還原）----
+    // 依全 die 最小邊長判斷是否觸發縮放，僅等比縮放幾何資料；超參數不變
+    bool   enable_die_normalize      = false;  // 總開關
+    double die_normalize_target      = 268.0;  // 目標最短邊（scaled 後 min_edge ≈ target）
+    double die_normalize_min_extent  = 100.0;  // min_edge < 此值時放大（Case A）
+    double die_normalize_max_extent  = 400.0;  // min_edge > 此值時縮小（Case B）
 };
 
 
@@ -155,6 +178,11 @@ struct PartitionConfig {
     int    max_split_retries = 32;
     double tsv_width       = 4.0;   // TSV 物理寬（面積計算用）
     double tsv_height      = 4.0;   // TSV 物理高（面積計算用）
+    // true：TSV reflow 改用 bin-edge congestion map 選低壅塞插槽（增量更新）；false 維持 first-fit
+    bool   tsv_reflow_congestion_order = false;
+    // 壅塞次序選位時，離合法 bbox 邊界越近越貴：mean(1/(min_dist+eps)) 乘此權重後加入 total score
+    // ≤0 → 只看壅塞，無邊界懲罰（相容舊行為）
+    double tsv_reflow_bbox_edge_weight = 1.0;
     bool   log_tree        = true;  // 是否把 partition tree 寫到 log 檔
     std::string log_file   = "partition_tree.txt";
 
@@ -246,7 +274,11 @@ public:
     // Legalization 完成後：依所屬 net 全體 bbox 之周長（小→大）排序，
     // 將各 TSV 以 B_lower/B_upper 幾何區域為範圍做 first-fit；區域內無空位則改在整張 die 上
     // 找 L1 距離至該目標矩形最近之空位。
-    void reflow_tsvs_after_legalize(double tsv_w, double tsv_h);
+    // use_congestion_order=true：在同一合法區域內改以 bin-edge congestion map 選最低壅塞插槽，
+    //   並在每次放置後增量更新受影響 tier 的 demand；fallback（無候選）時仍退化為 nearest。
+    void reflow_tsvs_after_legalize(double tsv_w, double tsv_h,
+                                    bool use_congestion_order = false,
+                                    double congestion_bbox_edge_weight = 1.0);
 
     // ---- 輸出 ----
     // 寫出符合 PA2 格式的結果檔：
@@ -257,8 +289,8 @@ public:
     //   Line 5: runtime (秒)
     //   Line 6+: <name> <die_id> <x_ll> <y_ll> <x_ur> <y_ur>
     void write_output(const std::string& filename, double runtime = 0.0) const;
-    // 輸出各 tier 的 bin 密度圖（數值表格 + ASCII 視覺化）
-    // 每層輸出 <base>_density_tier<N>.txt
+    // 輸出各 tier 的 bin 密度圖（數值表格 + ASCII + PNG）
+    // 每層：<base>_density_tier<N>.txt、<base>_density_tier<N>.png（每 bin 一像素）
     void write_density_map(const std::string& base_filename) const;
     double compute_hpwl() const;  // 計算真實 HPWL（評估用）
 
@@ -287,12 +319,26 @@ public:
     // 由 .block 的 Weight: 行讀入；每層 die 一個係數（供之後 weighted net 使用）
     const std::vector<double>& tier_net_weights() const { return tier_net_weights_; }
 
+    // 取得當前 PlacementConfig（供外部模組如 routing_congestion 讀取超參數）
+    const PlacementConfig& config() const { return cfg_; }
+
     // 僅覆寫 compute_hpwl() 的每層乘數；analytical（LSE）仍只用 .block 的 Weight:
     void set_hpwl_die_weight_override(std::vector<double> w) { cfg_.hpwl_die_weights = std::move(w); }
 
     // 覆寫 TSV placement 用的每層乘數（可不經 solve_tsvs 先設）；tsv_die_weights 空則跟 .block
     void set_tsv_placement_config(const TsvPlacementConfig& cfg) { tsv_placement_cfg_ = cfg; }
     const TsvPlacementConfig& tsv_placement_config() const { return tsv_placement_cfg_; }
+
+    // ---- 幾何 Normalize ----
+    // parse_blocks + parse_constraints 之後呼叫；依 PlacementConfig 判斷是否縮放
+    // 回傳 true 表示有縮放（geometry_scale_ != 1）
+    bool maybe_normalize_geometry();
+    // 將所有 die/module/tsv 幾何資料乘以 factor（並重建 bin 網格）
+    void apply_geometry_scale(double factor);
+    // 還原到物理座標（geometry_scale_ 歸 1）；在 Summary/HPWL/write_output 之前呼叫
+    void restore_geometry();
+    // 查詢目前有效縮放比（供 main 計算 scaled TSV 寬高）
+    double geometry_scale() const { return geometry_scale_; }
 
 private:
     PlacementConfig cfg_;
@@ -305,6 +351,11 @@ private:
 
     // 每層 die 的 net 權重（.block 中 Weight: w0 w1 ...；預設全為 1.0）
     std::vector<double> tier_net_weights_;
+
+    // ---- 幾何 Normalize 狀態 ----
+    double geometry_scale_ = 1.0;              // 目前縮放比（1 = 未縮放）
+    std::vector<double> orig_die_w_;           // parse 後原始 Outline 寬
+    std::vector<double> orig_die_h_;           // parse 後原始 Outline 高
 
     // 最近一次 solve_tsvs(tcfg) 的設定（含 tsv_die_weights）；供 compute_tsv_cost 等使用
     TsvPlacementConfig tsv_placement_cfg_;

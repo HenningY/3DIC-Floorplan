@@ -1,6 +1,7 @@
 // 3D IC Analytical Floorplanner - 核心引擎實作
 // 實作 LSE Wirelength + Bin Density + Nesterov NAG 優化
 #include "floorplanner.h"
+#include "routing_congestion.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,9 +13,32 @@
 #include <random>
 #include <set>
 #include <stdexcept>
+#include <vector>
 
-// ============================================================
-// 建構子
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#endif
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+namespace {
+
+// density_norm ∈ [0,1]，越大越深（與 congestion PPM 同色調：淺青白→深藍黑）
+void density_png_u_to_rgb(double u, unsigned char rgb[3])
+{
+    u = std::clamp(u, 0.0, 1.0);
+    const double r0 = 245.0, g0 = 250.0, b0 = 255.0;
+    const double r1 = 8.0,   g1 = 18.0,  b1 = 45.0;
+    rgb[0] = static_cast<unsigned char>(r0 + (r1 - r0) * u + 0.5);
+    rgb[1] = static_cast<unsigned char>(g0 + (g1 - g0) * u + 0.5);
+    rgb[2] = static_cast<unsigned char>(b0 + (b1 - b0) * u + 0.5);
+}
+
+} // namespace
 // ============================================================
 PlacementEngine::PlacementEngine(const PlacementConfig& cfg)
     : cfg_(cfg)
@@ -63,6 +87,159 @@ void PlacementEngine::setup_dies(int num_dies,
             }
         }
     }
+}
+
+// ============================================================
+// 幾何 Normalize 實作
+// ============================================================
+
+// 計算 scale = s * 10^n（s 正整數、n 整數），使 min_edge * scale 最接近 target。
+// Case A（太小，min_edge < min_thresh）：固定 n=0，搜尋正整數 s。
+// Case B（太大，min_edge > max_thresh）：先找負整數 n 使 min_edge*10^n < max_thresh，
+//   再在每個 n 找最佳正整數 s，全域取誤差最小組合。
+// 回傳 (scale, active=true) 或 (1.0, false)。
+static std::pair<double,bool> compute_normalize_scale(double min_edge,
+                                                       double target,
+                                                       double min_thresh,
+                                                       double max_thresh)
+{
+    if (min_edge >= min_thresh - 1e-12 && min_edge <= max_thresh + 1e-12)
+        return { 1.0, false };
+
+    const bool too_small = min_edge < min_thresh;
+    double best_scale = 1.0;
+    double best_err   = std::numeric_limits<double>::infinity();
+
+    if (too_small) {
+        const int s_max = static_cast<int>(std::ceil(target / min_edge)) * 4 + 2;
+        for (int s = 1; s <= s_max; ++s) {
+            const double err = std::fabs(min_edge * s - target);
+            if (err < best_err) {
+                best_err   = err;
+                best_scale = static_cast<double>(s);
+            }
+        }
+        std::cout << "[Normalize] trigger=small  min_edge=" << min_edge
+                  << "  best_s=" << static_cast<int>(std::round(best_scale))
+                  << "  n=0\n";
+    } else {
+        // Case B：搜尋負 n 使 min_edge * 10^n 落在可操作範圍，再找最佳正整數 s
+        constexpr int n_max = 15;
+        double pow10 = 0.1; // 10^(-1)
+        for (int n = -1; n >= -n_max; --n, pow10 *= 0.1) {
+            const double base = min_edge * pow10;
+            if (base <= 0.0) break;
+            // 正整數 s 使 base*s 最接近 target；最多搜尋 ceil(target/base)*4
+            const int s_max_n = static_cast<int>(std::ceil(target / base)) * 4 + 2;
+            for (int s = 1; s <= s_max_n; ++s) {
+                const double cand  = base * s;
+                const double err   = std::fabs(cand - target);
+                if (err < best_err) {
+                    best_err   = err;
+                    best_scale = pow10 * s;
+                }
+            }
+        }
+        // 解出 s, n 以供 log
+        const double scaled = min_edge * best_scale;
+        std::cout << "[Normalize] trigger=large  min_edge=" << min_edge
+                  << "  scale=" << best_scale
+                  << "  -> scaled_min_edge=" << scaled << "\n";
+    }
+    return { best_scale, true };
+}
+
+void PlacementEngine::apply_geometry_scale(double factor)
+{
+    if (std::fabs(factor - 1.0) < 1e-15) return;
+
+    const int nd = static_cast<int>(dies_.size());
+    std::vector<double> scaled_w(nd), scaled_h(nd);
+    for (int t = 0; t < nd; ++t) {
+        scaled_w[t] = dies_[t].width  * factor;
+        scaled_h[t] = dies_[t].height * factor;
+    }
+    setup_dies(nd, scaled_w, scaled_h);
+
+    for (Module& m : modules_) {
+        m.x      *= factor;
+        m.y      *= factor;
+        m.width  *= factor;
+        m.height *= factor;
+    }
+    for (TSV& tsv : tsvs_) {
+        tsv.x *= factor;
+        tsv.y *= factor;
+    }
+}
+
+void PlacementEngine::restore_geometry()
+{
+    if (std::fabs(geometry_scale_ - 1.0) < 1e-15) return;
+
+    const double inv = 1.0 / geometry_scale_;
+
+    // die：從原始 Outline 重建（最精確，避免浮點累積誤差）
+    const int nd = static_cast<int>(orig_die_w_.size());
+    if (nd > 0 && nd == static_cast<int>(dies_.size())) {
+        setup_dies(nd, orig_die_w_, orig_die_h_);
+    } else {
+        apply_geometry_scale(inv);  // fallback
+        geometry_scale_ = 1.0;
+        return;
+    }
+
+    for (Module& m : modules_) {
+        m.x      *= inv;
+        m.y      *= inv;
+        m.width  *= inv;
+        m.height *= inv;
+    }
+    for (TSV& tsv : tsvs_) {
+        tsv.x *= inv;
+        tsv.y *= inv;
+    }
+
+    geometry_scale_ = 1.0;
+    std::cout << "[Normalize] Geometry restored to physical coordinates.\n";
+}
+
+bool PlacementEngine::maybe_normalize_geometry()
+{
+    const auto& c = cfg_;
+    if (!c.enable_die_normalize) return false;
+    if (dies_.empty()) return false;
+
+    // 計算全 die 所有邊長的最小值
+    double min_edge = std::numeric_limits<double>::infinity();
+    for (const Die& d : dies_) {
+        min_edge = std::min(min_edge, std::min(d.width, d.height));
+    }
+
+    // 存原始 Outline（供 restore 精確還原）
+    orig_die_w_.resize(dies_.size());
+    orig_die_h_.resize(dies_.size());
+    for (int t = 0; t < static_cast<int>(dies_.size()); ++t) {
+        orig_die_w_[t] = dies_[t].width;
+        orig_die_h_[t] = dies_[t].height;
+    }
+
+    auto [scale, active] = compute_normalize_scale(
+        min_edge, c.die_normalize_target,
+        c.die_normalize_min_extent, c.die_normalize_max_extent);
+
+    if (!active) {
+        std::cout << "[Normalize] trigger=none  min_edge=" << min_edge
+                  << "  in [" << c.die_normalize_min_extent
+                  << ", " << c.die_normalize_max_extent << "], no scaling.\n";
+        return false;
+    }
+
+    geometry_scale_ = scale;
+    std::cout << "[Normalize] Applying scale=" << scale
+              << "  min_edge " << min_edge << " -> " << min_edge * scale << "\n";
+    apply_geometry_scale(scale);
+    return true;
 }
 
 // ============================================================
@@ -148,6 +325,7 @@ void PlacementEngine::solve()
     std::vector<double> gx_wl(n), gy_wl(n);   // Wirelength 梯度
     std::vector<double> gx_d(n),  gy_d(n);    // Density 梯度
     std::vector<double> gx_rep(n), gy_rep(n); // Repulsion 梯度（REPULSE constraint）
+    std::vector<double> gx_rc(n),  gy_rc(n);  // Routing congestion 梯度（週期性更新）
     std::vector<double> gx(n),    gy(n);       // 合併梯度
     std::vector<double> look_x(n), look_y(n);  // NAG lookahead 暫存
 
@@ -190,25 +368,45 @@ void PlacementEngine::solve()
             modules_[i].y = look_y[i];
         }
 
-        // ---- Step 3: 計算三路梯度（fixed module 位置已正確反映在 look_x/y 中）----
+        // ---- Step 3: 計算梯度（fixed module 位置已正確反映在 look_x/y 中）----
         update_density_map();
         calculate_wirelength_gradient(gx_wl, gy_wl);
         calculate_density_gradient(gx_d,  gy_d);
         calculate_repulsion_gradient(gx_rep, gy_rep); // REPULSE constraint 斥力
 
+        // Routing congestion 梯度：alpha>0 時依週期排程重算，否則清零
+        if (cfg_.routing_congestion_alpha > 0.0
+            && iter >= cfg_.routing_congestion_start_iter
+            && ((iter - cfg_.routing_congestion_start_iter)
+                    % cfg_.routing_congestion_refresh_interval == 0))
+        {
+            std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
+            std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
+            calculate_routing_congestion_gradient(*this, gx_rc, gy_rc);
+        } else {
+            std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
+            std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
+        }
+
         // ---- Step 4: RMS 正規化（只統計真正可動模組）----
-        double wl_sq = 0.0, d_sq = 0.0;
+        // wl_rms 為基準；density 與 routing congestion 梯度均以 wl_rms / x_rms 縮放，
+        // 使三路梯度的位移量尺度一致，再分別由 lambda（density）與 alpha（congestion）控制力道。
+        double wl_sq = 0.0, d_sq = 0.0, rc_sq = 0.0;
         int    movable = 0;
         for (int i = 0; i < n; ++i) {
             if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
             wl_sq += gx_wl[i]*gx_wl[i] + gy_wl[i]*gy_wl[i];
             d_sq  += gx_d[i] *gx_d[i]  + gy_d[i] *gy_d[i];
+            rc_sq += gx_rc[i]*gx_rc[i] + gy_rc[i]*gy_rc[i];
             ++movable;
         }
-        double wl_rms = std::sqrt(wl_sq / (2.0 * movable + 1e-12));
-        double d_rms  = std::sqrt(d_sq  / (2.0 * movable + 1e-12));
+        const double denom   = 2.0 * movable + 1e-12;
+        const double wl_rms  = std::sqrt(wl_sq / denom);
+        const double d_rms   = std::sqrt(d_sq  / denom);
+        const double rc_rms  = std::sqrt(rc_sq / denom);
 
-        double scale_d = (d_rms > 1e-12) ? (wl_rms / d_rms) : 0.0;
+        const double scale_d  = (d_rms  > 1e-12) ? (wl_rms / d_rms)  : 0.0;
+        const double scale_rc = (rc_rms > 1e-12) ? (wl_rms / rc_rms) : 0.0;
 
         // ---- Step 5: 合併梯度並更新位置（fixed module 不更新）----
         for (int i = 0; i < n; ++i) {
@@ -216,8 +414,10 @@ void PlacementEngine::solve()
 
             double lam = dies_[modules_[i].tier_id].lambda * lambda_mult_;
 
-            gx[i] = gx_wl[i] + gx_rep[i] + lam * scale_d * gx_d[i];
-            gy[i] = gy_wl[i] + gy_rep[i] + lam * scale_d * gy_d[i];
+            gx[i] = gx_wl[i] + gx_rep[i] + cfg_.routing_congestion_alpha * scale_rc * gx_rc[i]
+                    + lam * scale_d * gx_d[i];
+            gy[i] = gy_wl[i] + gy_rep[i] + cfg_.routing_congestion_alpha * scale_rc * gy_rc[i]
+                    + lam * scale_d * gy_d[i];
 
             modules_[i].x = look_x[i] - step * gx[i];
             modules_[i].y = look_y[i] - step * gy[i];
@@ -831,10 +1031,13 @@ void PlacementEngine::write_output(const std::string& filename,
 }
 
 // ============================================================
-// write_density_map: 將各 tier 的 bin 密度圖輸出成文字檔
+// write_density_map: 將各 tier 的 bin 密度圖輸出成文字檔與 PNG
 //
-// 每層產生一個獨立檔案：<base_filename>_density_tier<N>.txt
-// 內容包含：
+// 每層產生：
+//   <base_filename>_density_tier<N>.txt（同上原有格式）
+//   <base_filename>_density_tier<N>.png — RGB，寬=C、高=R（每 bin 一像素），
+//      影像頂端對應 chip 較大 y（與 ASCII 區塊一致）；該層最大密度對應最深色。
+// .txt 內容包含：
 //   1. 基本資訊（tier id、bin 解析度、目標密度）
 //   2. ASCII 視覺化（row 由上到下，即 y 由大到小排列）
 //      字元對應密度區間：
@@ -876,6 +1079,11 @@ void PlacementEngine::write_density_map(const std::string& base_filename) const
         // 以第一個真實 bin 的 target_density 為代表值
         double target = (die.bins.empty()) ? cfg_.target_density
                                            : die.bins[0].target_density;
+
+        double max_rho_bin = 0.0;
+        for (const Bin& b : die.bins)
+            max_rho_bin = std::max(max_rho_bin, b.density);
+        const double vmax_png = std::max(max_rho_bin, 1e-18);
 
         // ---- 基本資訊 ----
         std::fprintf(fp, "=== Tier %d Density Map ===\n", die.id);
@@ -944,6 +1152,36 @@ void PlacementEngine::write_density_map(const std::string& base_filename) const
                      static_cast<int>(over_bins), R * C);
 
         std::fclose(fp);
+
+        // ---- PNG：每 bin 一像素（寬=C、高=R）；頂列 = chip y 較大側（與 ASCII 區塊一致）
+        {
+            std::vector<unsigned char> png(static_cast<size_t>(R * C * 3u));
+            for (int py = 0; py < R; ++py) {
+                const int chip_r = R - 1 - py;
+                for (int px = 0; px < C; ++px) {
+                    const double rho =
+                        die.bins[static_cast<size_t>(chip_r * C + px)].density;
+                    unsigned char rgb[3];
+                    density_png_u_to_rgb(rho / vmax_png, rgb);
+                    const size_t o =
+                        (static_cast<size_t>(py) * static_cast<size_t>(C)
+                         + static_cast<size_t>(px)) * 3u;
+                    png[o + 0] = rgb[0];
+                    png[o + 1] = rgb[1];
+                    png[o + 2] = rgb[2];
+                }
+            }
+            std::string png_path = base_filename + "_density_tier"
+                                   + std::to_string(die.id) + ".png";
+            if (!stbi_write_png(png_path.c_str(), C, R, 3, png.data(),
+                                static_cast<int>(C * 3))) {
+                std::cerr << "[DensityMap] Cannot write PNG: " << png_path << "\n";
+            } else {
+                std::cout << "[DensityMap] Tier " << die.id << " -> " << png_path
+                          << "  (" << C << "x" << R << " px, 1 bin = 1 px)\n";
+            }
+        }
+
         std::cout << "[DensityMap] Tier " << die.id << " -> " << fname << "\n";
     }
 }

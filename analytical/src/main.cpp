@@ -53,6 +53,21 @@ int main(int argc, char* argv[])
     cfg.convergence_max_overflow_delta_tol = 0.001;
     cfg.convergence_total_overflow_delta_tol = 1.5;
 
+    // ---- routing congestion ----
+    cfg.routing_congestion_alpha = 0;
+    cfg.routing_capacity_C = 1.0;
+    cfg.routing_sigmoid_eps = 1.0;
+    cfg.routing_bbox_margin_bins = 1;
+    cfg.routing_congestion_start_iter = 2000;
+    cfg.routing_congestion_refresh_interval = 100;
+
+    // ---- die geometry normalize ----
+    // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
+    cfg.enable_die_normalize      = true;   // false = 關閉，與舊行為完全一致
+    cfg.die_normalize_target      = 280.0;  // 目標最短邊（die 座標單位）
+    cfg.die_normalize_min_extent  = 200.0;  // min_edge < 此值時放大
+    cfg.die_normalize_max_extent  = 400.0;  // min_edge > 此值時縮小
+
     // ---- analytical iter 追蹤寫檔：true 時與 [Iter ...] 同頻率寫入非 terminal module 外框 ----
     const bool dump_analytical_iter_trace = false;
     if (dump_analytical_iter_trace) {
@@ -77,7 +92,11 @@ int main(int argc, char* argv[])
     if (!constraint_file.empty())
         engine.parse_constraints(constraint_file);
 
-    // engine.set_hpwl_die_weight_override({1.5, 1, 1});
+    // ---- 幾何 Normalize（在 constraint 之後、initialize_positions 之前）----
+    // 必須在 constraint 之後：FIXED 座標需與 block 同一座標系一起縮放
+    engine.maybe_normalize_geometry();
+
+    // engine.set_hpwl_die_weight_override({1, 1.1, 1.21});
 
     // ---- initialize positions ----
     engine.initialize_positions();
@@ -98,9 +117,14 @@ int main(int argc, char* argv[])
     engine.build_tsvs();
 
     // ---- TSV Placement ----
+    // 物理 TSV 尺寸（die 座標單位），在 normalize 縮放空間中等比放大
+    const double base_tsv_w = 3;
+    const double base_tsv_h = 3;
+    const double gs = engine.geometry_scale();  // 1.0 若未觸發 normalize
+
     TsvPlacementConfig tcfg;
-    tcfg.tsv_width      = 3;   // TSV 物理寬度（die 座標單位）
-    tcfg.tsv_height     = 3;   // TSV 物理高度
+    tcfg.tsv_width      = base_tsv_w * gs;  // scaled 座標空間的 TSV 寬
+    tcfg.tsv_height     = base_tsv_h * gs;  // scaled 座標空間的 TSV 高
     // TSV cost 每層乘數：留空則與 .block 的 Weight: 相同；若要覆寫例如：
     tcfg.tsv_die_weights = {1, 1, 1};
     engine.solve_tsvs(tcfg);
@@ -113,8 +137,12 @@ int main(int argc, char* argv[])
     pcfg.max_split_ratio = 0.6;
     pcfg.num_candidates  = 64;    // 掃線候選切割數
     pcfg.max_split_retries = 32;
-    pcfg.tsv_width       = 3;   // TSV 物理尺寸 3x3（與 solve_tsvs 一致）
-    pcfg.tsv_height      = 3;
+    pcfg.tsv_width       = base_tsv_w * gs;  // scaled 座標空間
+    pcfg.tsv_height      = base_tsv_h * gs;
+    // true：TSV reflow 依 congestion map 選低壅塞插槽；false 維持 first-fit（預設）
+    pcfg.tsv_reflow_congestion_order = true;
+    // 壅塞選位時的邊界懲罰權重：離合法 bbox 越近 cost 越大；0 則停用邊界懲罰
+    pcfg.tsv_reflow_bbox_edge_weight = 0;
     pcfg.log_tree        = true;
     // pcfg.log_file        = output_file + "_partition_tree.txt";
     pcfg.write_positions = true;
@@ -126,13 +154,15 @@ int main(int argc, char* argv[])
     // ---- Recursive Bi-partitioning and Legalization ---- 目前沒用到
     // engine.partition_all_tiers(pcfg);
 
-    // ---- TSV：sort by net bbox length, first-fit in two bbox geometric regions ----
-    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height);
+    // ---- TSV：sort by net bbox length, first-fit / congestion-order in two bbox geometric regions ----
+    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height, pcfg.tsv_reflow_congestion_order, pcfg.tsv_reflow_bbox_edge_weight);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
-    // const auto snap_legal = record_positions(engine);
-    // write_displacement_report(snap_analytical, snap_legal,
-    //                           output_file + "_displacement.txt");
+    const auto snap_legal = record_positions(engine);
+    write_displacement_report(snap_analytical, snap_legal, output_file + "_displacement.txt");
+
+    // ---- 還原物理座標（必須在 Summary / HPWL / write_output / congestion 之前）----
+    engine.restore_geometry();
 
     auto t1 = std::chrono::high_resolution_clock::now();
     double elapsed = std::chrono::duration<double>(t1 - t0).count();
@@ -156,7 +186,15 @@ int main(int argc, char* argv[])
     std::cout << "  TSV cost     : " << engine.compute_tsv_cost() << "\n";
 
     // ---- 最終重疊檢查（summary 印出每一層 overlap pairs）----
-    print_overlap_report(engine, pcfg.tsv_width, pcfg.tsv_height);
+    // 還原後使用物理 TSV 尺寸
+    print_overlap_report(engine, base_tsv_w, base_tsv_h);
+
+    // ---- Bin-edge Congestion 指標 + 視覺化（每個 die 一張 PPM）----
+    {
+        BinEdgeCongestionStats cstats = compute_bin_edge_congestion(engine);
+        print_bin_edge_congestion_summary(cstats);
+        write_bin_edge_congestion_maps(engine, cstats, output_file, /*upscale=*/8);
+    }
 
     // Die 使用率統計
     for (int t = 0; t < engine.num_dies(); ++t) {
