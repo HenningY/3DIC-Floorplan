@@ -49,6 +49,35 @@ export interface FloorplanOutput {
   tsvs: TsvAssignment[];
 }
 
+export interface NetDef {
+  /** pin 名稱列表，第一個通常是 terminal，也對應 TsvAssignment.netName */
+  pins: string[];
+}
+
+export function parseNetsFile(text: string): NetDef[] {
+  const lines = text.split(/\r?\n/);
+  const nets: NetDef[] = [];
+  let i = 0;
+  // 跳過 NumNets 行，直接掃描 NetDegree
+  while (i < lines.length) {
+    const m = lines[i].trim().match(/^NetDegree:\s*(\d+)/i);
+    if (m) {
+      const degree = parseInt(m[1], 10);
+      const pins: string[] = [];
+      for (let j = 0; j < degree; j++) {
+        i++;
+        if (i < lines.length) {
+          const pin = lines[i].trim();
+          if (pin) { pins.push(pin); }
+        }
+      }
+      if (pins.length > 0) { nets.push({ pins }); }
+    }
+    i++;
+  }
+  return nets;
+}
+
 export function parseBlockFile(text: string): BlockFile {
   const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
   let i = 0;

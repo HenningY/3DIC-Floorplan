@@ -224,11 +224,12 @@ struct PartitionNode {
 
 // ============================================================
 // RepulsionGroup: 斥力群組（來自 constraint 檔的 REPULSE 行）
-// 群組內所有 module 兩兩互斥，analytical 階段施加反平方斥力梯度
+// 群組內所有成員兩兩互斥，analytical 階段施加反平方斥力梯度
 // 支援跨 tier（以 2D 平面座標計算，不考慮層間 Z 距離）
+// terminal 可加入群組：自身不移動（不累加梯度），但會推開群組內其他可動 module
 // ============================================================
 struct RepulsionGroup {
-    std::vector<int> module_ids; // 參與的 module 索引（解析時已過濾 terminal）
+    std::vector<int> module_ids; // 參與的 module 索引（含 terminal，解析時不過濾）
     double           strength;   // 斥力強度係數 k（由 constraint 檔指定）
 };
 

@@ -581,23 +581,37 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
         std::cout << "  Tier " << t
                   << " bbox_center=(" << cx << ", " << cy << ")\n";
 
-        static constexpr int    kMaxShakeIters  = 8;
+        static constexpr int    kMaxShakeIters  = 6;
         static constexpr double kShakeRadius    = 50.0;
         static constexpr double kShakeProb      = 0.5;
 
-        for (int iter = 0; iter < kMaxShakeIters; ++iter) {
-            // 每輪開頭先確認是否仍有重疊，若已無則提前結束
-            if (!has_tier_overlaps(modules, t)) {
-                std::cout << "  Tier " << t << " [iter=" << iter
-                          << "] no overlaps, done\n";
-                break;
+        // 記錄進入本 tier 前的 module 位置快照，供 retry 還原用
+        struct ModuleSnapshot { int id; double x, y, width, height; };
+        auto take_snapshot = [&]() {
+            std::vector<ModuleSnapshot> snap;
+            for (const Module& m : modules)
+                if (!m.is_terminal && m.tier_id == t)
+                    snap.push_back({ m.id, m.x, m.y, m.width, m.height });
+            return snap;
+        };
+        auto restore_snapshot = [&](const std::vector<ModuleSnapshot>& snap) {
+            for (Module& m : modules) {
+                if (m.is_terminal || m.tier_id != t) continue;
+                for (const auto& s : snap) {
+                    if (s.id == m.id) {
+                        m.x = s.x; m.y = s.y;
+                        m.width = s.width; m.height = s.height;
+                        m.move_weight = 1.0;
+                        break;
+                    }
+                }
             }
+        };
 
-            std::cout << "  Tier " << t << " [iter=" << iter << "] running sweeps\n";
-
-            // ---- Sweep passes（權重隨輪次遞增以加強排斥）----
-            const double iw  = std::pow(3.0, iter);         // init_weight
-            const double mw1 = 3.0  + iter * 4.0;           // moved_weight_mul（前幾輪）
+        // 依 use_alt 決定 sweep 序列：false = 原始順序；true = 上下與左右調換
+        auto run_one_pass = [&](int iter, bool use_alt) {
+            const double iw  = std::pow(3.0, iter);
+            const double mw1 = 3.0  + iter * 4.0;
             const double mw2 = 9.0  + iter * 6.0;
             const double mw3 = 20.0 + iter * 8.0;
 
@@ -605,38 +619,103 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   [cx, cy](const Module& m) {
                       const double dx = m.x - cx, dy = m.y - cy;
                       return dx * dx + dy * dy;
-                  }, /*ascending=*/true,  iw,        mw1);
+                  }, /*ascending=*/true, iw, mw1);
 
-            sweep(t, "left->right",
-                  [](const Module& m) { return m.lx(); }, true,  iw * 3,  mw1);
-            sweep(t, "right->left",
-                  [](const Module& m) { return m.rx(); }, false, iw * 3,  mw1);
-            sweep(t, "bottom->top",
-                  [](const Module& m) { return m.ly(); }, true,  iw * 9,  mw2);
-            sweep(t, "top->bottom",
-                  [](const Module& m) { return m.ry(); }, false, iw * 9,  mw2);
-            sweep(t, "left->right",
-                  [](const Module& m) { return m.lx(); }, true,  iw * 27, mw3);
-            sweep(t, "right->left",
-                  [](const Module& m) { return m.rx(); }, false, iw * 27, mw3);
-            sweep(t, "bottom->top",
-                  [](const Module& m) { return m.ly(); }, true,  iw * 81, mw3);
-            sweep(t, "top->bottom",
-                  [](const Module& m) { return m.ry(); }, false, iw * 81, mw3);
+            if (!use_alt) {
+                sweep(t, "left->right",
+                      [](const Module& m) { return m.lx(); }, true,  iw * 3,  mw1);
+                sweep(t, "right->left",
+                      [](const Module& m) { return m.rx(); }, false, iw * 3,  mw1);
+                sweep(t, "bottom->top",
+                      [](const Module& m) { return m.ly(); }, true,  iw * 9,  mw2);
+                sweep(t, "top->bottom",
+                      [](const Module& m) { return m.ry(); }, false, iw * 9,  mw2);
+                sweep(t, "left->right",
+                      [](const Module& m) { return m.lx(); }, true,  iw * 27, mw3);
+                sweep(t, "right->left",
+                      [](const Module& m) { return m.rx(); }, false, iw * 27, mw3);
+                sweep(t, "bottom->top",
+                      [](const Module& m) { return m.ly(); }, true,  iw * 81, mw3);
+                sweep(t, "top->bottom",
+                      [](const Module& m) { return m.ry(); }, false, iw * 81, mw3);
+            } else {
+                // 上下（垂直）優先，再左右（水平）
+                sweep(t, "bottom->top",
+                      [](const Module& m) { return m.ly(); }, true,  iw * 3,  mw1);
+                sweep(t, "top->bottom",
+                      [](const Module& m) { return m.ry(); }, false, iw * 3,  mw1);
+                sweep(t, "left->right",
+                      [](const Module& m) { return m.lx(); }, true,  iw * 9,  mw2);
+                sweep(t, "right->left",
+                      [](const Module& m) { return m.rx(); }, false, iw * 9,  mw2);
+                sweep(t, "bottom->top",
+                      [](const Module& m) { return m.ly(); }, true,  iw * 27, mw3);
+                sweep(t, "top->bottom",
+                      [](const Module& m) { return m.ry(); }, false, iw * 27, mw3);
+                sweep(t, "left->right",
+                      [](const Module& m) { return m.lx(); }, true,  iw * 81, mw3);
+                sweep(t, "right->left",
+                      [](const Module& m) { return m.rx(); }, false, iw * 81, mw3);
+            }
+        };
 
-            // ---- 檢查本輪 sweep 後是否消除所有重疊 ----
+        const auto initial_snap = take_snapshot();
+
+        // ---- Phase 1：原始順序（左右優先）----
+        bool phase1_done = false;
+        for (int iter = 0; iter < kMaxShakeIters; ++iter) {
             if (!has_tier_overlaps(modules, t)) {
                 std::cout << "  Tier " << t << " [iter=" << iter
-                          << "] overlaps cleared after sweep\n";
+                          << "] no overlaps, done\n";
+                phase1_done = true;
                 break;
             }
 
-            // ---- 還有重疊：shake 擾動（對重疊 module 附近做隨機旋轉）----
+            std::cout << "  Tier " << t << " [iter=" << iter << "] running sweeps (h-first)\n";
+            run_one_pass(iter, /*use_alt=*/false);
+
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [iter=" << iter
+                          << "] overlaps cleared after sweep\n";
+                phase1_done = true;
+                break;
+            }
+
             const unsigned shake_seed = static_cast<unsigned>(iter * 997 + t * 31);
             std::cout << "  Tier " << t << " [shake rotations]\n";
             const int n_rot = shake_nearby_rotations(
                 modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
             std::cout << "  Tier " << t << " [iter=" << iter
+                      << "] shake rotated=" << n_rot << " modules\n";
+        }
+
+        if (phase1_done) continue;
+
+        // ---- Phase 2：還原初始位置，改用上下優先順序重試 ----
+        std::cout << "  Tier " << t << " [retry] restoring initial positions, switching to v-first sweeps\n";
+        restore_snapshot(initial_snap);
+
+        for (int iter = 0; iter < kMaxShakeIters; ++iter) {
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [retry iter=" << iter
+                          << "] no overlaps, done\n";
+                break;
+            }
+
+            std::cout << "  Tier " << t << " [retry iter=" << iter << "] running sweeps (v-first)\n";
+            run_one_pass(iter, /*use_alt=*/true);
+
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [retry iter=" << iter
+                          << "] overlaps cleared after sweep\n";
+                break;
+            }
+
+            const unsigned shake_seed = static_cast<unsigned>((iter + kMaxShakeIters) * 997 + t * 31);
+            std::cout << "  Tier " << t << " [retry shake rotations]\n";
+            const int n_rot = shake_nearby_rotations(
+                modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
+            std::cout << "  Tier " << t << " [retry iter=" << iter
                       << "] shake rotated=" << n_rot << " modules\n";
         }
     }

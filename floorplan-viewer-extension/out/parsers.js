@@ -3,8 +3,36 @@
  * Parse PA2 .block and analytical floorplan output for 2D visualization.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.parseNetsFile = parseNetsFile;
 exports.parseBlockFile = parseBlockFile;
 exports.parseFloorplanOutput = parseFloorplanOutput;
+function parseNetsFile(text) {
+    const lines = text.split(/\r?\n/);
+    const nets = [];
+    let i = 0;
+    // 跳過 NumNets 行，直接掃描 NetDegree
+    while (i < lines.length) {
+        const m = lines[i].trim().match(/^NetDegree:\s*(\d+)/i);
+        if (m) {
+            const degree = parseInt(m[1], 10);
+            const pins = [];
+            for (let j = 0; j < degree; j++) {
+                i++;
+                if (i < lines.length) {
+                    const pin = lines[i].trim();
+                    if (pin) {
+                        pins.push(pin);
+                    }
+                }
+            }
+            if (pins.length > 0) {
+                nets.push({ pins });
+            }
+        }
+        i++;
+    }
+    return nets;
+}
 function parseBlockFile(text) {
     const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
     let i = 0;

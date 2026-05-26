@@ -96,7 +96,7 @@ int main(int argc, char* argv[])
     // 必須在 constraint 之後：FIXED 座標需與 block 同一座標系一起縮放
     engine.maybe_normalize_geometry();
 
-    // engine.set_hpwl_die_weight_override({1, 1.1, 1.21});
+    // engine.set_hpwl_die_weight_override({1, 1, 1});
 
     // ---- initialize positions ----
     engine.initialize_positions();
@@ -158,8 +158,8 @@ int main(int argc, char* argv[])
     engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height, pcfg.tsv_reflow_congestion_order, pcfg.tsv_reflow_bbox_edge_weight);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
-    const auto snap_legal = record_positions(engine);
-    write_displacement_report(snap_analytical, snap_legal, output_file + "_displacement.txt");
+    // const auto snap_legal = record_positions(engine);
+    // write_displacement_report(snap_analytical, snap_legal, output_file + "_displacement.txt");
 
     // ---- 還原物理座標（必須在 Summary / HPWL / write_output / congestion 之前）----
     engine.restore_geometry();

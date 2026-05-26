@@ -200,10 +200,11 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
 //   - 設定 is_fixed = true；x/y 設為中心；width/height 設為 ur-ll
 //
 // REPULSE 效果：
-//   - 以斥力強度 k 建立斥力群組，群組內所有 module 在 analytical 階段
+//   - 以斥力強度 k 建立斥力群組，群組內所有成員在 analytical 階段
 //     互相排斥（pairwise inverse-square 梯度），支援跨 tier
-//   - terminal 或不存在的名稱會跳過並印 warning
-//   - 有效 module 數 < 2 時忽略此行
+//   - terminal 可加入：自身不移動，但會推開群組內其他可動 module（行為同 FIXED module）
+//   - 不存在的名稱會印 warning 並跳過
+//   - 有效成員數 < 2 時忽略此行
 // ============================================================
 bool PlacementEngine::parse_constraints(const std::string& filename)
 {
@@ -278,25 +279,21 @@ bool PlacementEngine::parse_constraints(const std::string& filename)
                     std::cerr << "[Constraint] REPULSE: unknown module name: " << name << "\n";
                     continue;
                 }
-                const Module& m = modules_[it->second];
-                if (m.is_terminal) {
-                    std::cerr << "[Constraint] REPULSE: skipping terminal: " << name << "\n";
-                    continue;
-                }
                 grp.module_ids.push_back(it->second);
             }
 
             if (grp.module_ids.size() < 2) {
-                std::cerr << "[Constraint] REPULSE: need at least 2 valid modules, skipping line: "
+                std::cerr << "[Constraint] REPULSE: need at least 2 valid entries, skipping line: "
                           << line << "\n";
                 continue;
             }
 
             ++repulse_count;
             std::cout << "[Constraint] REPULSE k=" << k
-                      << "  modules=[ ";
+                      << "  members=[ ";
             for (int id : grp.module_ids)
-                std::cout << modules_[id].name << " ";
+                std::cout << modules_[id].name
+                          << (modules_[id].is_terminal ? "(terminal)" : "") << " ";
             std::cout << "]\n";
 
             repulsion_groups_.push_back(std::move(grp));
