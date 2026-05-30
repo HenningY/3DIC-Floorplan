@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <random>
+#include <set>
 #include <unordered_set>
 #include <vector>
 
@@ -299,6 +300,286 @@ collect_overlap_module_ids(const std::vector<Module>& modules, int tier)
     return involved;
 }
 
+// ── Post-legalize WL refinement helpers ──────────────────────
+
+constexpr double kWlForceEps      = 1e-6;  // 合力方向判斷門檻
+constexpr double kGapMin          = 1e-6;  // 最小可移動量
+constexpr double kHpwlRollbackEps = 1e-9;  // incident HPWL rollback 門檻
+
+// compute_net_centroid_wl_force:
+//   對每條 net（pins >= 2），計算其所有 pin 座標的幾何中心，
+//   對每個可動 pin：fx[id] += (centroid_x - m.x)，fy[id] += (centroid_y - m.y)
+//   terminal / fixed module 不接受力，但其座標參與 centroid 計算（含跨 tier）
+void compute_net_centroid_wl_force(const std::vector<Module>& modules,
+                                   const std::vector<Net>&    nets,
+                                   std::vector<double>&       fx,
+                                   std::vector<double>&       fy)
+{
+    std::fill(fx.begin(), fx.end(), 0.0);
+    std::fill(fy.begin(), fy.end(), 0.0);
+
+    for (const Net& net : nets) {
+        if (net.pins.size() < 2) continue;
+
+        double cx = 0.0, cy = 0.0;
+        for (int id : net.pins) {
+            cx += modules[static_cast<size_t>(id)].x;
+            cy += modules[static_cast<size_t>(id)].y;
+        }
+        cx /= static_cast<double>(net.pins.size());
+        cy /= static_cast<double>(net.pins.size());
+
+        for (int id : net.pins) {
+            const Module& m = modules[static_cast<size_t>(id)];
+            if (m.is_terminal || m.is_fixed) continue;
+            fx[static_cast<size_t>(id)] += cx - m.x;
+            fy[static_cast<size_t>(id)] += cy - m.y;
+        }
+    }
+}
+
+// max_shift_x_pos: 向右最大可移動量（不與同 tier 障礙物 / die 邊界重疊）
+double max_shift_x_pos(const std::vector<Module>& modules,
+                       const Die& die, const Module& target)
+{
+    double gap = die.width - target.rx();  // die 右邊界限制
+    for (const Module& m : modules) {
+        if (m.id == target.id || m.tier_id != target.tier_id) continue;
+        const double y_ov = overlap_1d(target.ly(), target.ry(), m.ly(), m.ry());
+        if (y_ov <= kEps) continue;
+        if (m.lx() >= target.rx() - kEps)  // m 在右側
+            gap = std::min(gap, m.lx() - target.rx());
+    }
+    return std::max(0.0, gap);
+}
+
+// max_shift_x_neg: 向左最大可移動量（正值表示距離）
+double max_shift_x_neg(const std::vector<Module>& modules,
+                       const Die& die, const Module& target)
+{
+    (void)die;
+    double gap = target.lx();  // die 左邊界限制
+    for (const Module& m : modules) {
+        if (m.id == target.id || m.tier_id != target.tier_id) continue;
+        const double y_ov = overlap_1d(target.ly(), target.ry(), m.ly(), m.ry());
+        if (y_ov <= kEps) continue;
+        if (m.rx() <= target.lx() + kEps)  // m 在左側
+            gap = std::min(gap, target.lx() - m.rx());
+    }
+    return std::max(0.0, gap);
+}
+
+double max_shift_y_pos(const std::vector<Module>& modules,
+                       const Die& die, const Module& target)
+{
+    double gap = die.height - target.ry();
+    for (const Module& m : modules) {
+        if (m.id == target.id || m.tier_id != target.tier_id) continue;
+        const double x_ov = overlap_1d(target.lx(), target.rx(), m.lx(), m.rx());
+        if (x_ov <= kEps) continue;
+        if (m.ly() >= target.ry() - kEps)
+            gap = std::min(gap, m.ly() - target.ry());
+    }
+    return std::max(0.0, gap);
+}
+
+double max_shift_y_neg(const std::vector<Module>& modules,
+                       const Die& die, const Module& target)
+{
+    (void)die;
+    double gap = target.ly();
+    for (const Module& m : modules) {
+        if (m.id == target.id || m.tier_id != target.tier_id) continue;
+        const double x_ov = overlap_1d(target.lx(), target.rx(), m.lx(), m.rx());
+        if (x_ov <= kEps) continue;
+        if (m.ry() <= target.ly() + kEps)
+            gap = std::min(gap, target.ly() - m.ry());
+    }
+    return std::max(0.0, gap);
+}
+
+// hpwl_incident_sum: 計算 module_id 所連所有 net 的 HPWL 加總
+//   die_w[tier]：每層 hpwl 乘數（terminal 視為 tier 0）
+double hpwl_incident_sum(const std::vector<Module>&           modules,
+                         const std::vector<Net>&              nets,
+                         const std::vector<std::vector<int>>& module_to_nets,
+                         const std::vector<double>&           die_w,
+                         int                                  module_id)
+{
+    double total = 0.0;
+    for (int ni : module_to_nets[static_cast<size_t>(module_id)]) {
+        const Net& net = nets[static_cast<size_t>(ni)];
+        double x_min = 1e18, x_max = -1e18;
+        double y_min = 1e18, y_max = -1e18;
+        std::set<int> tiers;
+        for (int pid : net.pins) {
+            const Module& m = modules[static_cast<size_t>(pid)];
+            x_min = std::min(x_min, m.x); x_max = std::max(x_max, m.x);
+            y_min = std::min(y_min, m.y); y_max = std::max(y_max, m.y);
+            const int mt = m.is_terminal ? 0 : m.tier_id;
+            if (mt >= 0 && mt < static_cast<int>(die_w.size()))
+                tiers.insert(mt);
+        }
+        if (x_min > x_max || y_min > y_max) continue;
+        double w_avg = 1.0;
+        if (!tiers.empty()) {
+            double sum_w = 0.0;
+            for (int t : tiers) sum_w += die_w[static_cast<size_t>(t)];
+            w_avg = sum_w / static_cast<double>(tiers.size());
+        }
+        total += w_avg * ((x_max - x_min) + (y_max - y_min));
+    }
+    return total;
+}
+
+// refine_tier_wl_centroid:
+//   對已完成合法化（無 overlap）的 tier 做一輪 WL refinement：
+//   near->far 順序，各 module 沿 net-centroid 合力方向做 max feasible shift；
+//   移動後若 incident HPWL 變大則還原（x、y 各自判斷）。
+void refine_tier_wl_centroid(PlacementEngine&          engine,
+                              std::vector<Module>&       modules,
+                              const std::vector<Die>&    dies,
+                              int                        tier,
+                              double                     bbox_cx,
+                              double                     bbox_cy,
+                              std::ostream*              log)
+{
+    const auto& nets = engine.nets();
+    const int   nmod = static_cast<int>(modules.size());
+
+    // 建立 module → incident net 索引
+    std::vector<std::vector<int>> module_to_nets(static_cast<size_t>(nmod));
+    for (int ni = 0; ni < static_cast<int>(nets.size()); ++ni) {
+        for (int pid : nets[static_cast<size_t>(ni)].pins)
+            module_to_nets[static_cast<size_t>(pid)].push_back(ni);
+    }
+
+    // 建立 hpwl tier weight 向量（與 compute_hpwl() 邏輯一致）
+    const int nd = engine.num_dies();
+    const auto& ov = engine.config().hpwl_die_weights;
+    const auto& tw = engine.tier_net_weights();
+    std::vector<double> die_w(static_cast<size_t>(nd), 1.0);
+    if (static_cast<int>(ov.size()) == nd) {
+        for (int i = 0; i < nd; ++i) die_w[i] = ov[i];
+    } else if (static_cast<int>(tw.size()) == nd) {
+        for (int i = 0; i < nd; ++i) die_w[i] = tw[i];
+    }
+
+    // 計算 net-centroid WL 合力
+    std::vector<double> fx(static_cast<size_t>(nmod), 0.0);
+    std::vector<double> fy(static_cast<size_t>(nmod), 0.0);
+    compute_net_centroid_wl_force(modules, nets, fx, fy);
+
+    // near→far 排序（針對此 tier 的可動 module）
+    std::vector<std::pair<double, int>> order;
+    for (const Module& m : modules) {
+        if (m.is_terminal || m.is_fixed || m.tier_id != tier) continue;
+        const double dx = m.x - bbox_cx, dy = m.y - bbox_cy;
+        order.push_back({ dx * dx + dy * dy, m.id });
+    }
+    std::sort(order.begin(), order.end());
+
+    const Die& die = dies[static_cast<size_t>(tier)];
+    int n_moved = 0, n_reverted = 0, n_no_gap = 0;
+
+    if (log) *log << "[wl-refine] Tier " << tier
+                  << " near->far " << order.size() << " modules\n";
+
+    for (const auto& [dist2, mid] : order) {
+        Module& m = modules[static_cast<size_t>(mid)];
+        const double f_x = fx[static_cast<size_t>(mid)];
+
+        // ---- X 軸 ----
+        bool x_moved = false;
+        double old_x = m.x;
+        if (f_x > kWlForceEps) {
+            const double gap = max_shift_x_pos(modules, die, m);
+            if (gap > kGapMin) {
+                const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                m.x += gap;
+                const double hpwl_after  = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
+                    m.x = old_x;
+                    ++n_reverted;
+                    if (log) *log << "  module_id=" << mid << " dx=+" << gap
+                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                } else {
+                    x_moved = true;
+                }
+            } else {
+                ++n_no_gap;
+            }
+        } else if (f_x < -kWlForceEps) {
+            const double gap = max_shift_x_neg(modules, die, m);
+            if (gap > kGapMin) {
+                const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                m.x -= gap;
+                const double hpwl_after  = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
+                    m.x = old_x;
+                    ++n_reverted;
+                    if (log) *log << "  module_id=" << mid << " dx=-" << gap
+                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                } else {
+                    x_moved = true;
+                }
+            } else {
+                ++n_no_gap;
+            }
+        }
+        if (x_moved) ++n_moved;
+
+        // ---- Y 軸（用更新後的 x 位置算鄰居）----
+        bool y_moved = false;
+        const double f_y2 = fy[static_cast<size_t>(mid)];
+        double old_y = m.y;
+        if (f_y2 > kWlForceEps) {
+            const double gap = max_shift_y_pos(modules, die, m);
+            if (gap > kGapMin) {
+                const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                m.y += gap;
+                const double hpwl_after  = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
+                    m.y = old_y;
+                    ++n_reverted;
+                    if (log) *log << "  module_id=" << mid << " dy=+" << gap
+                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                } else {
+                    y_moved = true;
+                }
+            } else {
+                ++n_no_gap;
+            }
+        } else if (f_y2 < -kWlForceEps) {
+            const double gap = max_shift_y_neg(modules, die, m);
+            if (gap > kGapMin) {
+                const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                m.y -= gap;
+                const double hpwl_after  = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
+                if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
+                    m.y = old_y;
+                    ++n_reverted;
+                    if (log) *log << "  module_id=" << mid << " dy=-" << gap
+                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                } else {
+                    y_moved = true;
+                }
+            } else {
+                ++n_no_gap;
+            }
+        }
+        if (y_moved) ++n_moved;
+
+        // clamp 到 die 邊界
+        m.x = std::max(m.width  * 0.5, std::min(die.width  - m.width  * 0.5, m.x));
+        m.y = std::max(m.height * 0.5, std::min(die.height - m.height * 0.5, m.y));
+    }
+
+    std::cout << "  Tier " << tier << " [wl-refine] moved=" << n_moved
+              << " reverted_hpwl=" << n_reverted
+              << " skipped_no_gap=" << n_no_gap << "\n";
+}
+
 } // namespace
 
 // ============================================================
@@ -485,7 +766,6 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
 
 void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
 {
-    (void)pcfg; // 保留給後續 heuristic 合法化使用
 
     // ---- log 輸出：TeeStreambuf 把所有 std::cout 同時鏡像到檔案 ----
     static const std::string kLogPath = "legalize_process.txt";
@@ -689,8 +969,7 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                       << "] shake rotated=" << n_rot << " modules\n";
         }
 
-        if (phase1_done) continue;
-
+        if (!phase1_done) {
         // ---- Phase 2：還原初始位置，改用上下優先順序重試 ----
         std::cout << "  Tier " << t << " [retry] restoring initial positions, switching to v-first sweeps\n";
         restore_snapshot(initial_snap);
@@ -717,6 +996,22 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                 modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
             std::cout << "  Tier " << t << " [retry iter=" << iter
                       << "] shake rotated=" << n_rot << " modules\n";
+        }
+        } // end if (!phase1_done)
+
+    }
+
+    // ---- Post-legalize WL refinement：所有 tier legalize 完後，再逐 tier refine ----
+    if (pcfg.enable_wl_refine) {
+        std::cout << "\n[legalize_heu] WL refinement pass (all tiers legalized)\n";
+        for (int t = 0; t < engine.num_dies(); ++t) {
+            if (!has_tier_overlaps(modules, t)) {
+                const double bcx = dies[static_cast<size_t>(t)].width  * 0.5;
+                const double bcy = dies[static_cast<size_t>(t)].height * 0.5;
+                refine_tier_wl_centroid(engine, modules, dies, t, bcx, bcy, &log_file);
+            } else {
+                std::cout << "  Tier " << t << " [wl-refine] skipped (overlaps remain)\n";
+            }
         }
     }
 

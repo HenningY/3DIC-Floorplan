@@ -46,7 +46,10 @@ int main(int argc, char* argv[])
     cfg.sigma_end_frac   = 0.04;    // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
 
     // base value of density penalty coefficient for each tier (multiplied by lambda_mult)
-    cfg.tier_lambdas    = {0.0087, 0.0087, 0.009};
+    // 實際層數在 parse_blocks 後才能確定；這裡設定「模板值」，
+    // parse 後會依層數從後面取（#die < len）或從前面補第一個值（#die > len）
+    const std::vector<double> tier_lambdas_template = {0.0087, 0.0087, 0.009};
+    cfg.tier_lambdas = tier_lambdas_template;  // 先填入；parse 後再調整
 
     // ---- convergence tolerance ----
     cfg.convergence_overflow_stable_steps = 3;
@@ -83,6 +86,27 @@ int main(int argc, char* argv[])
 
     if (!engine.parse_blocks(block_file)) return 1;
     if (!engine.parse_nets(nets_file))    return 1;
+
+    // ---- 依實際 die 數量調整 tier_lambdas ----
+    // #die < template length → 取後 n 個；#die > template length → 前面補第一個值
+    {
+        const int nd  = engine.num_dies();
+        const auto& tmpl = tier_lambdas_template;
+        const int tlen = static_cast<int>(tmpl.size());
+        std::vector<double> adjusted;
+        if (nd <= tlen) {
+            // 從模板末尾取 nd 個
+            adjusted.assign(tmpl.end() - nd, tmpl.end());
+        } else {
+            // 前面補 (nd - tlen) 個 tmpl[0]
+            adjusted.assign(static_cast<size_t>(nd - tlen), tmpl[0]);
+            adjusted.insert(adjusted.end(), tmpl.begin(), tmpl.end());
+        }
+        engine.set_tier_lambdas(adjusted);
+        std::cout << "[Config] tier_lambdas adjusted for " << nd << " dies: [";
+        for (int i = 0; i < nd; ++i) std::cout << (i ? ", " : "") << adjusted[i];
+        std::cout << "]\n";
+    }
 
     // compute_hpwl() 每層乘數：預設用 .block 的 Weight:。
     // 僅覆寫「報告用 HPWL」時在 parse 之後呼叫：engine.set_hpwl_die_weight_override({...});
@@ -147,6 +171,7 @@ int main(int argc, char* argv[])
     // pcfg.log_file        = output_file + "_partition_tree.txt";
     pcfg.write_positions = true;
     // pcfg.positions_file  = output_file + "_partition_positions.txt";
+    pcfg.enable_wl_refine = true;
 
     // ---- Heuristic legalization flow (WIP) ----
     run_legalize_heu(engine, pcfg);

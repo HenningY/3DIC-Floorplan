@@ -189,6 +189,9 @@ struct PartitionConfig {
     // 將 partition 後（push-back / flush 到切割線）的 module/TSV 位置寫檔
     bool        write_positions = true;
     std::string positions_file  = "partition_positions.txt";
+
+    // true：legalization 後在無 overlap 的 tier 執行 WL refinement（net-centroid 拉力）
+    bool enable_wl_refine = true;
 };
 
 // ============================================================
@@ -325,6 +328,8 @@ public:
 
     // 僅覆寫 compute_hpwl() 的每層乘數；analytical（LSE）仍只用 .block 的 Weight:
     void set_hpwl_die_weight_override(std::vector<double> w) { cfg_.hpwl_die_weights = std::move(w); }
+    // 覆寫各 tier 的基礎密度懲罰係數（parse 後依實際 die 數量調整用）
+    void set_tier_lambdas(std::vector<double> v) { cfg_.tier_lambdas = std::move(v); }
 
     // 覆寫 TSV placement 用的每層乘數（可不經 solve_tsvs 先設）；tsv_die_weights 空則跟 .block
     void set_tsv_placement_config(const TsvPlacementConfig& cfg) { tsv_placement_cfg_ = cfg; }

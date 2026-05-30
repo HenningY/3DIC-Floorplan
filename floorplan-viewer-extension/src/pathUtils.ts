@@ -33,6 +33,25 @@ export function resolvePa2ProjectRoot(
   return workspaceRoot ? path.resolve(workspaceRoot) : undefined;
 }
 
+/** 檔案選擇對話框的起始目錄：優先使用已選路徑的所在資料夾 */
+export function defaultOpenDirUri(
+  ...filePaths: (string | undefined)[]
+): vscode.Uri | undefined {
+  for (const p of filePaths) {
+    const trimmed = p?.trim();
+    if (!trimmed) { continue; }
+    const abs = path.isAbsolute(trimmed)
+      ? trimmed
+      : path.resolve(trimmed);
+    const dir = path.dirname(abs);
+    if (fs.existsSync(dir)) {
+      return vscode.Uri.file(dir);
+    }
+  }
+  const wf = vscode.workspace.workspaceFolders?.[0];
+  return wf?.uri;
+}
+
 export function quotePath(p: string): string {
   if (process.platform === "win32") {
     return `"${p.replace(/"/g, '\\"')}"`;

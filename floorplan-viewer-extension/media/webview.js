@@ -8,6 +8,11 @@ function log(msg) {
   logEl.scrollTop = logEl.scrollHeight;
 }
 
+// 整數顯示為整數；小數最多三位（四捨五入，去掉尾端多餘 0）
+function formatDecimalMax3(n) {
+  return String(parseFloat(n.toFixed(3)));
+}
+
 // ── 狀態 ──
 var sceneData = null;
 var currentMode = 'overview'; // 'overview' | 數字 tier index
@@ -397,7 +402,11 @@ function calcGridStep(size) {
   if (size < 50)  { return 10; }
   if (size < 100) { return 20; }
   if (size < 150) { return 30; }
-  return 50;
+  if (size < 500) { return 50; }
+  if (size < 1000) { return 100; }
+  if (size < 2000) { return 200; }
+  if (size < 5000) { return 500; }
+  return 1000;
 }
 function appendDieWithGridAxes(parts, tx, ty, W, H, scale) {
   var x0 = tx(0), yTop = ty(H), wPx = W * scale, hPx = H * scale;
@@ -674,8 +683,20 @@ function render() {
 }
 
 // ── 檔案操作事件 ──
-document.getElementById('pickBlock').onclick = function() { vscode.postMessage({ type: 'pickBlock' }); };
-document.getElementById('pickNets').onclick  = function() { vscode.postMessage({ type: 'pickNets' }); };
+function currentInputPaths() {
+  return {
+    blockPath:      document.getElementById('blockPath').value.trim(),
+    netsPath:       document.getElementById('netsPath').value.trim(),
+    constraintPath: document.getElementById('constraintPath').value.trim(),
+  };
+}
+
+document.getElementById('pickBlock').onclick = function() {
+  vscode.postMessage(Object.assign({ type: 'pickBlock' }, currentInputPaths()));
+};
+document.getElementById('pickNets').onclick = function() {
+  vscode.postMessage(Object.assign({ type: 'pickNets' }, currentInputPaths()));
+};
 document.getElementById('runFloorplan').onclick = function() {
   vscode.postMessage({
     type:       'run',
@@ -1222,7 +1243,7 @@ function buildConstraintList() {
 }
 
 document.getElementById('pickConstraint').onclick = function() {
-  vscode.postMessage({ type: 'pickConstraint' });
+  vscode.postMessage(Object.assign({ type: 'pickConstraint' }, currentInputPaths()));
 };
 
 document.getElementById('clearConstraint').onclick = function() {
@@ -1312,7 +1333,13 @@ window.addEventListener('message', function(e) {
     if (msg.payload.hpwl) {
       var hpwlNum = parseFloat(msg.payload.hpwl);
       document.getElementById('rpHpwl').textContent = isNaN(hpwlNum) ? msg.payload.hpwl : hpwlNum.toFixed(3);
-      document.getElementById('rpDie').textContent  = msg.payload.die.replace(/\s+/, ' × ');
+      var dieParts = msg.payload.die.trim().split(/\s+/);
+      var dieW = parseFloat(dieParts[0]);
+      var dieH = parseFloat(dieParts[1]);
+      document.getElementById('rpDie').textContent =
+        (isNaN(dieW) || isNaN(dieH))
+          ? msg.payload.die.replace(/\s+/, ' × ')
+          : formatDecimalMax3(dieW) + ' × ' + formatDecimalMax3(dieH);
       document.getElementById('rpTime').textContent = msg.payload.time;
       hpwlBlock.style.display = 'block';
     } else {

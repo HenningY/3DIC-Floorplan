@@ -93,10 +93,15 @@ void PlacementEngine::setup_dies(int num_dies,
 // 幾何 Normalize 實作
 // ============================================================
 
-// 計算 scale = s * 10^n（s 正整數、n 整數），使 min_edge * scale 最接近 target。
-// Case A（太小，min_edge < min_thresh）：固定 n=0，搜尋正整數 s。
-// Case B（太大，min_edge > max_thresh）：先找負整數 n 使 min_edge*10^n < max_thresh，
-//   再在每個 n 找最佳正整數 s，全域取誤差最小組合。
+// 計算 scale = s * 10^(-n)（s 正整數、n 正整數），使 min_edge 縮放後落在合理範圍。
+// Case A（太小，min_edge < min_thresh）：
+//   固定 n=0（scale = s），搜尋正整數 s 使 min_edge*s 最接近 target。
+// Case B（太大，min_edge > max_thresh）兩段式：
+//   Step 1 — 找最小正整數 n，使 min_edge * 10^(-n) < min_thresh
+//            （即 -(n-1) 時還不小於 min_thresh，-n 時才第一次跨過）
+//   Step 2 — 在 base = min_edge * 10^(-n) 的基礎上，找正整數 s 使
+//            base * s 落在 [min_thresh, max_thresh] 且最接近 target；
+//            若無整數 s 能滿足區間，退而選讓誤差最小的 s。
 // 回傳 (scale, active=true) 或 (1.0, false)。
 static std::pair<double,bool> compute_normalize_scale(double min_edge,
                                                        double target,
@@ -111,6 +116,7 @@ static std::pair<double,bool> compute_normalize_scale(double min_edge,
     double best_err   = std::numeric_limits<double>::infinity();
 
     if (too_small) {
+        // Case A：scale = s（整數倍放大）
         const int s_max = static_cast<int>(std::ceil(target / min_edge)) * 4 + 2;
         for (int s = 1; s <= s_max; ++s) {
             const double err = std::fabs(min_edge * s - target);
@@ -123,26 +129,59 @@ static std::pair<double,bool> compute_normalize_scale(double min_edge,
                   << "  best_s=" << static_cast<int>(std::round(best_scale))
                   << "  n=0\n";
     } else {
-        // Case B：搜尋負 n 使 min_edge * 10^n 落在可操作範圍，再找最佳正整數 s
+        // Case B Step 1：找最小正整數 n 使 min_edge * 10^(-n) < min_thresh
         constexpr int n_max = 15;
-        double pow10 = 0.1; // 10^(-1)
-        for (int n = -1; n >= -n_max; --n, pow10 *= 0.1) {
-            const double base = min_edge * pow10;
-            if (base <= 0.0) break;
-            // 正整數 s 使 base*s 最接近 target；最多搜尋 ceil(target/base)*4
-            const int s_max_n = static_cast<int>(std::ceil(target / base)) * 4 + 2;
-            for (int s = 1; s <= s_max_n; ++s) {
-                const double cand  = base * s;
-                const double err   = std::fabs(cand - target);
+        int    chosen_n    = -1;
+        double chosen_pow  = 1.0;  // 10^(-n)
+        double pow10       = 0.1;  // 10^(-1)
+        for (int n = 1; n <= n_max; ++n, pow10 *= 0.1) {
+            if (min_edge * pow10 < min_thresh - 1e-12) {
+                chosen_n   = n;
+                chosen_pow = pow10;
+                break;
+            }
+        }
+
+        if (chosen_n < 0) {
+            // 超出 n_max 還找不到：用最後一個 pow10 當 fallback
+            chosen_n   = n_max;
+            chosen_pow = pow10;
+        }
+
+        // Case B Step 2：在 base = min_edge * 10^(-n) 上找 s，
+        // 優先選 base*s ∈ [min_thresh, max_thresh] 且最接近 target 的 s；
+        // 若無法落在區間，退而選誤差最小的 s。
+        const double base   = min_edge * chosen_pow;
+        const int    s_min  = std::max(1, static_cast<int>(std::floor(min_thresh / base)));
+        const int    s_max2 = static_cast<int>(std::ceil(max_thresh / base)) + 1;
+
+        // 先搜 [min_thresh, max_thresh] 內的 s
+        for (int s = s_min; s <= s_max2; ++s) {
+            const double cand = base * s;
+            if (cand < min_thresh - 1e-9 || cand > max_thresh + 1e-9) continue;
+            const double err = std::fabs(cand - target);
+            if (err < best_err) {
+                best_err   = err;
+                best_scale = chosen_pow * s;
+            }
+        }
+
+        // 若找不到落在區間內的 s，退而全局搜（不限 [min, max]）
+        if (best_scale == 1.0 && best_err == std::numeric_limits<double>::infinity()) {
+            const int s_fb_max = static_cast<int>(std::ceil(target / base)) * 4 + 2;
+            for (int s = 1; s <= s_fb_max; ++s) {
+                const double err = std::fabs(base * s - target);
                 if (err < best_err) {
                     best_err   = err;
-                    best_scale = pow10 * s;
+                    best_scale = chosen_pow * s;
                 }
             }
         }
-        // 解出 s, n 以供 log
+
         const double scaled = min_edge * best_scale;
         std::cout << "[Normalize] trigger=large  min_edge=" << min_edge
+                  << "  n=" << chosen_n << "  base=" << base
+                  << "  s=" << static_cast<int>(std::round(best_scale / chosen_pow))
                   << "  scale=" << best_scale
                   << "  -> scaled_min_edge=" << scaled << "\n";
     }

@@ -7,6 +7,7 @@ import {
   resolvePa2ProjectRoot,
   resolveAnalyticalDir,
   quotePath,
+  defaultOpenDirUri,
 } from "./pathUtils";
 import {
   parseConstraintFile,
@@ -171,6 +172,11 @@ export function activate(context: vscode.ExtensionContext): void {
           if (msg.type === "pickBlock") {
             const uris = await vscode.window.showOpenDialog({
               canSelectMany: false,
+              defaultUri: defaultOpenDirUri(
+                msg.blockPath,
+                msg.netsPath,
+                msg.constraintPath
+              ),
               filters: { Block: ["block"], "All files": ["*"] },
             });
             if (uris?.[0]) {
@@ -183,6 +189,11 @@ export function activate(context: vscode.ExtensionContext): void {
           if (msg.type === "pickNets") {
             const uris = await vscode.window.showOpenDialog({
               canSelectMany: false,
+              defaultUri: defaultOpenDirUri(
+                msg.netsPath,
+                msg.blockPath,
+                msg.constraintPath
+              ),
               filters: { Nets: ["nets", "net"], "All files": ["*"] },
             });
             if (uris?.[0]) {
@@ -205,6 +216,11 @@ export function activate(context: vscode.ExtensionContext): void {
           if (msg.type === "pickConstraint") {
             const uris = await vscode.window.showOpenDialog({
               canSelectMany: false,
+              defaultUri: defaultOpenDirUri(
+                msg.constraintPath,
+                msg.blockPath,
+                msg.netsPath
+              ),
               filters: { Constraint: ["constraint"], "All files": ["*"] },
             });
             if (uris?.[0]) {

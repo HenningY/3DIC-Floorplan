@@ -174,6 +174,7 @@ function activate(context) {
             if (msg.type === "pickBlock") {
                 const uris = await vscode.window.showOpenDialog({
                     canSelectMany: false,
+                    defaultUri: (0, pathUtils_1.defaultOpenDirUri)(msg.blockPath, msg.netsPath, msg.constraintPath),
                     filters: { Block: ["block"], "All files": ["*"] },
                 });
                 if (uris?.[0]) {
@@ -185,6 +186,7 @@ function activate(context) {
             if (msg.type === "pickNets") {
                 const uris = await vscode.window.showOpenDialog({
                     canSelectMany: false,
+                    defaultUri: (0, pathUtils_1.defaultOpenDirUri)(msg.netsPath, msg.blockPath, msg.constraintPath),
                     filters: { Nets: ["nets", "net"], "All files": ["*"] },
                 });
                 if (uris?.[0]) {
@@ -205,6 +207,7 @@ function activate(context) {
             if (msg.type === "pickConstraint") {
                 const uris = await vscode.window.showOpenDialog({
                     canSelectMany: false,
+                    defaultUri: (0, pathUtils_1.defaultOpenDirUri)(msg.constraintPath, msg.blockPath, msg.netsPath),
                     filters: { Constraint: ["constraint"], "All files": ["*"] },
                 });
                 if (uris?.[0]) {
