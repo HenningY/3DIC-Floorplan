@@ -1,0 +1,16 @@
+{
+  "tier": 1,
+  "frames": [
+    "frame_00000_initial.png",
+    "frame_00001_near->far.png",
+    "frame_00002_left->right.png",
+    "frame_00003_right->left.png",
+    "frame_00004_bottom->top.png",
+    "frame_00005_top->bottom.png",
+    "frame_00006_left->right.png",
+    "frame_00007_right->left.png",
+    "frame_00008_bottom->top.png",
+    "frame_00009_top->bottom.png",
+    "frame_00010_tier_done.png"
+  ]
+}

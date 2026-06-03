@@ -352,6 +352,15 @@ void PlacementEngine::solve()
     // λ 從 init_mult 出發，每 interval 次迭代乘以 increase_rate
     lambda_mult_ = cfg_.lambda_init_mult;
 
+    // ---- log 目前 wirelength model ----
+    {
+        const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
+        std::cout << "[Solve] wirelength_model="
+                  << (use_wa ? "WA" : "LSE")
+                  << "  gamma=" << (use_wa ? cfg_.gamma_wa : cfg_.gamma_lse)
+                  << "\n";
+    }
+
     // σ 平滑半徑：以各層 Die 寬度最大值為基準
     double die_w = 268.0;
     if (!dies_.empty()) {
@@ -590,8 +599,12 @@ void PlacementEngine::solve()
         }
     }
 
-    std::cout << "\n[Final] HPWL = " << std::fixed
-              << std::setprecision(2) << compute_hpwl() << "\n";
+    const double hpwl_scaled = compute_hpwl();
+    const double gs          = geometry_scale_;
+    std::cout << "\n[Final] HPWL = " << std::fixed << std::setprecision(2) << hpwl_scaled;
+    if (std::fabs(gs - 1.0) > 1e-12)
+        std::cout << "  (actual HPWL = " << (hpwl_scaled / gs) << ", scale:" << gs << ")";
+    std::cout << "\n";
 }
 
 
@@ -606,7 +619,7 @@ void PlacementEngine::solve()
 double PlacementEngine::compute_lse_wirelength() const
 {
     double total = 0.0;
-    const double g = cfg_.gamma;
+    const double g = cfg_.gamma_lse;
 
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
@@ -648,8 +661,16 @@ double PlacementEngine::compute_lse_wirelength() const
 
 // ============================================================
 // calculate_wirelength_gradient:
-//   ∂WL/∂xj = w_net * (exp(xj/γ)/Σexp(xi/γ) - exp(-xj/γ)/Σexp(-xi/γ))
-//   同理 y 方向；w_net = net_wirelength_die_weight(net)
+//   依 cfg_.wirelength_model 選擇 LSE 或 WA 梯度。
+//
+//   LSE: ∂WL/∂xj = w_net * (exp(xj/γ)/Σexp(xi/γ) - exp(-xj/γ)/Σexp(-xi/γ))
+//
+//   WA (ePlace):
+//     x̄+ = Σ xi*exp(xi/γ) / Σ exp(xi/γ)   ≈ max(xi)
+//     x̄- = Σ xi*exp(-xi/γ) / Σ exp(-xi/γ)  ≈ min(xi)
+//     ∂WL/∂xj = (1/γ) * [ (exp_p/A)*(γ+xj-x̄+) - (exp_n/C)*(γ-xj+x̄-) ]
+//
+//   兩者均使用 max/min shift 以確保數值穩定；w_net 為跨 tier die weight 平均。
 // ============================================================
 void PlacementEngine::calculate_wirelength_gradient(
     std::vector<double>& gx, std::vector<double>& gy) const
@@ -657,14 +678,15 @@ void PlacementEngine::calculate_wirelength_gradient(
     std::fill(gx.begin(), gx.end(), 0.0);
     std::fill(gy.begin(), gy.end(), 0.0);
 
-    const double g = cfg_.gamma;
+    const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
+    const double g = use_wa ? cfg_.gamma_wa : cfg_.gamma_lse;
 
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
 
         const double w_net = net_wirelength_die_weight(net);
 
-        // 數值穩定：找各方向最大最小值
+        // ---- 共用前處理：max/min shift 與基本 exp 分母 ----
         double max_x = -1e18, min_x = 1e18;
         double max_y = -1e18, min_y = 1e18;
         for (int id : net.pins) {
@@ -674,28 +696,67 @@ void PlacementEngine::calculate_wirelength_gradient(
             min_y = std::min(min_y, modules_[id].y);
         }
 
-        // 分母 Z = Σ exp(...)（每個 pin 權重相同）
-        double Z_px = 0.0, Z_nx = 0.0;
-        double Z_py = 0.0, Z_ny = 0.0;
+        // A = Σ exp((xi-max_x)/g)，C = Σ exp((min_x-xi)/g)
+        // B, D 為 WA 額外需要的加權和（LSE 不用，但統一計算以共用迴圈）
+        double A_x = 0.0, C_x = 0.0;
+        double A_y = 0.0, C_y = 0.0;
+        double B_x = 0.0, D_x = 0.0;  // WA: Σ xi*exp_p, Σ xi*exp_n
+        double B_y = 0.0, D_y = 0.0;
+
         for (int id : net.pins) {
-            Z_px += std::exp((modules_[id].x - max_x) / g);
-            Z_nx += std::exp((min_x - modules_[id].x) / g);
-            Z_py += std::exp((modules_[id].y - max_y) / g);
-            Z_ny += std::exp((min_y - modules_[id].y) / g);
+            const double xi = modules_[id].x;
+            const double yi = modules_[id].y;
+            const double ep_x = std::exp((xi - max_x) / g);
+            const double en_x = std::exp((min_x - xi) / g);
+            const double ep_y = std::exp((yi - max_y) / g);
+            const double en_y = std::exp((min_y - yi) / g);
+            A_x += ep_x;  C_x += en_x;
+            A_y += ep_y;  C_y += en_y;
+            if (use_wa) {
+                B_x += xi * ep_x;  D_x += xi * en_x;
+                B_y += yi * ep_y;  D_y += yi * en_y;
+            }
         }
 
-        // 計算每個 pin 的梯度貢獻
-        for (int id : net.pins) {
-            if (modules_[id].is_terminal) continue;  // terminal 固定，跳過
+        if (use_wa) {
+            // WA: x̄+ = B/A, x̄- = D/C（shift 後仍等價）
+            const double x_bar_p = B_x / A_x;
+            const double x_bar_n = D_x / C_x;
+            const double y_bar_p = B_y / A_y;
+            const double y_bar_n = D_y / C_y;
+            const double inv_g = 1.0 / g;
 
-            double ex  = std::exp((modules_[id].x - max_x) / g);
-            double enx = std::exp((min_x - modules_[id].x) / g);
-            double ey  = std::exp((modules_[id].y - max_y) / g);
-            double eny = std::exp((min_y - modules_[id].y) / g);
-
-            // LSE: ∂(w_net * WL)/∂xj = w_net * (ex/Z_px - enx/Z_nx)
-            gx[id] += w_net * (ex / Z_px - enx / Z_nx);
-            gy[id] += w_net * (ey / Z_py - eny / Z_ny);
+            for (int id : net.pins) {
+                if (modules_[id].is_terminal) continue;
+                const double xi = modules_[id].x;
+                const double yi = modules_[id].y;
+                const double ep_x = std::exp((xi - max_x) / g);
+                const double en_x = std::exp((min_x - xi) / g);
+                const double ep_y = std::exp((yi - max_y) / g);
+                const double en_y = std::exp((min_y - yi) / g);
+                // ∂WL_x/∂xj = (1/γ)*[ (ep/A)*(γ+xj-x̄+) - (en/C)*(γ-xj+x̄-) ]
+                gx[id] += w_net * inv_g * (
+                    (ep_x / A_x) * (g + xi - x_bar_p)
+                  - (en_x / C_x) * (g - xi + x_bar_n)
+                );
+                gy[id] += w_net * inv_g * (
+                    (ep_y / A_y) * (g + yi - y_bar_p)
+                  - (en_y / C_y) * (g - yi + y_bar_n)
+                );
+            }
+        } else {
+            // LSE: ∂WL/∂xj = w_net * (ep/A - en/C)
+            for (int id : net.pins) {
+                if (modules_[id].is_terminal) continue;
+                const double xi = modules_[id].x;
+                const double yi = modules_[id].y;
+                const double ep_x = std::exp((xi - max_x) / g);
+                const double en_x = std::exp((min_x - xi) / g);
+                const double ep_y = std::exp((yi - max_y) / g);
+                const double en_y = std::exp((min_y - yi) / g);
+                gx[id] += w_net * (ep_x / A_x - en_x / C_x);
+                gy[id] += w_net * (ep_y / A_y - en_y / C_y);
+            }
         }
     }
 }

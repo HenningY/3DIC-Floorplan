@@ -24,15 +24,17 @@ int main(int argc, char* argv[])
     // ---- set hyperparameters ----
     PlacementConfig cfg;
     cfg.max_iterations  = 10000;     // 最大迭代次數 default 3000
-    cfg.gamma           = 5.0;      // LSE 平滑參數（越大越接近真實 HPWL） default 5.0
+    cfg.wirelength_model = WirelengthModel::LSE;  // 線長平滑模型：LSE 或 WA
+    cfg.gamma_lse       = 5.0;      // LSE 平滑參數 γ（越小越接近真實 HPWL）
+    cfg.gamma_wa        = 10.0;     // WA 平滑參數 γ（ePlace；通常與 gamma_lse 獨立調整）
     cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, n100: 3.0
     cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;      // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
     cfg.bin_resolution  = 64;       // Bin 格數（每層 16x16） n100: 64
     cfg.convergence_tol = 1e-3;     // 收斂容忍度 default 1e-5
-    cfg.rotation_start_iter = 0;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
-    cfg.rotation_interval   = 0;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
+    cfg.rotation_start_iter = 1000;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
+    cfg.rotation_interval   = 500;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
 
     // ---- λ increasing schedule ----
     cfg.lambda_init_mult       = 200.0;     // 初始倍率（從極小值出發，讓 WL 先主導）default 0.001, n100: 200.0
@@ -42,7 +44,7 @@ int main(int argc, char* argv[])
     cfg.lambda_max_mult        = 300.0;     // λ 倍率上限, n100: 300.0
 
     // ---- dynamic smoothing radius σ ----
-    cfg.sigma_start_frac = 0.04;     // 初始 = 20% die 寬（=53.6 for 268） n100: 0.4
+    cfg.sigma_start_frac = 0.04;     // 初始 = 20% die 寬（=53.6 for 268） n100: 0.04
     cfg.sigma_end_frac   = 0.04;    // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
 
     // base value of density penalty coefficient for each tier (multiplied by lambda_mult)
@@ -173,14 +175,20 @@ int main(int argc, char* argv[])
     // pcfg.positions_file  = output_file + "_partition_positions.txt";
     pcfg.enable_wl_refine = true;
 
+    // Legalize 視覺化（設 false 可零額外 I/O）
+    pcfg.enable_legalize_vis   = false;
+    pcfg.legalize_vis_dir      = "legalize_frames";
+    pcfg.legalize_vis_upscale  = 4;
+    pcfg.legalize_gif_fps      = 5;
+
     // ---- Heuristic legalization flow (WIP) ----
     run_legalize_heu(engine, pcfg);
 
-    // ---- Recursive Bi-partitioning and Legalization ---- 目前沒用到
-    // engine.partition_all_tiers(pcfg);
-
     // ---- TSV：sort by net bbox length, first-fit / congestion-order in two bbox geometric regions ----
     engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height, pcfg.tsv_reflow_congestion_order, pcfg.tsv_reflow_bbox_edge_weight);
+    
+    // ---- Recursive Bi-partitioning and Legalization ---- 目前沒用到
+    // engine.partition_all_tiers(pcfg);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
     // const auto snap_legal = record_positions(engine);

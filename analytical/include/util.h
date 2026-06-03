@@ -143,3 +143,45 @@ void write_bin_edge_congestion_maps(const PlacementEngine&        engine,
                                     const BinEdgeCongestionStats& stats,
                                     const std::string&            base_filename,
                                     int                           upscale = 8);
+
+// ============================================================
+// Legalize 過程視覺化
+//
+// 用法（legalize_heu.cpp 的 tier 迴圈內）：
+//   LegalizeFrameWriter fw;
+//   fw.begin_tier(t, die_w, die_h, cfg);
+//   fw.capture(modules, dies, t, "initial");
+//   // ... each sweep ...
+//   fw.capture(modules, dies, t, "near->far");
+//   fw.capture(modules, dies, t, "tier_done");
+//   fw.end_tier();   // 寫 manifest.json
+// ============================================================
+struct LegalizeVisConfig {
+    std::string out_dir = "legalize_frames";
+    int         upscale = 4;   // die 座標 → 像素倍率
+};
+
+class LegalizeFrameWriter {
+public:
+    void begin_tier(int tier, double die_w, double die_h,
+                    const LegalizeVisConfig& cfg);
+
+    // 渲染目前 module 位置並寫成 PNG
+    // tag 用於檔名（允許含 '->' 等字元）
+    void capture(const std::vector<Module>& modules,
+                 const std::vector<Die>&    dies,
+                 int tier, const std::string& tag);
+
+    // 寫出 manifest.json，記錄本 tier 所有幀的順序
+    void end_tier();
+
+    int frame_count() const { return frame_seq_; }
+
+private:
+    int               tier_id_   = 0;
+    int               pix_w_     = 0;
+    int               pix_h_     = 0;
+    LegalizeVisConfig cfg_;
+    int               frame_seq_ = 0;
+    std::vector<std::string> frame_names_;  // 僅檔名（無路徑），供 manifest
+};

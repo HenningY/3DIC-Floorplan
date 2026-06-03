@@ -3,9 +3,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
+
+// stb_image_write 實作在 floorplanner.cpp 中已 define；
+// 這裡只引入宣告即可（連結時共用符號，不重複 define）
+#include "stb_image_write.h"
 std::vector<ModuleSnapshot> record_positions(const PlacementEngine& engine)
 {
     std::vector<ModuleSnapshot> snap;
@@ -600,4 +607,168 @@ void squarify_modules(PlacementEngine& engine)
         ++count;
     }
     std::cout << "[squarify] " << count << " modules squarified\n";
+}
+
+// ============================================================
+// LegalizeFrameWriter 實作
+// ============================================================
+namespace {
+
+// 將 die+module 渲染成 RGB 像素緩衝（y 翻轉：影像頂 = die y_max）
+// 背景淺灰、die 黑框 2px、所有 module 米色填充 + 1px 黑框
+std::vector<uint8_t> render_legalize_frame_rgb(
+    const std::vector<Module>& modules,
+    const std::vector<Die>&    dies,
+    int tier, int pix_w, int pix_h)
+{
+    // 背景：淺灰
+    constexpr uint8_t BG_R = 220, BG_G = 220, BG_B = 220;
+    // 邊框：黑
+    constexpr uint8_t BDR_R = 0, BDR_G = 0, BDR_B = 0;
+    // module 填充：米色
+    constexpr uint8_t MOD_R = 248, MOD_G = 228, MOD_B = 185;
+
+    const size_t total = static_cast<size_t>(pix_w * pix_h) * 3u;
+    std::vector<uint8_t> img(total);
+    // 填背景
+    for (size_t i = 0; i < total; i += 3) {
+        img[i]     = BG_R;
+        img[i + 1] = BG_G;
+        img[i + 2] = BG_B;
+    }
+
+    auto set_px = [&](int px, int py, uint8_t r, uint8_t g, uint8_t b) {
+        if (px < 0 || px >= pix_w || py < 0 || py >= pix_h) return;
+        const size_t o = (static_cast<size_t>(py) * static_cast<size_t>(pix_w)
+                         + static_cast<size_t>(px)) * 3u;
+        img[o] = r; img[o+1] = g; img[o+2] = b;
+    };
+
+    // 找 die
+    const Die* dp = nullptr;
+    for (const Die& d : dies) { if (d.id == tier) { dp = &d; break; } }
+    if (!dp) return img;
+
+    const double sx = pix_w / dp->width;
+    const double sy = pix_h / dp->height;
+
+    // die 邊框 2px
+    for (int px = 0; px < pix_w; ++px) {
+        for (int b = 0; b < 2; ++b) {
+            set_px(px, b,          BDR_R, BDR_G, BDR_B);
+            set_px(px, pix_h-1-b,  BDR_R, BDR_G, BDR_B);
+        }
+    }
+    for (int py = 0; py < pix_h; ++py) {
+        for (int b = 0; b < 2; ++b) {
+            set_px(b,         py, BDR_R, BDR_G, BDR_B);
+            set_px(pix_w-1-b, py, BDR_R, BDR_G, BDR_B);
+        }
+    }
+
+    // module 矩形
+    for (const Module& m : modules) {
+        if (m.is_terminal || m.tier_id != tier) continue;
+
+        const double lx = m.x - m.width  * 0.5;
+        const double ly = m.y - m.height * 0.5;
+        const double rx = lx + m.width;
+        const double ry = ly + m.height;
+
+        const int px0 = std::max(0, static_cast<int>(std::floor(lx * sx)));
+        const int px1 = std::min(pix_w - 1, static_cast<int>(std::ceil(rx * sx)) - 1);
+        // y 翻轉：die y_max → 影像頂（py 小）
+        const int py0 = std::max(0, pix_h - static_cast<int>(std::ceil(ry * sy)));
+        const int py1 = std::min(pix_h - 1, pix_h - 1 - static_cast<int>(std::floor(ly * sy)));
+
+        if (px0 > px1 || py0 > py1) continue;
+
+        // 填充
+        for (int py = py0; py <= py1; ++py)
+            for (int px = px0; px <= px1; ++px)
+                set_px(px, py, MOD_R, MOD_G, MOD_B);
+
+        // 外框 1px
+        for (int px = px0; px <= px1; ++px) {
+            set_px(px, py0, BDR_R, BDR_G, BDR_B);
+            set_px(px, py1, BDR_R, BDR_G, BDR_B);
+        }
+        for (int py = py0; py <= py1; ++py) {
+            set_px(px0, py, BDR_R, BDR_G, BDR_B);
+            set_px(px1, py, BDR_R, BDR_G, BDR_B);
+        }
+    }
+
+    return img;
+}
+
+} // anonymous namespace
+
+void LegalizeFrameWriter::begin_tier(
+    int tier, double die_w, double die_h,
+    const LegalizeVisConfig& cfg)
+{
+    tier_id_    = tier;
+    cfg_        = cfg;
+    frame_seq_  = 0;
+    frame_names_.clear();
+
+    // 計算像素尺寸（寬限 [64,1200]，高度等比）
+    const double w_px = std::clamp(die_w * cfg.upscale, 64.0, 1200.0);
+    const double h_px = (die_w > 0.0 && die_h > 0.0)
+                      ? std::clamp(die_h / die_w * w_px, 1.0, 1200.0)
+                      : w_px;
+    pix_w_ = static_cast<int>(std::round(w_px));
+    pix_h_ = static_cast<int>(std::round(h_px));
+
+    // 建立輸出目錄 <out_dir>/tier<t>/
+    std::filesystem::create_directories(
+        cfg.out_dir + "/tier" + std::to_string(tier));
+}
+
+void LegalizeFrameWriter::capture(
+    const std::vector<Module>& modules,
+    const std::vector<Die>&    dies,
+    int tier, const std::string& tag)
+{
+    if (pix_w_ <= 0 || pix_h_ <= 0) return;
+
+    // 組檔名（tag 直接用，允許含 ->）
+    std::ostringstream name;
+    name << "frame_" << std::setfill('0') << std::setw(5) << frame_seq_
+         << "_" << tag << ".png";
+    const std::string fname = name.str();
+    const std::string path  = cfg_.out_dir + "/tier" + std::to_string(tier_id_)
+                            + "/" + fname;
+
+    auto rgb = render_legalize_frame_rgb(modules, dies, tier, pix_w_, pix_h_);
+    if (!stbi_write_png(path.c_str(), pix_w_, pix_h_, 3,
+                        rgb.data(), pix_w_ * 3)) {
+        std::cerr << "[LegalizeVis] Cannot write PNG: " << path << "\n";
+    }
+
+    frame_names_.push_back(fname);
+    ++frame_seq_;
+}
+
+void LegalizeFrameWriter::end_tier()
+{
+    // 寫 manifest.json 供 Python 腳本穩定讀取幀順序
+    const std::string mpath =
+        cfg_.out_dir + "/tier" + std::to_string(tier_id_) + "/manifest.json";
+    std::ofstream mf(mpath);
+    if (!mf) {
+        std::cerr << "[LegalizeVis] Cannot write manifest: " << mpath << "\n";
+        return;
+    }
+    mf << "{\n  \"tier\": " << tier_id_ << ",\n  \"frames\": [\n";
+    for (size_t i = 0; i < frame_names_.size(); ++i) {
+        mf << "    \"" << frame_names_[i] << "\"";
+        if (i + 1 < frame_names_.size()) mf << ",";
+        mf << "\n";
+    }
+    mf << "  ]\n}\n";
+    std::cout << "[LegalizeVis] Tier " << tier_id_
+              << "  " << frame_seq_ << " frames  -> "
+              << cfg_.out_dir + "/tier" + std::to_string(tier_id_) << "/\n";
 }

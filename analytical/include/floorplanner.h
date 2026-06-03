@@ -85,12 +85,18 @@ struct Die {
     }
 };
 
+// Wirelength surrogate model 選擇
+// LSE: Log-Sum-Exp（原預設）; WA: Weighted-Average (ePlace)
+enum class WirelengthModel { LSE, WA };
+
 // ============================================================
 // PlacementConfig: 優化超參數集合
 // ============================================================
 struct PlacementConfig {
     int    max_iterations   = 3000;    // 最大迭代次數
-    double gamma            = 10.0;    // LSE 平滑參數 γ
+    WirelengthModel wirelength_model = WirelengthModel::LSE; // 線長平滑模型
+    double gamma_lse        = 10.0;    // LSE 平滑參數 γ（越大越接近真實 HPWL）
+    double gamma_wa         = 10.0;    // WA 平滑參數 γ（ePlace；γ→0 趨近真實 HPWL）
     double init_step_size   = 1.0;     // 初始步長
     double step_decay       = 0.9999;  // 步長衰減率（每次迭代乘以此值）
     double momentum         = 0.9;     // Nesterov 動量係數
@@ -192,6 +198,15 @@ struct PartitionConfig {
 
     // true：legalization 後在無 overlap 的 tier 執行 WL refinement（net-centroid 拉力）
     bool enable_wl_refine = true;
+
+    // normalized space 中，module 最短邊超過此值視為「大型 module」，啟用 strong legalize
+    double legalize_large_module_min_edge = 60.0;
+
+    // Legalize 視覺化（enable=false 時零額外 I/O）
+    bool        enable_legalize_vis   = false;
+    std::string legalize_vis_dir      = "legalize_frames";
+    int         legalize_vis_upscale  = 4;
+    int         legalize_gif_fps      = 5;   // 傳給 Python（imageio duration = 1/fps）
 };
 
 // ============================================================

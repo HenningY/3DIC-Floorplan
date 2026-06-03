@@ -14,6 +14,9 @@ $(TARGET): $(OBJS)
 src/floorplanner.o: src/floorplanner.cpp include/floorplanner.h third_party/stb_image_write.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
+src/util.o: src/util.cpp include/util.h include/floorplanner.h third_party/stb_image_write.h
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
+
 src/%.o: src/%.cpp include/floorplanner.h
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 

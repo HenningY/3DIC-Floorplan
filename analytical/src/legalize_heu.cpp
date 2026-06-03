@@ -1,11 +1,14 @@
 // Heuristic legalization — standalone experimental flow
 #include "legalize_heu.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <random>
 #include <set>
 #include <unordered_set>
@@ -17,6 +20,12 @@
 namespace {
 
 constexpr double kEps = 1e-12;
+
+// normalize 時幾何長度乘 geometry_scale；log 輸出物理長度 = scaled * (1/scale)
+inline double to_physical_len(double len_scaled, double inv_geometry_scale)
+{
+    return len_scaled * inv_geometry_scale;
+}
 
 // ── 幾何輔助 ────────────────────────────────────────────────
 
@@ -442,7 +451,8 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                               int                        tier,
                               double                     bbox_cx,
                               double                     bbox_cy,
-                              std::ostream*              log)
+                              std::ostream*              log,
+                              double                     log_phys_scale)
 {
     const auto& nets = engine.nets();
     const int   nmod = static_cast<int>(modules.size());
@@ -501,8 +511,11 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
                     m.x = old_x;
                     ++n_reverted;
-                    if (log) *log << "  module_id=" << mid << " dx=+" << gap
-                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                    if (log) *log << "  module_id=" << mid << " dx=+"
+                                  << to_physical_len(gap, log_phys_scale)
+                                  << " (reverted hpwl +"
+                                  << to_physical_len(hpwl_after - hpwl_before, log_phys_scale)
+                                  << ")\n";
                 } else {
                     x_moved = true;
                 }
@@ -518,8 +531,11 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
                     m.x = old_x;
                     ++n_reverted;
-                    if (log) *log << "  module_id=" << mid << " dx=-" << gap
-                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                    if (log) *log << "  module_id=" << mid << " dx=-"
+                                  << to_physical_len(gap, log_phys_scale)
+                                  << " (reverted hpwl +"
+                                  << to_physical_len(hpwl_after - hpwl_before, log_phys_scale)
+                                  << ")\n";
                 } else {
                     x_moved = true;
                 }
@@ -542,8 +558,11 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
                     m.y = old_y;
                     ++n_reverted;
-                    if (log) *log << "  module_id=" << mid << " dy=+" << gap
-                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                    if (log) *log << "  module_id=" << mid << " dy=+"
+                                  << to_physical_len(gap, log_phys_scale)
+                                  << " (reverted hpwl +"
+                                  << to_physical_len(hpwl_after - hpwl_before, log_phys_scale)
+                                  << ")\n";
                 } else {
                     y_moved = true;
                 }
@@ -559,8 +578,11 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 if (hpwl_after > hpwl_before + kHpwlRollbackEps) {
                     m.y = old_y;
                     ++n_reverted;
-                    if (log) *log << "  module_id=" << mid << " dy=-" << gap
-                                  << " (reverted hpwl +" << (hpwl_after - hpwl_before) << ")\n";
+                    if (log) *log << "  module_id=" << mid << " dy=-"
+                                  << to_physical_len(gap, log_phys_scale)
+                                  << " (reverted hpwl +"
+                                  << to_physical_len(hpwl_after - hpwl_before, log_phys_scale)
+                                  << ")\n";
                 } else {
                     y_moved = true;
                 }
@@ -590,7 +612,8 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
                                            const std::vector<Die>& dies,
                                            int                     target_module_id,
                                            const LocalMoveConfig&  cfg,
-                                           std::ostream*           move_log)
+                                           std::ostream*           move_log,
+                                           double                  log_phys_scale)
 {
     // 找目標 module
     int target_idx = -1;
@@ -688,8 +711,10 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
     if (move_log) {
         *move_log << "    [move_apply]"
                   << " module_id=" << tm.id
-                  << " center=(" << tm.x << ", " << tm.y << ")"
-                  << " dx=" << best.dx << " dy=" << best.dy
+                  << " center=(" << to_physical_len(tm.x, log_phys_scale)
+                  << ", " << to_physical_len(tm.y, log_phys_scale) << ")"
+                  << " dx=" << to_physical_len(best.dx, log_phys_scale)
+                  << " dy=" << to_physical_len(best.dy, log_phys_scale)
                   << " rot90=" << best.rotate_90
                   << " weight=" << tm.move_weight << "\n";
     }
@@ -712,7 +737,8 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
                            double                  radius,
                            double                  rotate_prob,
                            unsigned                seed,
-                           std::ostream*           log)
+                           std::ostream*           log,
+                           double                  log_phys_scale)
 {
     // 找有重疊的 module id
     const auto overlap_ids = collect_overlap_module_ids(modules, tier);
@@ -756,8 +782,10 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
 
         if (log) {
             *log << "    [shake_rot] module_id=" << m.id
-                 << " new_size=(" << m.width << "x" << m.height << ")"
-                 << " center=(" << m.x << ", " << m.y << ")\n";
+                 << " new_size=(" << to_physical_len(m.width, log_phys_scale)
+                 << "x" << to_physical_len(m.height, log_phys_scale) << ")"
+                 << " center=(" << to_physical_len(m.x, log_phys_scale)
+                 << ", " << to_physical_len(m.y, log_phys_scale) << ")\n";
         }
         ++rotated_count;
     }
@@ -793,6 +821,13 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                      log_file ? log_file.rdbuf() : nullptr);
     std::streambuf* orig_buf = std::cout.rdbuf(&tee);
 
+    // log 內長度/位移：若有 die normalize，換算為物理座標（× 1/geometry_scale）
+    const double gs     = engine.geometry_scale();
+    const double inv_gs = (std::fabs(gs - 1.0) > 1e-12) ? (1.0 / gs) : 1.0;
+    if (std::fabs(inv_gs - 1.0) > 1e-12)
+        std::cout << "[legalize_heu] log lengths/displacements in physical coords (geometry_scale="
+                  << gs << ")\n";
+
     // ---- 設定 ----
     LocalMoveConfig lcfg;
     lcfg.max_search_dist   = 30.0;
@@ -805,6 +840,9 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     auto& modules = engine.modules_mutable();
     const auto& dies = engine.dies();
     std::cout << "\n[legalize_heu] multi-pass local move\n";
+
+    // per-tier 視覺化記錄器（enable_legalize_vis=false 時始終為空）
+    std::optional<LegalizeFrameWriter> vis_fw;
 
     // 對指定排序跑一整層的 local move
     // init_weight    : sweep 開始前將該層所有 movable module 的 move_weight 重設為此值
@@ -845,7 +883,10 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   << " init_w=" << init_weight
                   << " mul=" << moved_weight_mul << "\n";
         for (const auto& [key, mid] : key_id)
-            optimize_module_local_move(modules, dies, mid, sweep_cfg, &log_file);
+            optimize_module_local_move(modules, dies, mid, sweep_cfg, &log_file, inv_gs);
+
+        // 視覺化：每次 sweep 結束後擷取一幀
+        if (vis_fw) vis_fw->capture(modules, dies, tier, label);
     };
 
     for (int t = 0; t < engine.num_dies(); ++t) {
@@ -859,11 +900,12 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
         const double cy = 0.5 * (box.ymin + box.ymax);
 
         std::cout << "  Tier " << t
-                  << " bbox_center=(" << cx << ", " << cy << ")\n";
+                  << " bbox_center=(" << to_physical_len(cx, inv_gs)
+                  << ", " << to_physical_len(cy, inv_gs) << ")\n";
 
         static constexpr int    kMaxShakeIters  = 6;
         static constexpr double kShakeRadius    = 50.0;
-        static constexpr double kShakeProb      = 0.5;
+        static constexpr double kShakeProb      = 0.5;      // modified
 
         // 記錄進入本 tier 前的 module 位置快照，供 retry 還原用
         struct ModuleSnapshot { int id; double x, y, width, height; };
@@ -889,11 +931,12 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
         };
 
         // 依 use_alt 決定 sweep 序列：false = 原始順序；true = 上下與左右調換
-        auto run_one_pass = [&](int iter, bool use_alt) {
-            const double iw  = std::pow(3.0, iter);
-            const double mw1 = 3.0  + iter * 4.0;
-            const double mw2 = 9.0  + iter * 6.0;
-            const double mw3 = 20.0 + iter * 8.0;
+        // use_strong：weak（預設）先嘗試；weak 失敗後以 strong 重試
+        auto run_one_pass = [&](int iter, bool use_alt, bool use_strong = false) {
+            const double iw  = use_strong ? std::pow(3.0, iter) : std::pow(2.0, iter);
+            const double mw1 = use_strong ? (3.0  + iter * 4.0) : (2.0  + iter * 2.0);
+            const double mw2 = use_strong ? (9.0  + iter * 6.0) : (3.0  + iter * 3.0);
+            const double mw3 = use_strong ? (20.0 + iter * 8.0) : (4.0  + iter * 4.0);
 
             sweep(t, "near->far",
                   [cx, cy](const Module& m) {
@@ -941,6 +984,17 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
 
         const auto initial_snap = take_snapshot();
 
+        // 視覺化：初始化 tier 記錄器，擷取初始位置幀
+        if (pcfg.enable_legalize_vis) {
+            vis_fw.emplace();
+            LegalizeVisConfig vcfg;
+            vcfg.out_dir = pcfg.legalize_vis_dir;
+            vcfg.upscale = pcfg.legalize_vis_upscale;
+            vis_fw->begin_tier(t, dies[static_cast<size_t>(t)].width,
+                               dies[static_cast<size_t>(t)].height, vcfg);
+            vis_fw->capture(modules, dies, t, "initial");
+        }
+
         // ---- Phase 1：原始順序（左右優先）----
         bool phase1_done = false;
         for (int iter = 0; iter < kMaxShakeIters; ++iter) {
@@ -961,16 +1015,19 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                 break;
             }
 
-            const unsigned shake_seed = static_cast<unsigned>(iter * 997 + t * 31);
-            std::cout << "  Tier " << t << " [shake rotations]\n";
-            const int n_rot = shake_nearby_rotations(
-                modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
-            std::cout << "  Tier " << t << " [iter=" << iter
-                      << "] shake rotated=" << n_rot << " modules\n";
+            // 最後一輪不再 rotate（下一輪無法接續 sweep，旋轉只會留下不確定狀態）
+            if (iter < kMaxShakeIters - 1) {
+                const unsigned shake_seed = static_cast<unsigned>(iter * 997 + t * 31);
+                std::cout << "  Tier " << t << " [shake rotations]\n";
+                const int n_rot = shake_nearby_rotations(
+                    modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file, inv_gs);
+                std::cout << "  Tier " << t << " [iter=" << iter
+                          << "] shake rotated=" << n_rot << " modules\n";
+            }
         }
 
         if (!phase1_done) {
-        // ---- Phase 2：還原初始位置，改用上下優先順序重試 ----
+        // ---- Phase 2：還原初始位置，改用上下優先順序重試（weak）----
         std::cout << "  Tier " << t << " [retry] restoring initial positions, switching to v-first sweeps\n";
         restore_snapshot(initial_snap);
 
@@ -990,14 +1047,92 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                 break;
             }
 
-            const unsigned shake_seed = static_cast<unsigned>((iter + kMaxShakeIters) * 997 + t * 31);
-            std::cout << "  Tier " << t << " [retry shake rotations]\n";
-            const int n_rot = shake_nearby_rotations(
-                modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file);
-            std::cout << "  Tier " << t << " [retry iter=" << iter
-                      << "] shake rotated=" << n_rot << " modules\n";
+            // 最後一輪不再 rotate
+            if (iter < kMaxShakeIters - 1) {
+                const unsigned shake_seed = static_cast<unsigned>((iter + kMaxShakeIters) * 997 + t * 31);
+                std::cout << "  Tier " << t << " [retry shake rotations]\n";
+                const int n_rot = shake_nearby_rotations(
+                    modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file, inv_gs);
+                std::cout << "  Tier " << t << " [retry iter=" << iter
+                          << "] shake rotated=" << n_rot << " modules\n";
+            }
         }
         } // end if (!phase1_done)
+
+        // ---- Phase 3：weak 完全失敗，以 strong 參數從初始快照重新嘗試 ----
+        if (has_tier_overlaps(modules, t)) {
+        std::cout << "  Tier " << t << " [strong] weak failed, restoring initial positions, retrying with strong params\n";
+        restore_snapshot(initial_snap);
+
+        // Phase 3a：strong h-first
+        bool phase3_done = false;
+        for (int iter = 0; iter < kMaxShakeIters; ++iter) {
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [strong iter=" << iter
+                          << "] no overlaps, done\n";
+                phase3_done = true;
+                break;
+            }
+
+            std::cout << "  Tier " << t << " [strong iter=" << iter << "] running sweeps (h-first)\n";
+            run_one_pass(iter, /*use_alt=*/false, /*use_strong=*/true);
+
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [strong iter=" << iter
+                          << "] overlaps cleared after sweep\n";
+                phase3_done = true;
+                break;
+            }
+
+            if (iter < kMaxShakeIters - 1) {
+                const unsigned shake_seed = static_cast<unsigned>((iter + kMaxShakeIters * 2) * 997 + t * 31);
+                std::cout << "  Tier " << t << " [strong shake rotations]\n";
+                const int n_rot = shake_nearby_rotations(
+                    modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file, inv_gs);
+                std::cout << "  Tier " << t << " [strong iter=" << iter
+                          << "] shake rotated=" << n_rot << " modules\n";
+            }
+        }
+
+        if (!phase3_done) {
+        // Phase 3b：strong v-first
+        std::cout << "  Tier " << t << " [strong-v] restoring, switching to v-first\n";
+        restore_snapshot(initial_snap);
+
+        for (int iter = 0; iter < kMaxShakeIters; ++iter) {
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [strong-v iter=" << iter
+                          << "] no overlaps, done\n";
+                break;
+            }
+
+            std::cout << "  Tier " << t << " [strong-v iter=" << iter << "] running sweeps (v-first)\n";
+            run_one_pass(iter, /*use_alt=*/true, /*use_strong=*/true);
+
+            if (!has_tier_overlaps(modules, t)) {
+                std::cout << "  Tier " << t << " [strong-v iter=" << iter
+                          << "] overlaps cleared after sweep\n";
+                break;
+            }
+
+            if (iter < kMaxShakeIters - 1) {
+                const unsigned shake_seed = static_cast<unsigned>((iter + kMaxShakeIters * 3) * 997 + t * 31);
+                std::cout << "  Tier " << t << " [strong-v shake rotations]\n";
+                const int n_rot = shake_nearby_rotations(
+                    modules, dies, t, kShakeRadius, kShakeProb, shake_seed, &log_file, inv_gs);
+                std::cout << "  Tier " << t << " [strong-v iter=" << iter
+                          << "] shake rotated=" << n_rot << " modules\n";
+            }
+        }
+        } // end if (!phase3_done)
+        } // end if (has_tier_overlaps) → Phase 3
+
+        // 視覺化：tier 最終幀 + 寫 manifest
+        if (vis_fw) {
+            vis_fw->capture(modules, dies, t, "tier_done");
+            vis_fw->end_tier();
+            vis_fw.reset();
+        }
 
     }
 
@@ -1008,7 +1143,7 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
             if (!has_tier_overlaps(modules, t)) {
                 const double bcx = dies[static_cast<size_t>(t)].width  * 0.5;
                 const double bcy = dies[static_cast<size_t>(t)].height * 0.5;
-                refine_tier_wl_centroid(engine, modules, dies, t, bcx, bcy, &log_file);
+                refine_tier_wl_centroid(engine, modules, dies, t, bcx, bcy, &log_file, inv_gs);
             } else {
                 std::cout << "  Tier " << t << " [wl-refine] skipped (overlaps remain)\n";
             }
@@ -1018,4 +1153,15 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     std::cout.rdbuf(orig_buf);  // 還原 stdout
     if (log_file)
         std::cout << "[legalize_heu] log written -> " << kLogPath << "\n";
+
+    // 視覺化：所有 tier 寫完後呼叫 Python 腳本合成 GIF
+    if (pcfg.enable_legalize_vis) {
+        const std::string cmd =
+            "python3 scripts/make_legalize_gif.py "
+            + pcfg.legalize_vis_dir
+            + " --fps " + std::to_string(pcfg.legalize_gif_fps);
+        std::cout << "[LegalizeVis] Running: " << cmd << "\n";
+        if (std::system(cmd.c_str()) != 0)
+            std::cerr << "[LegalizeVis] Warning: GIF script failed or not found\n";
+    }
 }

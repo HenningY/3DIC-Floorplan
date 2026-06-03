@@ -36,12 +36,15 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
                            double                  radius      = 50.0,
                            double                  rotate_prob = 0.5,
                            unsigned                seed        = 42,
-                           std::ostream*           log         = nullptr);
+                           std::ostream*           log         = nullptr,
+                           double                  log_phys_scale = 1.0);
 
 // 在其他 module 固定下，對指定 module 做 local 1D+1D 最佳化：
 // 先找 x 最佳位移，再以更新後位置找 y 最佳位移。
+// log_phys_scale：die normalize 時為 1/geometry_scale，log 內位移換算為物理長度
 LocalMoveResult optimize_module_local_move(std::vector<Module>& modules,
                                            const std::vector<Die>& dies,
                                            int                  target_module_id,
                                            const LocalMoveConfig& cfg,
-                                           std::ostream*          move_log = &std::cout);
+                                           std::ostream*          move_log = &std::cout,
+                                           double                 log_phys_scale = 1.0);
