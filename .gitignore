@@ -1,2 +1,4 @@
 node_modules/
 legalize_frames/
+*.o
+analytical
