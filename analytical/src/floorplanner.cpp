@@ -2,6 +2,7 @@
 // 實作 LSE Wirelength + Bin Density + Nesterov NAG 優化
 #include "floorplanner.h"
 #include "routing_congestion.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cmath>
@@ -352,6 +353,9 @@ void PlacementEngine::solve()
     // λ 從 init_mult 出發，每 interval 次迭代乘以 increase_rate
     lambda_mult_ = cfg_.lambda_init_mult;
 
+    const int nd = static_cast<int>(dies_.size());
+    tier_rc_alpha_mult_.assign(static_cast<size_t>(nd), 0.0);
+
     // ---- log 目前 wirelength model ----
     {
         const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
@@ -422,15 +426,47 @@ void PlacementEngine::solve()
         calculate_density_gradient(gx_d,  gy_d);
         calculate_repulsion_gradient(gx_rep, gy_rep); // REPULSE constraint 斥力
 
-        // Routing congestion 梯度：alpha>0 時依週期排程重算，否則清零
-        if (cfg_.routing_congestion_alpha > 0.0
+        // Routing congestion 梯度：alpha>0 或 adaptive 模式時依週期排程重算，否則清零
+        if ((cfg_.routing_congestion_alpha > 0.0 || cfg_.routing_congestion_max > 0.0)
             && iter >= cfg_.routing_congestion_start_iter
             && ((iter - cfg_.routing_congestion_start_iter)
                     % cfg_.routing_congestion_refresh_interval == 0))
         {
+            // Per-tier adaptive alpha：先更新倍率再決定是否需要算梯度
+            if (cfg_.routing_congestion_max > 0.0) {
+                BinEdgeCongestionStats cstats = compute_bin_edge_congestion(*this);
+                std::cout << "[RC-alpha] iter=" << iter;
+                for (int t = 0; t < nd; ++t) {
+                    const size_t ti = static_cast<size_t>(t);
+                    const double tmax = t < static_cast<int>(cstats.tier_max.size())
+                                        ? cstats.tier_max[ti] : 0.0;
+                    if (tmax > cfg_.routing_congestion_max) {
+                        const double prev = tier_rc_alpha_mult_[ti];
+                        tier_rc_alpha_mult_[ti] = std::min(
+                            (prev < 1.0 ? 1.0 : prev * cfg_.routing_congestion_alpha_boost_rate),
+                            cfg_.routing_congestion_alpha_max_mult);
+                    } else {
+                        tier_rc_alpha_mult_[ti] = 0.0;
+                    }
+                    std::cout << " t" << t << "=" << std::fixed << std::setprecision(3)
+                              << tmax << (tmax > cfg_.routing_congestion_max ? "!(a=" : " (a=")
+                              << std::setprecision(2) << tier_rc_alpha_mult_[ti] << ")";
+                }
+                std::cout << "\n";
+            }
+
+            // 若所有層 alpha 倍率皆為 0 則跳過梯度計算
+            const bool any_active = [&] {
+                if (cfg_.routing_congestion_max <= 0.0) return cfg_.routing_congestion_alpha > 0.0;
+                for (int t = 0; t < nd; ++t)
+                    if (tier_rc_alpha_mult_[static_cast<size_t>(t)] > 0.0) return true;
+                return false;
+            }();
+
             std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
             std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
-            calculate_routing_congestion_gradient(*this, gx_rc, gy_rc);
+            if (any_active)
+                calculate_routing_congestion_gradient(*this, gx_rc, gy_rc);
         } else {
             std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
             std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
@@ -461,10 +497,19 @@ void PlacementEngine::solve()
             if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
 
             double lam = dies_[modules_[i].tier_id].lambda * lambda_mult_;
+            const double rc_mult = tier_rc_alpha_mult_.empty() ? 1.0
+                : tier_rc_alpha_mult_[static_cast<size_t>(modules_[i].tier_id)];
+            // adaptive 模式：rc_mult 本身即為有效 alpha（0 = 關閉，1+ = 啟動並遞增）
+            // 非 adaptive 模式：沿用固定的 routing_congestion_alpha × rc_mult
+            const double rc_alpha = (cfg_.routing_congestion_max > 0.0)
+                ? rc_mult
+                : cfg_.routing_congestion_alpha * rc_mult;
 
-            gx[i] = gx_wl[i] + gx_rep[i] + cfg_.routing_congestion_alpha * scale_rc * gx_rc[i]
+            gx[i] = gx_wl[i] + gx_rep[i]
+                    + rc_alpha * scale_rc * gx_rc[i]
                     + lam * scale_d * gx_d[i];
-            gy[i] = gy_wl[i] + gy_rep[i] + cfg_.routing_congestion_alpha * scale_rc * gy_rc[i]
+            gy[i] = gy_wl[i] + gy_rep[i]
+                    + rc_alpha * scale_rc * gy_rc[i]
                     + lam * scale_d * gy_d[i];
 
             modules_[i].x = look_x[i] - step * gx[i];

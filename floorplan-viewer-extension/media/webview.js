@@ -717,7 +717,7 @@ document.getElementById('reload2d').onclick = function() {
 };
 
 document.getElementById('btnZoomIn').onclick = function() {
-  viewZoom = Math.min(5, viewZoom * 1.25);
+  viewZoom = Math.min(20, viewZoom * 1.25);
   render();
 };
 document.getElementById('btnZoomOut').onclick = function() {

@@ -621,12 +621,12 @@ std::vector<uint8_t> render_legalize_frame_rgb(
     const std::vector<Die>&    dies,
     int tier, int pix_w, int pix_h)
 {
-    // 背景：淺灰
-    constexpr uint8_t BG_R = 220, BG_G = 220, BG_B = 220;
+    // 背景：白色
+    constexpr uint8_t BG_R = 255, BG_G = 255, BG_B = 255;
     // 邊框：黑
     constexpr uint8_t BDR_R = 0, BDR_G = 0, BDR_B = 0;
-    // module 填充：米色
-    constexpr uint8_t MOD_R = 248, MOD_G = 228, MOD_B = 185;
+    // module 填充：淺藍色
+    constexpr uint8_t MOD_R = 200, MOD_G = 222, MOD_B = 246;
 
     const size_t total = static_cast<size_t>(pix_w * pix_h) * 3u;
     std::vector<uint8_t> img(total);

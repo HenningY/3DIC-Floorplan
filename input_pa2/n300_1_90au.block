@@ -1,875 +1,875 @@
 NumDie: 1
-Outline: 560 560
+Outline: 544 544
 NumBlocks: 300
 NumTerminals: 569
 
-sb0          27       15     0
-sb1          27       16     0
-sb2          22       26     0
-sb3          21       45     0
-sb4          40       45     0
-sb5          16       26     0
-sb6          38       27     0
-sb7          35       29     0
-sb8          21       36     0
-sb9          44       25     0
-sb10         15       31     0
-sb11         41       24     0
-sb12         17       19     0
-sb13         33       48     0
-sb14         44       21     0
-sb15         34       15     0
-sb16         45       42     0
-sb17         41       37     0
-sb18         43       44     0
-sb19         36       23     0
-sb20         13       17     0
-sb21         28       44     0
-sb22         35       29     0
-sb23         40       17     0
-sb24         18       24     0
-sb25         29       43     0
-sb26         27       18     0
-sb27         38       40     0
-sb28         24       12     0
-sb29         29       30     0
-sb30         20       28     0
-sb31         32       36     0
-sb32         19       22     0
-sb33         45       46     0
-sb34         29       12     0
-sb35         12       26     0
-sb36         27       30     0
-sb37         12       29     0
-sb38         21       19     0
-sb39         12       13     0
-sb40         19       47     0
-sb41         36       19     0
-sb42         46       25     0
-sb43         39       21     0
-sb44         27       24     0
-sb45         24       25     0
-sb46         19       13     0
-sb47         42       40     0
-sb48         28       34     0
-sb49         24       48     0
-sb50         19       14     0
-sb51         14       16     0
-sb52         37       18     0
-sb53         36       12     0
-sb54         30       34     0
-sb55         26       31     0
-sb56         46       31     0
-sb57         47       48     0
-sb58         25       25     0
-sb59         47       38     0
-sb60         39       16     0
-sb61         31       45     0
-sb62         46       36     0
-sb63         36       46     0
-sb64         33       15     0
-sb65         13       23     0
-sb66         42       45     0
-sb67         14       33     0
-sb68         28       45     0
-sb69         36       27     0
-sb70         16       45     0
-sb71         34       32     0
-sb72         32       15     0
-sb73         12       46     0
-sb74         43       34     0
-sb75         20       37     0
-sb76         39       36     0
-sb77         40       18     0
-sb78         42       16     0
-sb79         40       25     0
-sb80         36       15     0
-sb81         15       32     0
-sb82         39       24     0
-sb83         37       41     0
-sb84         34       38     0
-sb85         34       43     0
-sb86         39       44     0
-sb87         45       48     0
-sb88         29       44     0
-sb89         20       42     0
-sb90         46       24     0
-sb91         43       21     0
-sb92         45       47     0
-sb93         20       24     0
-sb94         31       19     0
-sb95         44       37     0
-sb96         46       33     0
-sb97         40       15     0
-sb98         13       35     0
-sb99         40       17     0
-sb100        44       45     0
-sb101        30       36     0
-sb102        40       36     0
-sb103        34       34     0
-sb104        42       14     0
-sb105        35       33     0
-sb106        12       33     0
-sb107        32       15     0
-sb108        37       38     0
-sb109        42       46     0
-sb110        39       42     0
-sb111        13       21     0
-sb112        30       25     0
-sb113        36       24     0
-sb114        34       44     0
-sb115        34       22     0
-sb116        28       19     0
-sb117        39       21     0
-sb118        44       38     0
-sb119        28       45     0
-sb120        36       36     0
-sb121        34       38     0
-sb122        43       20     0
-sb123        23       36     0
-sb124        31       35     0
-sb125        46       42     0
-sb126        22       12     0
-sb127        25       43     0
-sb128        44       28     0
-sb129        34       22     0
-sb130        30       26     0
-sb131        48       45     0
-sb132        18       39     0
-sb133        15       43     0
-sb134        34       47     0
-sb135        45       15     0
-sb136        37       12     0
-sb137        21       28     0
-sb138        42       28     0
-sb139        36       37     0
-sb140        12       43     0
-sb141        19       45     0
-sb142        27       37     0
-sb143        24       25     0
-sb144        15       40     0
-sb145        13       45     0
-sb146        48       33     0
-sb147        30       42     0
-sb148        18       20     0
-sb149        47       22     0
-sb150        23       31     0
-sb151        18       42     0
-sb152        16       19     0
-sb153        41       30     0
-sb154        22       17     0
-sb155        25       14     0
-sb156        28       16     0
-sb157        20       25     0
-sb158        23       13     0
-sb159        44       32     0
-sb160        27       16     0
-sb161        46       47     0
-sb162        31       18     0
-sb163        33       22     0
-sb164        36       41     0
-sb165        21       17     0
-sb166        34       36     0
-sb167        36       37     0
-sb168        24       41     0
-sb169        24       39     0
-sb170        29       45     0
-sb171        22       40     0
-sb172        27       13     0
-sb173        25       32     0
-sb174        43       16     0
-sb175        15       16     0
-sb176        33       38     0
-sb177        41       37     0
-sb178        17       19     0
-sb179        46       34     0
-sb180        19       40     0
-sb181        30       28     0
-sb182        45       24     0
-sb183        33       39     0
-sb184        46       25     0
-sb185        27       34     0
-sb186        31       33     0
-sb187        36       38     0
-sb188        37       40     0
-sb189        44       12     0
-sb190        37       27     0
-sb191        16       34     0
-sb192        29       48     0
-sb193        33       17     0
-sb194        28       13     0
-sb195        33       13     0
-sb196        41       41     0
-sb197        37       28     0
-sb198        48       19     0
-sb199        31       36     0
-sb200        43       37     0
-sb201        26       29     0
-sb202        34       39     0
-sb203        15       28     0
-sb204        41       33     0
-sb205        21       15     0
-sb206        42       35     0
-sb207        33       28     0
-sb208        27       20     0
-sb209        45       36     0
-sb210        13       24     0
-sb211        16       12     0
-sb212        21       42     0
-sb213        32       14     0
-sb214        17       27     0
-sb215        29       21     0
-sb216        42       19     0
-sb217        20       48     0
-sb218        43       15     0
-sb219        28       18     0
-sb220        30       37     0
-sb221        13       45     0
-sb222        34       25     0
-sb223        22       19     0
-sb224        45       21     0
-sb225        47       38     0
-sb226        39       16     0
-sb227        13       32     0
-sb228        21       20     0
-sb229        24       48     0
-sb230        30       33     0
-sb231        16       30     0
-sb232        42       23     0
-sb233        16       13     0
-sb234        33       18     0
-sb235        22       46     0
-sb236        27       39     0
-sb237        21       40     0
-sb238        27       39     0
-sb239        40       22     0
-sb240        23       19     0
-sb241        13       24     0
-sb242        22       40     0
-sb243        37       34     0
-sb244        37       13     0
-sb245        36       24     0
-sb246        23       44     0
-sb247        36       39     0
-sb248        43       31     0
-sb249        35       27     0
-sb250        31       34     0
-sb251        43       34     0
-sb252        19       28     0
-sb253        15       13     0
-sb254        24       13     0
-sb255        47       39     0
-sb256        21       13     0
-sb257        17       33     0
-sb258        44       34     0
-sb259        26       12     0
-sb260        19       12     0
-sb261        12       45     0
-sb262        27       48     0
-sb263        47       46     0
-sb264        45       23     0
-sb265        45       15     0
-sb266        45       48     0
-sb267        34       39     0
-sb268        22       25     0
-sb269        37       18     0
-sb270        23       15     0
-sb271        42       24     0
-sb272        24       35     0
-sb273        21       30     0
-sb274        33       21     0
-sb275        22       28     0
-sb276        31       14     0
-sb277        12       47     0
-sb278        13       42     0
-sb279        39       43     0
-sb280        31       22     0
-sb281        30       18     0
-sb282        44       30     0
-sb283        13       15     0
-sb284        30       21     0
-sb285        13       33     0
-sb286        36       41     0
-sb287        42       21     0
-sb288        28       36     0
-sb289        33       37     0
-sb290        16       27     0
-sb291        28       43     0
-sb292        24       39     0
-sb293        43       19     0
-sb294        17       26     0
-sb295        43       13     0
-sb296        16       27     0
-sb297        38       31     0
-sb298        33       40     0
-sb299        13       13     0
+sb0          27       15     0  s
+sb1          27       16     0  s
+sb2          22       26     0  s
+sb3          21       45     0  s
+sb4          40       45     0  s
+sb5          16       26     0  s
+sb6          38       27     0  s
+sb7          35       29     0  s
+sb8          21       36     0  s
+sb9          44       25     0  s
+sb10         15       31     0  s
+sb11         41       24     0  s
+sb12         17       19     0  s
+sb13         33       48     0  s
+sb14         44       21     0  s
+sb15         34       15     0  s
+sb16         45       42     0  s
+sb17         41       37     0  s
+sb18         43       44     0  s
+sb19         36       23     0  s
+sb20         13       17     0  s
+sb21         28       44     0  s
+sb22         35       29     0  s
+sb23         40       17     0  s
+sb24         18       24     0  s
+sb25         29       43     0  s
+sb26         27       18     0  s
+sb27         38       40     0  s
+sb28         24       12     0  s
+sb29         29       30     0  s
+sb30         20       28     0  s
+sb31         32       36     0  s
+sb32         19       22     0  s
+sb33         45       46     0  s
+sb34         29       12     0  s
+sb35         12       26     0  s
+sb36         27       30     0  s
+sb37         12       29     0  s
+sb38         21       19     0  s
+sb39         12       13     0  s
+sb40         19       47     0  s
+sb41         36       19     0  s
+sb42         46       25     0  s
+sb43         39       21     0  s
+sb44         27       24     0  s
+sb45         24       25     0  s
+sb46         19       13     0  s
+sb47         42       40     0  s
+sb48         28       34     0  s
+sb49         24       48     0  s
+sb50         19       14     0  s
+sb51         14       16     0  s
+sb52         37       18     0  s
+sb53         36       12     0  s
+sb54         30       34     0  s
+sb55         26       31     0  s
+sb56         46       31     0  s
+sb57         47       48     0  s
+sb58         25       25     0  s
+sb59         47       38     0  s
+sb60         39       16     0  s
+sb61         31       45     0  s
+sb62         46       36     0  s
+sb63         36       46     0  s
+sb64         33       15     0  s
+sb65         13       23     0  s
+sb66         42       45     0  s
+sb67         14       33     0  s
+sb68         28       45     0  s
+sb69         36       27     0  s
+sb70         16       45     0  s
+sb71         34       32     0  s
+sb72         32       15     0  s
+sb73         12       46     0  s
+sb74         43       34     0  s
+sb75         20       37     0  s
+sb76         39       36     0  s
+sb77         40       18     0  s
+sb78         42       16     0  s
+sb79         40       25     0  s
+sb80         36       15     0  s
+sb81         15       32     0  s
+sb82         39       24     0  s
+sb83         37       41     0  s
+sb84         34       38     0  s
+sb85         34       43     0  s
+sb86         39       44     0  s
+sb87         45       48     0  s
+sb88         29       44     0  s
+sb89         20       42     0  s
+sb90         46       24     0  s
+sb91         43       21     0  s
+sb92         45       47     0  s
+sb93         20       24     0  s
+sb94         31       19     0  s
+sb95         44       37     0  s
+sb96         46       33     0  s
+sb97         40       15     0  s
+sb98         13       35     0  s
+sb99         40       17     0  s
+sb100        44       45     0  s
+sb101        30       36     0  s
+sb102        40       36     0  s
+sb103        34       34     0  s
+sb104        42       14     0  s
+sb105        35       33     0  s
+sb106        12       33     0  s
+sb107        32       15     0  s
+sb108        37       38     0  s
+sb109        42       46     0  s
+sb110        39       42     0  s
+sb111        13       21     0  s
+sb112        30       25     0  s
+sb113        36       24     0  s
+sb114        34       44     0  s
+sb115        34       22     0  s
+sb116        28       19     0  s
+sb117        39       21     0  s
+sb118        44       38     0  s
+sb119        28       45     0  s
+sb120        36       36     0  s
+sb121        34       38     0  s
+sb122        43       20     0  s
+sb123        23       36     0  s
+sb124        31       35     0  s
+sb125        46       42     0  s
+sb126        22       12     0  s
+sb127        25       43     0  s
+sb128        44       28     0  s
+sb129        34       22     0  s
+sb130        30       26     0  s
+sb131        48       45     0  s
+sb132        18       39     0  s
+sb133        15       43     0  s
+sb134        34       47     0  s
+sb135        45       15     0  s
+sb136        37       12     0  s
+sb137        21       28     0  s
+sb138        42       28     0  s
+sb139        36       37     0  s
+sb140        12       43     0  s
+sb141        19       45     0  s
+sb142        27       37     0  s
+sb143        24       25     0  s
+sb144        15       40     0  s
+sb145        13       45     0  s
+sb146        48       33     0  s
+sb147        30       42     0  s
+sb148        18       20     0  s
+sb149        47       22     0  s
+sb150        23       31     0  s
+sb151        18       42     0  s
+sb152        16       19     0  s
+sb153        41       30     0  s
+sb154        22       17     0  s
+sb155        25       14     0  s
+sb156        28       16     0  s
+sb157        20       25     0  s
+sb158        23       13     0  s
+sb159        44       32     0  s
+sb160        27       16     0  s
+sb161        46       47     0  s
+sb162        31       18     0  s
+sb163        33       22     0  s
+sb164        36       41     0  s
+sb165        21       17     0  s
+sb166        34       36     0  s
+sb167        36       37     0  s
+sb168        24       41     0  s
+sb169        24       39     0  s
+sb170        29       45     0  s
+sb171        22       40     0  s
+sb172        27       13     0  s
+sb173        25       32     0  s
+sb174        43       16     0  s
+sb175        15       16     0  s
+sb176        33       38     0  s
+sb177        41       37     0  s
+sb178        17       19     0  s
+sb179        46       34     0  s
+sb180        19       40     0  s
+sb181        30       28     0  s
+sb182        45       24     0  s
+sb183        33       39     0  s
+sb184        46       25     0  s
+sb185        27       34     0  s
+sb186        31       33     0  s
+sb187        36       38     0  s
+sb188        37       40     0  s
+sb189        44       12     0  s
+sb190        37       27     0  s
+sb191        16       34     0  s
+sb192        29       48     0  s
+sb193        33       17     0  s
+sb194        28       13     0  s
+sb195        33       13     0  s
+sb196        41       41     0  s
+sb197        37       28     0  s
+sb198        48       19     0  s
+sb199        31       36     0  s
+sb200        43       37     0  s
+sb201        26       29     0  s
+sb202        34       39     0  s
+sb203        15       28     0  s
+sb204        41       33     0  s
+sb205        21       15     0  s
+sb206        42       35     0  s
+sb207        33       28     0  s
+sb208        27       20     0  s
+sb209        45       36     0  s
+sb210        13       24     0  s
+sb211        16       12     0  s
+sb212        21       42     0  s
+sb213        32       14     0  s
+sb214        17       27     0  s
+sb215        29       21     0  s
+sb216        42       19     0  s
+sb217        20       48     0  s
+sb218        43       15     0  s
+sb219        28       18     0  s
+sb220        30       37     0  s
+sb221        13       45     0  s
+sb222        34       25     0  s
+sb223        22       19     0  s
+sb224        45       21     0  s
+sb225        47       38     0  s
+sb226        39       16     0  s
+sb227        13       32     0  s
+sb228        21       20     0  s
+sb229        24       48     0  s
+sb230        30       33     0  s
+sb231        16       30     0  s
+sb232        42       23     0  s
+sb233        16       13     0  s
+sb234        33       18     0  s
+sb235        22       46     0  s
+sb236        27       39     0  s
+sb237        21       40     0  s
+sb238        27       39     0  s
+sb239        40       22     0  s
+sb240        23       19     0  s
+sb241        13       24     0  s
+sb242        22       40     0  s
+sb243        37       34     0  s
+sb244        37       13     0  s
+sb245        36       24     0  s
+sb246        23       44     0  s
+sb247        36       39     0  s
+sb248        43       31     0  s
+sb249        35       27     0  s
+sb250        31       34     0  s
+sb251        43       34     0  s
+sb252        19       28     0  s
+sb253        15       13     0  s
+sb254        24       13     0  s
+sb255        47       39     0  s
+sb256        21       13     0  s
+sb257        17       33     0  s
+sb258        44       34     0  s
+sb259        26       12     0  s
+sb260        19       12     0  s
+sb261        12       45     0  s
+sb262        27       48     0  s
+sb263        47       46     0  s
+sb264        45       23     0  s
+sb265        45       15     0  s
+sb266        45       48     0  s
+sb267        34       39     0  s
+sb268        22       25     0  s
+sb269        37       18     0  s
+sb270        23       15     0  s
+sb271        42       24     0  s
+sb272        24       35     0  s
+sb273        21       30     0  s
+sb274        33       21     0  s
+sb275        22       28     0  s
+sb276        31       14     0  s
+sb277        12       47     0  s
+sb278        13       42     0  s
+sb279        39       43     0  s
+sb280        31       22     0  s
+sb281        30       18     0  s
+sb282        44       30     0  s
+sb283        13       15     0  s
+sb284        30       21     0  s
+sb285        13       33     0  s
+sb286        36       41     0  s
+sb287        42       21     0  s
+sb288        28       36     0  s
+sb289        33       37     0  s
+sb290        16       27     0  s
+sb291        28       43     0  s
+sb292        24       39     0  s
+sb293        43       19     0  s
+sb294        17       26     0  s
+sb295        43       13     0  s
+sb296        16       27     0  s
+sb297        38       31     0  s
+sb298        33       40     0  s
+sb299        13       13     0  s
 
 p1           terminal   0	0
-p10          terminal   35	0
-p100         terminal   387	0
-p101         terminal   391	0
-p102         terminal   396	0
-p103         terminal   399	0
-p104         terminal   403	0
-p105         terminal   407	0
-p106         terminal   411	0
-p107         terminal   415	0
-p108         terminal   419	0
-p109         terminal   423	0
+p10          terminal   34	0
+p100         terminal   380	0
+p101         terminal   384	0
+p102         terminal   388	0
+p103         terminal   392	0
+p104         terminal   396	0
+p105         terminal   399	0
+p106         terminal   404	0
+p107         terminal   408	0
+p108         terminal   411	0
+p109         terminal   415	0
 p11          terminal   38	0
-p110         terminal   426	0
-p111         terminal   430	0
-p112         terminal   434	0
-p113         terminal   438	0
-p114         terminal   442	0
-p115         terminal   446	0
-p116         terminal   450	0
-p117         terminal   454	0
-p118         terminal   458	0
-p119         terminal   462	0
-p12          terminal   43	0
-p120         terminal   465	0
-p121         terminal   470	0
-p122         terminal   473	0
-p123         terminal   477	0
-p124         terminal   482	0
-p125         terminal   485	0
-p126         terminal   489	0
-p127         terminal   493	0
-p128         terminal   497	0
-p129         terminal   501	0
-p13          terminal   47	0
-p130         terminal   505	0
-p131         terminal   509	0
-p132         terminal   512	0
-p133         terminal   517	0
-p134         terminal   521	0
-p135         terminal   524	0
-p136         terminal   528	0
-p137         terminal   532	0
-p138         terminal   536	0
-p139         terminal   540	0
+p110         terminal   419	0
+p111         terminal   423	0
+p112         terminal   426	0
+p113         terminal   430	0
+p114         terminal   434	0
+p115         terminal   438	0
+p116         terminal   442	0
+p117         terminal   446	0
+p118         terminal   450	0
+p119         terminal   454	0
+p12          terminal   42	0
+p120         terminal   457	0
+p121         terminal   461	0
+p122         terminal   465	0
+p123         terminal   469	0
+p124         terminal   473	0
+p125         terminal   476	0
+p126         terminal   481	0
+p127         terminal   484	0
+p128         terminal   488	0
+p129         terminal   492	0
+p13          terminal   46	0
+p130         terminal   496	0
+p131         terminal   500	0
+p132         terminal   503	0
+p133         terminal   507	0
+p134         terminal   512	0
+p135         terminal   515	0
+p136         terminal   519	0
+p137         terminal   522	0
+p138         terminal   527	0
+p139         terminal   531	0
 p14          terminal   50	0
-p140         terminal   544	0
-p141         terminal   548	0
-p142         terminal   552	0
-p143         terminal   556	0
-p144         terminal   560	0
-p145         terminal   560	4
-p146         terminal   560	8
-p147         terminal   560	11
-p148         terminal   560	15
-p149         terminal   560	19
-p15          terminal   55	0
-p150         terminal   560	23
-p151         terminal   560	27
-p152         terminal   560	31
-p153         terminal   560	35
-p154         terminal   560	38
-p155         terminal   560	43
-p156         terminal   560	47
-p157         terminal   560	50
-p158         terminal   560	55
-p159         terminal   560	58
-p16          terminal   58	0
-p160         terminal   560	62
-p161         terminal   560	66
-p162         terminal   560	70
-p163         terminal   560	74
-p164         terminal   560	78
-p165         terminal   560	82
-p166         terminal   560	86
-p167         terminal   560	90
-p168         terminal   560	94
-p169         terminal   560	97
-p17          terminal   62	0
-p170         terminal   560	102
-p171         terminal   560	106
-p172         terminal   560	109
-p173         terminal   560	113
-p174         terminal   560	117
-p175         terminal   560	121
-p176         terminal   560	125
-p177         terminal   560	129
-p178         terminal   560	133
-p179         terminal   560	136
-p18          terminal   66	0
-p180         terminal   560	141
-p181         terminal   560	144
-p182         terminal   560	148
-p183         terminal   560	153
-p184         terminal   560	156
-p185         terminal   560	160
-p186         terminal   560	164
-p187         terminal   560	168
-p188         terminal   560	172
-p189         terminal   560	176
-p19          terminal   70	0
-p190         terminal   560	180
-p191         terminal   560	183
-p192         terminal   560	188
-p193         terminal   560	192
-p194         terminal   560	195
-p195         terminal   560	200
-p196         terminal   560	203
-p197         terminal   560	207
-p198         terminal   560	211
-p199         terminal   560	215
-p2           terminal   4	0
-p20          terminal   74	0
-p200         terminal   560	219
-p201         terminal   560	223
-p202         terminal   560	227
-p203         terminal   560	231
-p204         terminal   560	234
-p205         terminal   560	239
-p206         terminal   560	242
-p207         terminal   560	246
-p208         terminal   560	251
-p209         terminal   560	254
-p21          terminal   78	0
-p210         terminal   560	258
-p211         terminal   560	262
-p212         terminal   560	266
-p213         terminal   560	270
-p214         terminal   560	274
-p215         terminal   560	278
-p216         terminal   560	281
-p217         terminal   560	286
-p218         terminal   560	289
-p219         terminal   560	293
-p22          terminal   82	0
-p220         terminal   560	298
-p221         terminal   560	301
-p222         terminal   560	305
-p223         terminal   560	309
-p224         terminal   560	313
-p225         terminal   560	317
-p226         terminal   560	321
-p227         terminal   560	325
-p228         terminal   560	328
-p229         terminal   560	332
-p23          terminal   86	0
-p230         terminal   560	337
-p231         terminal   560	340
-p232         terminal   560	344
-p233         terminal   560	348
-p234         terminal   560	352
-p235         terminal   560	356
-p236         terminal   560	360
-p237         terminal   560	364
-p238         terminal   560	368
-p239         terminal   560	372
-p24          terminal   90	0
-p240         terminal   560	376
-p241         terminal   560	379
-p242         terminal   560	384
-p243         terminal   560	387
-p244         terminal   560	391
-p245         terminal   560	396
-p246         terminal   560	399
-p247         terminal   560	403
-p248         terminal   560	407
-p249         terminal   560	411
-p25          terminal   94	0
-p250         terminal   560	415
-p251         terminal   560	419
-p252         terminal   560	423
-p253         terminal   560	426
-p254         terminal   560	430
-p255         terminal   560	434
-p256         terminal   560	438
-p257         terminal   560	442
-p258         terminal   560	446
-p259         terminal   560	450
-p26          terminal   97	0
-p260         terminal   560	454
-p261         terminal   560	458
-p262         terminal   560	462
-p263         terminal   560	465
-p264         terminal   560	470
-p265         terminal   560	473
-p266         terminal   560	477
-p267         terminal   560	482
-p268         terminal   560	485
-p269         terminal   560	489
-p27          terminal   102	0
-p270         terminal   560	493
-p271         terminal   560	497
-p272         terminal   560	501
-p273         terminal   560	505
-p274         terminal   560	509
-p275         terminal   560	512
-p276         terminal   560	517
-p277         terminal   560	521
-p278         terminal   560	524
-p279         terminal   560	528
-p28          terminal   106	0
-p280         terminal   560	532
-p281         terminal   560	536
-p282         terminal   560	540
-p283         terminal   560	544
-p284         terminal   560	548
-p285         terminal   560	552
-p286         terminal   560	556
-p287         terminal   556	560
-p288         terminal   552	560
-p289         terminal   548	560
-p29          terminal   109	0
-p290         terminal   544	560
-p291         terminal   540	560
-p292         terminal   536	560
-p293         terminal   532	560
-p294         terminal   528	560
-p295         terminal   524	560
-p296         terminal   521	560
-p297         terminal   517	560
-p298         terminal   512	560
-p299         terminal   509	560
+p140         terminal   534	0
+p141         terminal   538	0
+p142         terminal   542	0
+p143         terminal   546	0
+p144         terminal   550	0
+p145         terminal   550	3
+p146         terminal   550	8
+p147         terminal   550	11
+p148         terminal   550	15
+p149         terminal   550	19
+p15          terminal   54	0
+p150         terminal   550	23
+p151         terminal   550	27
+p152         terminal   550	30
+p153         terminal   550	34
+p154         terminal   550	38
+p155         terminal   550	42
+p156         terminal   550	46
+p157         terminal   550	50
+p158         terminal   550	54
+p159         terminal   550	57
+p16          terminal   57	0
+p160         terminal   550	61
+p161         terminal   550	65
+p162         terminal   550	69
+p163         terminal   550	73
+p164         terminal   550	76
+p165         terminal   550	80
+p166         terminal   550	85
+p167         terminal   550	88
+p168         terminal   550	92
+p169         terminal   550	96
+p17          terminal   61	0
+p170         terminal   550	100
+p171         terminal   550	104
+p172         terminal   550	107
+p173         terminal   550	111
+p174         terminal   550	115
+p175         terminal   550	119
+p176         terminal   550	123
+p177         terminal   550	126
+p178         terminal   550	131
+p179         terminal   550	134
+p18          terminal   65	0
+p180         terminal   550	138
+p181         terminal   550	142
+p182         terminal   550	146
+p183         terminal   550	150
+p184         terminal   550	153
+p185         terminal   550	157
+p186         terminal   550	161
+p187         terminal   550	165
+p188         terminal   550	169
+p189         terminal   550	173
+p19          terminal   69	0
+p190         terminal   550	177
+p191         terminal   550	180
+p192         terminal   550	184
+p193         terminal   550	188
+p194         terminal   550	192
+p195         terminal   550	196
+p196         terminal   550	199
+p197         terminal   550	204
+p198         terminal   550	208
+p199         terminal   550	211
+p2           terminal   3	0
+p20          terminal   73	0
+p200         terminal   550	215
+p201         terminal   550	219
+p202         terminal   550	223
+p203         terminal   550	227
+p204         terminal   550	230
+p205         terminal   550	234
+p206         terminal   550	238
+p207         terminal   550	242
+p208         terminal   550	246
+p209         terminal   550	250
+p21          terminal   76	0
+p210         terminal   550	254
+p211         terminal   550	257
+p212         terminal   550	261
+p213         terminal   550	265
+p214         terminal   550	269
+p215         terminal   550	273
+p216         terminal   550	276
+p217         terminal   550	280
+p218         terminal   550	284
+p219         terminal   550	288
+p22          terminal   80	0
+p220         terminal   550	292
+p221         terminal   550	296
+p222         terminal   550	300
+p223         terminal   550	303
+p224         terminal   550	307
+p225         terminal   550	311
+p226         terminal   550	315
+p227         terminal   550	319
+p228         terminal   550	322
+p229         terminal   550	327
+p23          terminal   85	0
+p230         terminal   550	331
+p231         terminal   550	334
+p232         terminal   550	338
+p233         terminal   550	342
+p234         terminal   550	346
+p235         terminal   550	350
+p236         terminal   550	353
+p237         terminal   550	358
+p238         terminal   550	361
+p239         terminal   550	365
+p24          terminal   88	0
+p240         terminal   550	369
+p241         terminal   550	373
+p242         terminal   550	377
+p243         terminal   550	380
+p244         terminal   550	384
+p245         terminal   550	388
+p246         terminal   550	392
+p247         terminal   550	396
+p248         terminal   550	399
+p249         terminal   550	404
+p25          terminal   92	0
+p250         terminal   550	408
+p251         terminal   550	411
+p252         terminal   550	415
+p253         terminal   550	419
+p254         terminal   550	423
+p255         terminal   550	426
+p256         terminal   550	430
+p257         terminal   550	434
+p258         terminal   550	438
+p259         terminal   550	442
+p26          terminal   96	0
+p260         terminal   550	446
+p261         terminal   550	450
+p262         terminal   550	454
+p263         terminal   550	457
+p264         terminal   550	461
+p265         terminal   550	465
+p266         terminal   550	469
+p267         terminal   550	473
+p268         terminal   550	476
+p269         terminal   550	481
+p27          terminal   100	0
+p270         terminal   550	484
+p271         terminal   550	488
+p272         terminal   550	492
+p273         terminal   550	496
+p274         terminal   550	500
+p275         terminal   550	503
+p276         terminal   550	507
+p277         terminal   550	512
+p278         terminal   550	515
+p279         terminal   550	519
+p28          terminal   104	0
+p280         terminal   550	522
+p281         terminal   550	527
+p282         terminal   550	531
+p283         terminal   550	534
+p284         terminal   550	538
+p285         terminal   550	542
+p286         terminal   550	546
+p287         terminal   546	550
+p288         terminal   542	550
+p289         terminal   538	550
+p29          terminal   107	0
+p290         terminal   534	550
+p291         terminal   531	550
+p292         terminal   527	550
+p293         terminal   522	550
+p294         terminal   519	550
+p295         terminal   515	550
+p296         terminal   512	550
+p297         terminal   507	550
+p298         terminal   503	550
+p299         terminal   500	550
 p3           terminal   8	0
-p30          terminal   113	0
-p300         terminal   505	560
-p301         terminal   501	560
-p302         terminal   497	560
-p303         terminal   493	560
-p304         terminal   489	560
-p305         terminal   485	560
-p306         terminal   482	560
-p307         terminal   477	560
-p308         terminal   473	560
-p309         terminal   470	560
-p31          terminal   117	0
-p310         terminal   465	560
-p311         terminal   462	560
-p312         terminal   458	560
-p313         terminal   454	560
-p314         terminal   450	560
-p315         terminal   446	560
-p316         terminal   442	560
-p317         terminal   438	560
-p318         terminal   434	560
-p319         terminal   430	560
-p32          terminal   121	0
-p320         terminal   426	560
-p321         terminal   423	560
-p322         terminal   419	560
-p323         terminal   415	560
-p324         terminal   411	560
-p325         terminal   407	560
-p326         terminal   403	560
-p327         terminal   399	560
-p328         terminal   396	560
-p329         terminal   391	560
-p33          terminal   125	0
-p330         terminal   387	560
-p331         terminal   384	560
-p332         terminal   379	560
-p333         terminal   376	560
-p334         terminal   372	560
-p335         terminal   368	560
-p336         terminal   364	560
-p337         terminal   360	560
-p338         terminal   356	560
-p339         terminal   352	560
-p34          terminal   129	0
-p340         terminal   348	560
-p341         terminal   344	560
-p342         terminal   340	560
-p343         terminal   337	560
-p344         terminal   332	560
-p345         terminal   328	560
-p346         terminal   325	560
-p347         terminal   321	560
-p348         terminal   317	560
-p349         terminal   313	560
-p35          terminal   133	0
-p350         terminal   309	560
-p351         terminal   305	560
-p352         terminal   301	560
-p353         terminal   298	560
-p354         terminal   293	560
-p355         terminal   289	560
-p356         terminal   286	560
-p357         terminal   281	560
-p358         terminal   278	560
-p359         terminal   274	560
-p36          terminal   136	0
-p360         terminal   270	560
-p361         terminal   266	560
-p362         terminal   262	560
-p363         terminal   258	560
-p364         terminal   254	560
-p365         terminal   251	560
-p366         terminal   246	560
-p367         terminal   242	560
-p368         terminal   239	560
-p369         terminal   234	560
-p37          terminal   141	0
-p370         terminal   231	560
-p371         terminal   227	560
-p372         terminal   223	560
-p373         terminal   219	560
-p374         terminal   215	560
-p375         terminal   211	560
-p376         terminal   207	560
-p377         terminal   203	560
-p378         terminal   200	560
-p379         terminal   195	560
-p38          terminal   144	0
-p380         terminal   192	560
-p381         terminal   188	560
-p382         terminal   183	560
-p383         terminal   180	560
-p384         terminal   176	560
-p385         terminal   172	560
-p386         terminal   168	560
-p387         terminal   164	560
-p388         terminal   160	560
-p389         terminal   156	560
-p39          terminal   148	0
-p390         terminal   153	560
-p391         terminal   148	560
-p392         terminal   144	560
-p393         terminal   141	560
-p394         terminal   136	560
-p395         terminal   133	560
-p396         terminal   129	560
-p397         terminal   125	560
-p398         terminal   121	560
-p399         terminal   117	560
+p30          terminal   111	0
+p300         terminal   496	550
+p301         terminal   492	550
+p302         terminal   488	550
+p303         terminal   484	550
+p304         terminal   481	550
+p305         terminal   476	550
+p306         terminal   473	550
+p307         terminal   469	550
+p308         terminal   465	550
+p309         terminal   461	550
+p31          terminal   115	0
+p310         terminal   457	550
+p311         terminal   454	550
+p312         terminal   450	550
+p313         terminal   446	550
+p314         terminal   442	550
+p315         terminal   438	550
+p316         terminal   434	550
+p317         terminal   430	550
+p318         terminal   426	550
+p319         terminal   423	550
+p32          terminal   119	0
+p320         terminal   419	550
+p321         terminal   415	550
+p322         terminal   411	550
+p323         terminal   408	550
+p324         terminal   404	550
+p325         terminal   399	550
+p326         terminal   396	550
+p327         terminal   392	550
+p328         terminal   388	550
+p329         terminal   384	550
+p33          terminal   123	0
+p330         terminal   380	550
+p331         terminal   377	550
+p332         terminal   373	550
+p333         terminal   369	550
+p334         terminal   365	550
+p335         terminal   361	550
+p336         terminal   358	550
+p337         terminal   353	550
+p338         terminal   350	550
+p339         terminal   346	550
+p34          terminal   126	0
+p340         terminal   342	550
+p341         terminal   338	550
+p342         terminal   334	550
+p343         terminal   331	550
+p344         terminal   327	550
+p345         terminal   322	550
+p346         terminal   319	550
+p347         terminal   315	550
+p348         terminal   311	550
+p349         terminal   307	550
+p35          terminal   131	0
+p350         terminal   303	550
+p351         terminal   300	550
+p352         terminal   296	550
+p353         terminal   292	550
+p354         terminal   288	550
+p355         terminal   284	550
+p356         terminal   280	550
+p357         terminal   276	550
+p358         terminal   273	550
+p359         terminal   269	550
+p36          terminal   134	0
+p360         terminal   265	550
+p361         terminal   261	550
+p362         terminal   257	550
+p363         terminal   254	550
+p364         terminal   250	550
+p365         terminal   246	550
+p366         terminal   242	550
+p367         terminal   238	550
+p368         terminal   234	550
+p369         terminal   230	550
+p37          terminal   138	0
+p370         terminal   227	550
+p371         terminal   223	550
+p372         terminal   219	550
+p373         terminal   215	550
+p374         terminal   211	550
+p375         terminal   208	550
+p376         terminal   204	550
+p377         terminal   199	550
+p378         terminal   196	550
+p379         terminal   192	550
+p38          terminal   142	0
+p380         terminal   188	550
+p381         terminal   184	550
+p382         terminal   180	550
+p383         terminal   177	550
+p384         terminal   173	550
+p385         terminal   169	550
+p386         terminal   165	550
+p387         terminal   161	550
+p388         terminal   157	550
+p389         terminal   153	550
+p39          terminal   146	0
+p390         terminal   150	550
+p391         terminal   146	550
+p392         terminal   142	550
+p393         terminal   138	550
+p394         terminal   134	550
+p395         terminal   131	550
+p396         terminal   126	550
+p397         terminal   123	550
+p398         terminal   119	550
+p399         terminal   115	550
 p4           terminal   11	0
-p40          terminal   153	0
-p400         terminal   113	560
-p401         terminal   109	560
-p402         terminal   106	560
-p403         terminal   102	560
-p404         terminal   97	560
-p405         terminal   94	560
-p406         terminal   90	560
-p407         terminal   86	560
-p408         terminal   82	560
-p409         terminal   78	560
-p41          terminal   156	0
-p410         terminal   74	560
-p411         terminal   70	560
-p412         terminal   66	560
-p413         terminal   62	560
-p414         terminal   58	560
-p415         terminal   55	560
-p416         terminal   50	560
-p417         terminal   47	560
-p418         terminal   43	560
-p419         terminal   38	560
-p42          terminal   160	0
-p420         terminal   35	560
-p421         terminal   31	560
-p422         terminal   27	560
-p423         terminal   23	560
-p424         terminal   19	560
-p425         terminal   15	560
-p426         terminal   11	560
-p427         terminal   8	560
-p428         terminal   4	560
-p429         terminal   0	560
-p43          terminal   164	0
-p430         terminal   0	556
-p431         terminal   0	552
-p432         terminal   0	548
-p433         terminal   0	544
-p434         terminal   0	540
-p435         terminal   0	536
-p436         terminal   0	532
-p437         terminal   0	528
-p438         terminal   0	524
-p439         terminal   0	521
-p44          terminal   168	0
-p440         terminal   0	517
-p441         terminal   0	512
-p442         terminal   0	509
-p443         terminal   0	505
-p444         terminal   0	501
-p445         terminal   0	497
-p446         terminal   0	493
-p447         terminal   0	489
-p448         terminal   0	485
-p449         terminal   0	482
-p45          terminal   172	0
-p450         terminal   0	477
-p451         terminal   0	473
-p452         terminal   0	470
-p453         terminal   0	465
-p454         terminal   0	462
-p455         terminal   0	458
-p456         terminal   0	454
-p457         terminal   0	450
-p458         terminal   0	446
-p459         terminal   0	442
-p46          terminal   176	0
-p460         terminal   0	438
-p461         terminal   0	434
-p462         terminal   0	430
-p463         terminal   0	426
-p464         terminal   0	423
-p465         terminal   0	419
-p466         terminal   0	415
-p467         terminal   0	411
-p468         terminal   0	407
-p469         terminal   0	403
-p47          terminal   180	0
-p470         terminal   0	399
-p471         terminal   0	396
-p472         terminal   0	391
-p473         terminal   0	387
-p474         terminal   0	384
-p475         terminal   0	379
-p476         terminal   0	376
-p477         terminal   0	372
-p478         terminal   0	368
-p479         terminal   0	364
-p48          terminal   183	0
-p480         terminal   0	360
-p481         terminal   0	356
-p482         terminal   0	352
-p483         terminal   0	348
-p484         terminal   0	344
-p485         terminal   0	340
-p486         terminal   0	337
-p487         terminal   0	332
-p488         terminal   0	328
-p489         terminal   0	325
-p49          terminal   188	0
-p490         terminal   0	321
-p491         terminal   0	317
-p492         terminal   0	313
-p493         terminal   0	309
-p494         terminal   0	305
-p495         terminal   0	301
-p496         terminal   0	298
-p497         terminal   0	293
-p498         terminal   0	289
-p499         terminal   0	286
+p40          terminal   150	0
+p400         terminal   111	550
+p401         terminal   107	550
+p402         terminal   104	550
+p403         terminal   100	550
+p404         terminal   96	550
+p405         terminal   92	550
+p406         terminal   88	550
+p407         terminal   85	550
+p408         terminal   80	550
+p409         terminal   76	550
+p41          terminal   153	0
+p410         terminal   73	550
+p411         terminal   69	550
+p412         terminal   65	550
+p413         terminal   61	550
+p414         terminal   57	550
+p415         terminal   54	550
+p416         terminal   50	550
+p417         terminal   46	550
+p418         terminal   42	550
+p419         terminal   38	550
+p42          terminal   157	0
+p420         terminal   34	550
+p421         terminal   30	550
+p422         terminal   27	550
+p423         terminal   23	550
+p424         terminal   19	550
+p425         terminal   15	550
+p426         terminal   11	550
+p427         terminal   8	550
+p428         terminal   3	550
+p429         terminal   0	550
+p43          terminal   161	0
+p430         terminal   0	546
+p431         terminal   0	542
+p432         terminal   0	538
+p433         terminal   0	534
+p434         terminal   0	531
+p435         terminal   0	527
+p436         terminal   0	522
+p437         terminal   0	519
+p438         terminal   0	515
+p439         terminal   0	512
+p44          terminal   165	0
+p440         terminal   0	507
+p441         terminal   0	503
+p442         terminal   0	500
+p443         terminal   0	496
+p444         terminal   0	492
+p445         terminal   0	488
+p446         terminal   0	484
+p447         terminal   0	481
+p448         terminal   0	476
+p449         terminal   0	473
+p45          terminal   169	0
+p450         terminal   0	469
+p451         terminal   0	465
+p452         terminal   0	461
+p453         terminal   0	457
+p454         terminal   0	454
+p455         terminal   0	450
+p456         terminal   0	446
+p457         terminal   0	442
+p458         terminal   0	438
+p459         terminal   0	434
+p46          terminal   173	0
+p460         terminal   0	430
+p461         terminal   0	426
+p462         terminal   0	423
+p463         terminal   0	419
+p464         terminal   0	415
+p465         terminal   0	411
+p466         terminal   0	408
+p467         terminal   0	404
+p468         terminal   0	399
+p469         terminal   0	396
+p47          terminal   177	0
+p470         terminal   0	392
+p471         terminal   0	388
+p472         terminal   0	384
+p473         terminal   0	380
+p474         terminal   0	377
+p475         terminal   0	373
+p476         terminal   0	369
+p477         terminal   0	365
+p478         terminal   0	361
+p479         terminal   0	358
+p48          terminal   180	0
+p480         terminal   0	353
+p481         terminal   0	350
+p482         terminal   0	346
+p483         terminal   0	342
+p484         terminal   0	338
+p485         terminal   0	334
+p486         terminal   0	331
+p487         terminal   0	327
+p488         terminal   0	322
+p489         terminal   0	319
+p49          terminal   184	0
+p490         terminal   0	315
+p491         terminal   0	311
+p492         terminal   0	307
+p493         terminal   0	303
+p494         terminal   0	300
+p495         terminal   0	296
+p496         terminal   0	292
+p497         terminal   0	288
+p498         terminal   0	284
+p499         terminal   0	280
 p5           terminal   15	0
-p50          terminal   192	0
-p500         terminal   0	281
-p501         terminal   0	278
-p502         terminal   0	274
-p503         terminal   0	270
-p504         terminal   0	266
-p505         terminal   0	262
-p506         terminal   0	258
-p507         terminal   0	254
-p508         terminal   0	251
-p509         terminal   0	246
-p51          terminal   195	0
-p510         terminal   0	242
-p511         terminal   0	239
-p512         terminal   0	234
-p513         terminal   0	231
-p514         terminal   0	227
-p515         terminal   0	223
-p516         terminal   0	219
-p517         terminal   0	215
-p518         terminal   0	211
-p519         terminal   0	207
-p52          terminal   200	0
-p520         terminal   0	203
-p521         terminal   0	200
-p522         terminal   0	195
-p523         terminal   0	192
-p524         terminal   0	188
-p525         terminal   0	183
-p526         terminal   0	180
-p527         terminal   0	176
-p528         terminal   0	172
-p529         terminal   0	168
-p53          terminal   203	0
-p530         terminal   0	164
-p531         terminal   0	160
-p532         terminal   0	156
-p533         terminal   0	153
-p534         terminal   0	148
-p535         terminal   0	144
-p536         terminal   0	141
-p537         terminal   0	136
-p538         terminal   0	133
-p539         terminal   0	129
-p54          terminal   207	0
-p540         terminal   0	125
-p541         terminal   0	121
-p542         terminal   0	117
-p543         terminal   0	113
-p544         terminal   0	109
-p545         terminal   0	106
-p546         terminal   0	102
-p547         terminal   0	97
-p548         terminal   0	94
-p549         terminal   0	90
-p55          terminal   211	0
-p550         terminal   0	86
-p551         terminal   0	82
-p552         terminal   0	78
-p553         terminal   0	74
-p554         terminal   0	70
-p555         terminal   0	66
-p556         terminal   0	62
-p557         terminal   0	58
-p558         terminal   0	55
+p50          terminal   188	0
+p500         terminal   0	276
+p501         terminal   0	273
+p502         terminal   0	269
+p503         terminal   0	265
+p504         terminal   0	261
+p505         terminal   0	257
+p506         terminal   0	254
+p507         terminal   0	250
+p508         terminal   0	246
+p509         terminal   0	242
+p51          terminal   192	0
+p510         terminal   0	238
+p511         terminal   0	234
+p512         terminal   0	230
+p513         terminal   0	227
+p514         terminal   0	223
+p515         terminal   0	219
+p516         terminal   0	215
+p517         terminal   0	211
+p518         terminal   0	208
+p519         terminal   0	204
+p52          terminal   196	0
+p520         terminal   0	199
+p521         terminal   0	196
+p522         terminal   0	192
+p523         terminal   0	188
+p524         terminal   0	184
+p525         terminal   0	180
+p526         terminal   0	177
+p527         terminal   0	173
+p528         terminal   0	169
+p529         terminal   0	165
+p53          terminal   199	0
+p530         terminal   0	161
+p531         terminal   0	157
+p532         terminal   0	153
+p533         terminal   0	150
+p534         terminal   0	146
+p535         terminal   0	142
+p536         terminal   0	138
+p537         terminal   0	134
+p538         terminal   0	131
+p539         terminal   0	126
+p54          terminal   204	0
+p540         terminal   0	123
+p541         terminal   0	119
+p542         terminal   0	115
+p543         terminal   0	111
+p544         terminal   0	107
+p545         terminal   0	104
+p546         terminal   0	100
+p547         terminal   0	96
+p548         terminal   0	92
+p549         terminal   0	88
+p55          terminal   208	0
+p550         terminal   0	85
+p551         terminal   0	80
+p552         terminal   0	76
+p553         terminal   0	73
+p554         terminal   0	69
+p555         terminal   0	65
+p556         terminal   0	61
+p557         terminal   0	57
+p558         terminal   0	54
 p559         terminal   0	50
-p56          terminal   215	0
-p560         terminal   0	47
-p561         terminal   0	43
+p56          terminal   211	0
+p560         terminal   0	46
+p561         terminal   0	42
 p562         terminal   0	38
-p563         terminal   0	35
-p564         terminal   0	31
+p563         terminal   0	34
+p564         terminal   0	30
 p565         terminal   0	27
 p566         terminal   0	23
 p567         terminal   0	19
 p568         terminal   0	15
 p569         terminal   0	11
-p57          terminal   219	0
-p58          terminal   223	0
-p59          terminal   227	0
+p57          terminal   215	0
+p58          terminal   219	0
+p59          terminal   223	0
 p6           terminal   19	0
-p60          terminal   231	0
-p61          terminal   234	0
-p62          terminal   239	0
-p63          terminal   242	0
-p64          terminal   246	0
-p65          terminal   251	0
-p66          terminal   254	0
-p67          terminal   258	0
-p68          terminal   262	0
-p69          terminal   266	0
+p60          terminal   227	0
+p61          terminal   230	0
+p62          terminal   234	0
+p63          terminal   238	0
+p64          terminal   242	0
+p65          terminal   246	0
+p66          terminal   250	0
+p67          terminal   254	0
+p68          terminal   257	0
+p69          terminal   261	0
 p7           terminal   23	0
-p70          terminal   270	0
-p71          terminal   274	0
-p72          terminal   278	0
-p73          terminal   281	0
-p74          terminal   286	0
-p75          terminal   289	0
-p76          terminal   293	0
-p77          terminal   298	0
-p78          terminal   301	0
-p79          terminal   305	0
+p70          terminal   265	0
+p71          terminal   269	0
+p72          terminal   273	0
+p73          terminal   276	0
+p74          terminal   280	0
+p75          terminal   284	0
+p76          terminal   288	0
+p77          terminal   292	0
+p78          terminal   296	0
+p79          terminal   300	0
 p8           terminal   27	0
-p80          terminal   309	0
-p81          terminal   313	0
-p82          terminal   317	0
-p83          terminal   321	0
-p84          terminal   325	0
-p85          terminal   328	0
-p86          terminal   332	0
-p87          terminal   337	0
-p88          terminal   340	0
-p89          terminal   344	0
-p9           terminal   31	0
-p90          terminal   348	0
-p91          terminal   352	0
-p92          terminal   356	0
-p93          terminal   360	0
-p94          terminal   364	0
-p95          terminal   368	0
-p96          terminal   372	0
-p97          terminal   376	0
-p98          terminal   379	0
-p99          terminal   384	0
+p80          terminal   303	0
+p81          terminal   307	0
+p82          terminal   311	0
+p83          terminal   315	0
+p84          terminal   319	0
+p85          terminal   322	0
+p86          terminal   327	0
+p87          terminal   331	0
+p88          terminal   334	0
+p89          terminal   338	0
+p9           terminal   30	0
+p90          terminal   342	0
+p91          terminal   346	0
+p92          terminal   350	0
+p93          terminal   353	0
+p94          terminal   358	0
+p95          terminal   361	0
+p96          terminal   365	0
+p97          terminal   369	0
+p98          terminal   373	0
+p99          terminal   377	0

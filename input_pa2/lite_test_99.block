@@ -1,0 +1,457 @@
+NumDie: 1
+Outline: 131 273
+NumBlocks: 120
+NumTerminals: 330
+Weight: 1
+
+sb0 0 105.07030 123.62350 130.85790 143.01270     s
+sb1 0 98.68340 87.27680 113.84920 102.44260       s
+sb2 0 11.42640 44.54850 27.85810 60.98020         s  
+sb3 0 85.06250 39.89800 89.24580 48.26460         s      
+sb4 0 52.61970 77.01870 66.83800 87.70910         s       
+sb5 0 0.00000 109.95090 11.74730 125.61400        s  
+sb6 0 120.75840 0.00000 130.85790 10.09950        s  
+sb7 0 46.73480 107.65810 67.63930 128.56260       s  
+sb8 0 73.39660 36.21820 84.39660 45.21820           
+sb9 0 91.27760 254.47680 99.21490 270.35130       s  
+sb10 0 0.00000 229.56730 16.43170 245.99900       s  
+sb11 0 0.00000 180.75470 24.37210 205.12680       s    
+sb12 0 70.77720 91.15220 99.76000 120.13500       s  
+sb13 0 0.00000 205.12780 19.18330 224.31110       s  
+sb14 0 90.07900 46.76960 103.07900 64.76960       
+sb15 0 114.42620 90.03890 130.85790 106.47060     s
+sb16 0 83.39830 205.26920 94.39830 227.26920      s
+sb17 0 19.19680 199.64400 39.69070 220.13790      s
+sb18 0 65.09550 194.30370 85.71100 214.91920      s
+sb19 0 71.35260 152.82760 95.62190 177.09690      s    
+sb20 0 82.18010 133.40170 96.46300 147.68460      s    
+sb21 0 113.42230 146.11580 130.85790 163.55140    s
+sb22 0 8.00000 122.00000 18.00000 127.00000       
+sb23 0 59.03180 214.92020 88.03180 243.92020      s    
+sb24 0 0.00000 246.00000 20.00000 265.00000       
+sb25 0 79.57050 117.90870 95.06240 133.40060      s
+sb26 0 11.78320 147.96300 27.65770 155.90030      s
+sb27 0 10.38060 62.67650 39.80560 84.80060        s
+sb28 0 44.84160 76.33530 50.84160 88.33530        s
+sb29 0 0.00000 93.04670 16.88190 109.92860        s
+sb30 0 0.00000 156.50810 23.00000 177.50810       
+sb31 0 51.25330 258.48080 64.75290 278.62950      s    
+sb32 0 102.40590 102.95560 113.40590 111.95560    
+sb33 0 75.60770 177.09790 90.30460 191.79480      s
+sb34 0 21.75680 146.60590 35.32150 160.17060      s
+sb35 0 88.47330 224.54250 103.43990 254.47580     s
+sb36 0 65.68940 267.14040 77.17850 278.62950      s
+sb37 0 116.16100 111.95660 130.85790 126.65350    s
+sb38 0 29.99310 80.91230 47.99310 116.91230       s
+sb39 0 110.85790 196.16670 130.85790 216.16670    s
+sb40 0 43.46020 154.08790 54.58450 168.92030      s
+sb41 0 58.35960 121.27700 81.85430 144.77170      s
+sb42 0 64.74120 45.28140 71.06580 57.93050        s
+sb43 0 12.75770 103.50950 26.75770 117.50950      s
+sb44 0 74.53300 45.21920 88.63940 66.27350        s
+sb45 0 36.90930 0.00000 59.75660 30.46310         s
+sb46 0 53.77250 88.52930 69.89700 104.65380       s
+sb47 0 110.36400 180.49280 130.85790 200.98670    s
+sb48 0 97.02170 129.99250 100.18400 136.31710     s
+sb49 0 39.35070 31.98450 60.51670 53.15050        s
+sb50 0 110.36400 69.54390 130.85790 90.03780      s
+sb51 0 91.29170 180.64700 106.16110 202.84020     s
+sb52 0 77.17950 261.13660 94.67240 278.62950      s
+sb53 0 71.00000 20.00000 93.00000 31.00000        
+sb54 0 113.85790 112.37660 130.85790 122.37660    
+sb55 0 19.06480 121.37490 31.04980 130.38620      s
+sb56 0 0.00000 65.82970 5.47720 71.30690          s
+sb57 0 94.18170 198.65820 107.18170 224.65820     s
+sb58 0 24.35150 156.88030 45.84570 178.37450      s
+sb59 0 23.34700 178.37550 33.01650 197.71460      s
+sb60 0 0.00000 0.00000 15.13740 22.59310          s
+sb61 0 60.13810 0.00000 69.62490 9.48680          s
+sb62 0 62.61880 59.03210 86.11350 82.52680        s
+sb63 0 106.43560 19.07730 126.63460 39.27630      s
+sb64 0 61.11010 236.47680 66.58730 241.95400      s
+sb65 0 16.88290 86.49690 33.31460 102.92860       s
+sb66 0 114.42620 164.06010 130.85790 180.49180    s
+sb67 0 0.00000 55.08260 7.74600 62.82860          s
+sb68 0 41.33550 171.17100 61.08390 190.91940      s
+sb69 0 82.71490 249.83320 89.64310 256.76140      s
+sb70 0 94.56870 0.00000 113.46310 18.89440        s
+sb71 0 34.07940 116.95110 45.91160 128.78330      s
+sb72 0 26.53040 10.92710 37.84410 33.55450        s
+sb73 0 37.00000 129.00000 61.00000 154.00000      
+sb74 0 67.32860 245.70100 91.32860 253.70100      
+sb75 0 25.00480 33.55550 38.49550 47.04620        s
+sb76 0 12.97510 130.59080 39.50810 143.85730      s
+sb77 0 20.00100 253.52970 45.10080 278.62950      s
+sb78 0 102.00000 240.00000 129.00000 265.00000    
+sb79 0 39.69170 195.55940 61.66900 217.53670      s
+sb80 0 0.00000 224.31220 16.43170 240.74390       s
+sb81 0 0.00000 40.03090 12.84520 52.87610         s
+sb82 0 56.27500 26.43830 60.51760 34.92360        s
+sb83 0 93.01990 19.93530 104.13300 42.16140       s
+sb84 0 91.77920 78.57500 107.27110 86.32100       s
+sb85 0 49.10930 145.94260 70.62300 162.11830      s
+sb86 0 51.42250 53.27870 62.16960 60.44340        s
+sb87 0 63.89760 80.23320 76.85910 93.19470        s
+sb88 0 79.18740 0.00000 94.99880 31.62280         s
+sb89 0 50.98620 85.64270 57.46690 92.12340        s
+sb90 0 107.40580 216.16770 130.85790 239.61980    s
+sb91 0 22.66010 111.48640 32.14690 120.97320      s
+sb92 0 54.92510 163.35890 70.22220 178.65600      s
+sb93 0 0.00000 75.88560 6.63320 82.51880          s
+sb94 0 68.06240 33.38470 81.47880 42.32900        s
+sb95 0 40.05710 218.11080 59.03080 237.08450      s
+sb96 0 93.82140 152.24560 112.62990 180.31800     s
+sb97 0 17.57650 0.00000 34.00820 16.43170         s
+sb98 0 86.33740 61.33990 103.30800 78.31050       s
+sb99 0 41.47720 56.02780 61.67620 76.22680        s
+sb100 0 112.83430 43.19550 130.83430 54.19550     
+sb101 0 52.66290 41.63570 58.57900 47.55180       s
+sb102 0 96.50490 116.93290 107.99400 139.91120    s
+sb103 0 25.29660 221.51900 43.29660 240.51900     
+sb104 0 54.66100 38.67090 59.66100 43.67090       s
+sb105 0 14.00120 33.33700 28.86730 48.20310       s
+sb106 0 46.35590 185.53700 52.01280 191.19390     s
+sb107 0 0.00000 23.65040 18.33030 41.98070        s
+sb108 0 68.14850 144.77270 85.29490 161.91910     s
+sb109 0 35.39150 57.26550 46.88060 68.75460       s
+sb110 0 28.53300 49.27650 39.34970 60.09320       s
+sb111 0 60.79910 19.04470 74.87030 33.11590       s
+sb112 0 0.00000 132.14640 17.00000 149.14640      
+sb113 0 77.43790 75.67760 91.00260 89.24230       s
+sb114 0 55.19850 36.09090 64.19850 48.09090       
+sb115 0 112.41880 50.81420 130.85790 69.25330     s
+sb116 0 36.00000 227.00000 55.00000 235.00000     
+sb117 0 110.15590 98.17280 120.25540 108.27230    s
+sb118 0 36.63850 258.13560 57.13240 278.62950     s
+sb119 0 58.88650 183.04110 72.95770 197.11230     s
+
+p1           terminal   0	230
+p2           terminal   84	0
+p3           terminal   0	231
+p4           terminal   147	238
+p5           terminal   147	240
+p6           terminal   0	256
+p7           terminal   32	0
+p8           terminal   58	0
+p9           terminal   0	121
+p10          terminal   90	313
+p11          terminal   0	107
+p12          terminal   0	119
+p13          terminal   31	0
+p14          terminal   83	313
+p15          terminal   114	313
+p16          terminal   110	313
+p17          terminal   0	176
+p18          terminal   106	0
+p19          terminal   0	133
+p20          terminal   33	313
+p21          terminal   84	313
+p22          terminal   0	229
+p23          terminal   147	50
+p24          terminal   28	313
+p25          terminal   57	313
+p26          terminal   147	52
+p27          terminal   113	313
+p28          terminal   147	8
+p29          terminal   147	206
+p30          terminal   104	0
+p31          terminal   0	106
+p32          terminal   147	25
+p33          terminal   147	91
+p34          terminal   147	93
+p35          terminal   147	205
+p36          terminal   147	255
+p37          terminal   16	313
+p38          terminal   62	313
+p39          terminal   0	57
+p40          terminal   107	313
+p41          terminal   0	161
+p42          terminal   19	313
+p43          terminal   147	253
+p44          terminal   121	0
+p45          terminal   45	313
+p46          terminal   129	0
+p47          terminal   0	10
+p48          terminal   0	62
+p49          terminal   119	0
+p50          terminal   122	313
+p51          terminal   32	0
+p52          terminal   0	231
+p53          terminal   5	313
+p54          terminal   147	234
+p55          terminal   12	313
+p56          terminal   147	82
+p57          terminal   0	190
+p58          terminal   147	84
+p59          terminal   52	0
+p60          terminal   0	61
+p61          terminal   0	162
+p62          terminal   76	313
+p63          terminal   24	313
+p64          terminal   147	225
+p65          terminal   96	0
+p66          terminal   147	134
+p67          terminal   147	127
+p68          terminal   147	110
+p69          terminal   147	124
+p70          terminal   126	0
+p71          terminal   4	313
+p72          terminal   147	125
+p73          terminal   6	313
+p74          terminal   87	0
+p75          terminal   15	0
+p76          terminal   0	2
+p77          terminal   1	313
+p78          terminal   0	156
+p79          terminal   91	313
+p80          terminal   147	109
+p81          terminal   0	264
+p82          terminal   0	163
+p83          terminal   147	13
+p84          terminal   0	170
+p85          terminal   0	69
+p86          terminal   104	313
+p87          terminal   89	313
+p88          terminal   61	0
+p89          terminal   0	39
+p90          terminal   46	0
+p91          terminal   0	35
+p92          terminal   86	0
+p93          terminal   68	0
+p94          terminal   122	313
+p95          terminal   147	68
+p96          terminal   43	0
+p97          terminal   0	133
+p98          terminal   147	119
+p99          terminal   92	0
+p100         terminal   147	108
+p101         terminal   17	313
+p102         terminal   147	62
+p103         terminal   0	229
+p104         terminal   0	27
+p105         terminal   104	0
+p106         terminal   59	313
+p107         terminal   105	0
+p108         terminal   113	313
+p109         terminal   96	313
+p110         terminal   10	313
+p111         terminal   79	0
+p112         terminal   116	313
+p113         terminal   106	313
+p114         terminal   147	190
+p115         terminal   21	0
+p116         terminal   0	187
+p117         terminal   128	0
+p118         terminal   109	0
+p119         terminal   99	313
+p120         terminal   147	18
+p121         terminal   0	231
+p122         terminal   147	252
+p123         terminal   147	216
+p124         terminal   33	0
+p125         terminal   0	27
+p126         terminal   31	0
+p127         terminal   8	313
+p128         terminal   25	313
+p129         terminal   147	224
+p130         terminal   147	98
+p131         terminal   147	64
+p132         terminal   21	313
+p133         terminal   83	0
+p134         terminal   0	226
+p135         terminal   0	57
+p136         terminal   147	213
+p137         terminal   0	206
+p138         terminal   147	150
+p139         terminal   147	203
+p140         terminal   34	313
+p141         terminal   147	17
+p142         terminal   147	158
+p143         terminal   0	131
+p144         terminal   88	313
+p145         terminal   0	208
+p146         terminal   0	4
+p147         terminal   42	0
+p148         terminal   0	157
+p149         terminal   147	196
+p150         terminal   45	313
+p151         terminal   0	2
+p152         terminal   24	313
+p153         terminal   14	0
+p154         terminal   49	0
+p155         terminal   0	4
+p156         terminal   147	82
+p157         terminal   91	313
+p158         terminal   0	61
+p159         terminal   147	108
+p160         terminal   147	190
+p161         terminal   0	252
+p162         terminal   147	185
+p163         terminal   0	240
+p164         terminal   147	196
+p165         terminal   23	0
+p166         terminal   52	313
+p167         terminal   147	189
+p168         terminal   0	207
+p169         terminal   0	260
+p170         terminal   78	0
+p171         terminal   79	313
+p172         terminal   0	156
+p173         terminal   0	263
+p174         terminal   0	175
+p175         terminal   0	204
+p176         terminal   147	167
+p177         terminal   89	0
+p178         terminal   13	313
+p179         terminal   0	116
+p180         terminal   147	115
+p181         terminal   0	32
+p182         terminal   62	313
+p183         terminal   0	210
+p184         terminal   3	0
+p185         terminal   0	128
+p186         terminal   79	0
+p187         terminal   38	313
+p188         terminal   41	313
+p189         terminal   147	75
+p190         terminal   147	179
+p191         terminal   147	20
+p192         terminal   90	0
+p193         terminal   95	313
+p194         terminal   83	0
+p195         terminal   0	184
+p196         terminal   0	198
+p197         terminal   147	10
+p198         terminal   50	313
+p199         terminal   0	261
+p200         terminal   13	0
+p201         terminal   0	106
+p202         terminal   55	313
+p203         terminal   58	313
+p204         terminal   0	49
+p205         terminal   0	69
+p206         terminal   147	103
+p207         terminal   147	183
+p208         terminal   53	313
+p209         terminal   0	187
+p210         terminal   0	155
+p211         terminal   70	0
+p212         terminal   147	76
+p213         terminal   147	194
+p214         terminal   147	52
+p215         terminal   78	0
+p216         terminal   51	0
+p217         terminal   79	0
+p218         terminal   11	0
+p219         terminal   0	191
+p220         terminal   64	313
+p221         terminal   89	313
+p222         terminal   76	0
+p223         terminal   78	0
+p224         terminal   86	313
+p225         terminal   147	203
+p226         terminal   0	3
+p227         terminal   45	0
+p228         terminal   0	50
+p229         terminal   0	206
+p230         terminal   0	124
+p231         terminal   64	313
+p232         terminal   80	313
+p233         terminal   123	313
+p234         terminal   3	0
+p235         terminal   0	6
+p236         terminal   147	71
+p237         terminal   147	72
+p238         terminal   147	24
+p239         terminal   38	313
+p240         terminal   0	186
+p241         terminal   147	260
+p242         terminal   74	0
+p243         terminal   120	313
+p244         terminal   147	102
+p245         terminal   88	0
+p246         terminal   0	109
+p247         terminal   34	313
+p248         terminal   0	157
+p249         terminal   96	0
+p250         terminal   147	210
+p251         terminal   0	165
+p252         terminal   98	313
+p253         terminal   57	313
+p254         terminal   55	313
+p255         terminal   147	60
+p256         terminal   147	87
+p257         terminal   0	205
+p258         terminal   76	313
+p259         terminal   0	213
+p260         terminal   0	5
+p261         terminal   0	257
+p262         terminal   0	251
+p263         terminal   104	0
+p264         terminal   58	0
+p265         terminal   0	89
+p266         terminal   95	313
+p267         terminal   11	0
+p268         terminal   49	0
+p269         terminal   26	0
+p270         terminal   80	0
+p271         terminal   147	183
+p272         terminal   10	0
+p273         terminal   0	15
+p274         terminal   90	313
+p275         terminal   119	0
+p276         terminal   99	0
+p277         terminal   147	63
+p278         terminal   0	103
+p279         terminal   0	89
+p280         terminal   0	1
+p281         terminal   0	97
+p282         terminal   83	313
+p283         terminal   43	313
+p284         terminal   31	313
+p285         terminal   102	313
+p286         terminal   118	0
+p287         terminal   147	232
+p288         terminal   0	185
+p289         terminal   50	313
+p290         terminal   104	313
+p291         terminal   123	0
+p292         terminal   104	0
+p293         terminal   38	0
+p294         terminal   0	47
+p295         terminal   106	0
+p296         terminal   74	313
+p297         terminal   114	313
+p298         terminal   147	134
+p299         terminal   0	97
+p300         terminal   17	0
+p301         terminal   64	0
+p302         terminal   65	313
+p303         terminal   40	313
+p304         terminal   147	59
+p305         terminal   0	216
+p306         terminal   53	313
+p307         terminal   31	313
+p308         terminal   5	0
+p309         terminal   0	235
+p310         terminal   0	19
+p311         terminal   0	107
+p312         terminal   27	313
+p313         terminal   0	169
+p314         terminal   147	12
+p315         terminal   147	241
+p316         terminal   40	0
+p317         terminal   64	0
+p318         terminal   13	313
+p319         terminal   10	0
+p320         terminal   74	0
+p321         terminal   147	165
+p322         terminal   125	0
+p323         terminal   78	0
+p324         terminal   147	128
+p325         terminal   147	64
+p326         terminal   97	0
+p327         terminal   126	313
+p328         terminal   113	0
+p329         terminal   43	313
+p330         terminal   130	0

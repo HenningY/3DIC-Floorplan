@@ -24,6 +24,7 @@ struct Module {
     int         tier_id;      // 所屬 Die（0-indexed），terminal 為 -1
     bool        is_terminal;  // 是否為固定 I/O 端點
     bool        is_fixed = false; // 是否被 constraint 固定（位置不可移動）
+    bool        is_soft  = false; // true = soft module（.block 行尾 s）；預設 hard
     double      move_weight = 1.0; // heuristic legalize 權重（越大越不希望與其重疊）
 
     double area() const { return width * height; }
@@ -162,6 +163,16 @@ struct PlacementConfig {
     int routing_congestion_start_iter       = 1000;   // 從第幾個 iter 開始啟用（n）
     int routing_congestion_refresh_interval = 100;   // 每幾個 iter 重算一次（m）
 
+    // ---- Per-tier 自適應壅塞強度 ----
+    // routing_congestion_max > 0 時啟用：每隔 routing_congestion_refresh_interval 次
+    // 以 compute_bin_edge_congestion 量測各層的 tier_max：
+    //   tier_max >  routing_congestion_max → 該層 alpha 倍率 × boost_rate
+    //   tier_max <= routing_congestion_max → 該層 alpha 倍率 ÷ boost_rate（最小 1.0）
+    // 設 0 關閉自適應（tier_rc_alpha_mult_ 全程維持 1.0）。
+    double routing_congestion_max            = 15.0;   // 每層 tier_max 的目標上限（0=停用）
+    double routing_congestion_alpha_boost_rate = 5; // 每次調整的倍率幅度
+    double routing_congestion_alpha_max_mult   = 1000.0;// alpha 倍率上限（防止爆炸）
+
     // ---- 幾何 Normalize（縮放 die/module 到目標邊長再還原）----
     // 依全 die 最小邊長判斷是否觸發縮放，僅等比縮放幾何資料；超參數不變
     bool   enable_die_normalize      = false;  // 總開關
@@ -260,7 +271,9 @@ public:
     PlacementEngine(const PlacementConfig& cfg = PlacementConfig());
 
     // ---- 輸入解析 ----
-    bool parse_blocks(const std::string& filename);
+    // placed_format=true: block 行格式為 "name tier llx lly urx ury [s]"（初始位置已給定）
+    // placed_format=false（預設）: 原始格式 "name w h tier [s]"
+    bool parse_blocks(const std::string& filename, bool placed_format = false);
     bool parse_nets(const std::string& filename);
 
     // ---- 主要介面 ----
@@ -393,6 +406,8 @@ private:
     double smooth_sigma_ = 0.0;
     // 當前 λ 倍率，在 solve() 內每 lambda_update_interval 次迭代遞增
     double lambda_mult_  = 1.0;
+    // Per-tier routing congestion alpha 動態倍率（routing_congestion_max > 0 時更新）
+    std::vector<double> tier_rc_alpha_mult_;
 
     // ---- 內部輔助函式 ----
 

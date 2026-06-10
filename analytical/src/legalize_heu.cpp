@@ -21,10 +21,95 @@ namespace {
 
 constexpr double kEps = 1e-12;
 
+// aspect ratio w/h 是否在 [ar_min, ar_max] 內
+inline bool aspect_in_range(double w, double h, double ar_min, double ar_max)
+{
+    if (h < kEps) return false;
+    const double ar = w / h;
+    return ar >= ar_min - kEps && ar <= ar_max + kEps;
+}
+
 // normalize 時幾何長度乘 geometry_scale；log 輸出物理長度 = scaled * (1/scale)
 inline double to_physical_len(double len_scaled, double inv_geometry_scale)
 {
     return len_scaled * inv_geometry_scale;
+}
+
+// ── Soft shape curve ──────────────────────────────────────────
+//
+// 對固定面積 A = w0*h0，在 [ar_lo, ar_hi] 上均勻取 steps 個 aspect ratio，
+// 每個 ar 對應 w = sqrt(A*ar), h = sqrt(A/ar)（等面積變形）。
+// 原始 (w0,h0) 永遠保留；與已有形狀重複者跳過。
+std::vector<std::pair<double,double>>
+build_soft_shape_curve(double w0, double h0, const LocalMoveConfig& cfg)
+{
+    std::vector<std::pair<double,double>> shapes;
+    shapes.push_back({w0, h0});
+
+    const int steps = cfg.soft_aspect_curve_steps;
+    if (steps <= 1 || w0 < kEps || h0 < kEps) return shapes;
+
+    const double A     = w0 * h0;
+    const double ar_lo = cfg.soft_aspect_min;
+    const double ar_hi = cfg.soft_aspect_max;
+
+    auto nearly_same = [](double wa, double ha, double wb, double hb) {
+        return std::fabs(wa - wb) <= kEps && std::fabs(ha - hb) <= kEps;
+    };
+
+    for (int i = 0; i < steps; ++i) {
+        const double ar = ar_lo + (ar_hi - ar_lo) * static_cast<double>(i) / (steps - 1);
+        const double w  = std::sqrt(A * ar);
+        const double h  = std::sqrt(A / ar);
+        if (!aspect_in_range(w, h, ar_lo, ar_hi)) continue;
+        bool dup = false;
+        for (const auto& [ew, eh] : shapes)
+            if (nearly_same(w, h, ew, eh)) { dup = true; break; }
+        if (!dup) shapes.push_back({w, h});
+    }
+    return shapes;
+}
+
+// ── Side bias helpers ────────────────────────────────────────
+//
+// side_bias_linear: 傳入目前優化軸 (axis 1=x, 2=y) 與移動後中心座標
+// 回傳 side bias 貢獻 = weight * sign * center_after
+// axis 不符 / weight ≈ 0 時回傳 0
+inline double side_bias_linear(const LocalMoveConfig& cfg, int axis, double center_after)
+{
+    if (cfg.side_bias_weight <= kEps || cfg.side_bias_axis != axis) return 0.0;
+    return cfg.side_bias_weight * cfg.side_bias_sign * center_after;
+}
+
+// apply_side_bias_from_label: 依 sweep label 填寫 cfg 的 side bias 欄位
+// bottom->top: axis=y(-1), top->bottom: axis=y(+1)
+// left->right: axis=x(-1), right->left: axis=x(+1)
+// 其他: 關閉
+inline void apply_side_bias_from_label(LocalMoveConfig& cfg,
+                                       const std::string& label,
+                                       double weight)
+{
+    if (label == "bottom->top") {
+        cfg.side_bias_axis   = 2;
+        cfg.side_bias_sign   = -1.0;
+        cfg.side_bias_weight = weight;
+    } else if (label == "top->bottom") {
+        cfg.side_bias_axis   = 2;
+        cfg.side_bias_sign   = +1.0;
+        cfg.side_bias_weight = weight;
+    } else if (label == "left->right") {
+        cfg.side_bias_axis   = 1;
+        cfg.side_bias_sign   = -1.0;
+        cfg.side_bias_weight = weight;
+    } else if (label == "right->left") {
+        cfg.side_bias_axis   = 1;
+        cfg.side_bias_sign   = +1.0;
+        cfg.side_bias_weight = weight;
+    } else {
+        cfg.side_bias_axis   = 0;
+        cfg.side_bias_sign   = 0.0;
+        cfg.side_bias_weight = 0.0;
+    }
 }
 
 // ── 幾何輔助 ────────────────────────────────────────────────
@@ -129,16 +214,24 @@ std::vector<double> build_breakpoints(const std::vector<Neighbor1D>& nbs,
 // ── segment 內的二次最佳解 ───────────────────────────────────
 //
 // 在 [seg_lo, seg_hi] 上，overlap(d) 是一次式 slope*d + intercept，
-// 目標函數 = disp_weight*d^2 + overlap_weight*(slope*d + intercept)
-// 導數 = 2*disp_weight*d + overlap_weight*slope = 0
-// → d* = -overlap_weight*slope / (2*disp_weight)，clamp 到 [seg_lo, seg_hi]
+// side bias 是線性項 side_linear_slope * d
+// 目標函數 = disp_weight*d^2 + overlap_weight*(slope*d + intercept) + side_linear_slope*d
+// 導數 = 2*disp_weight*d + overlap_weight*slope + side_linear_slope = 0
+// → d* = -(overlap_weight*slope + side_linear_slope) / (2*disp_weight)
 
 double solve_best_d_on_segment(const std::vector<Neighbor1D>& nbs,
                                double move_l, double move_r,
                                double seg_lo, double seg_hi,
-                               const LocalMoveConfig& cfg)
+                               const LocalMoveConfig& cfg,
+                               int axis, double /*center_base*/)
 {
     if (seg_hi < seg_lo + kEps) return seg_lo;
+
+    // side bias 對 d 的線性斜率貢獻
+    const double side_linear_slope =
+        (cfg.side_bias_weight > kEps && cfg.side_bias_axis == axis)
+        ? cfg.side_bias_weight * cfg.side_bias_sign
+        : 0.0;
 
     // 在 segment 中點計算 overlap(d) 的一次式係數
     const double mid = 0.5 * (seg_lo + seg_hi);
@@ -172,24 +265,29 @@ double solve_best_d_on_segment(const std::vector<Neighbor1D>& nbs,
         intercept += w * s_0;
     }
 
+    const double total_slope = slope + side_linear_slope;
+
     if (cfg.disp_weight <= kEps) {
         // 無位移懲罰：線性函數，最小值在端點
-        if (slope > kEps)  return seg_lo;
-        if (slope < -kEps) return seg_hi;
+        if (total_slope > kEps)  return seg_lo;
+        if (total_slope < -kEps) return seg_hi;
         return (std::fabs(seg_lo) <= std::fabs(seg_hi)) ? seg_lo : seg_hi;
     }
 
     // 二次函數最小點
-    double d_star = -slope / (2.0 * cfg.disp_weight);
+    double d_star = -total_slope / (2.0 * cfg.disp_weight);
     return std::clamp(d_star, seg_lo, seg_hi);
 }
 
 // ── 單軸最佳位移 ─────────────────────────────────────────────
+// axis: 1=x, 2=y（與 side_bias_axis 對應）
+// center_base: 移動前 module 在該軸的中心座標（x 或 y）
 
 double optimize_one_axis(const std::vector<Neighbor1D>& nbs,
                          double move_l, double move_r,
                          double min_move_allowed, double max_move_allowed,
-                         const LocalMoveConfig& cfg)
+                         const LocalMoveConfig& cfg,
+                         int axis = 0, double center_base = 0.0)
 {
     // module 旋轉後尺寸超過 die：選最能縮小越界量的邊界
     if (max_move_allowed < min_move_allowed + kEps) {
@@ -197,30 +295,48 @@ double optimize_one_axis(const std::vector<Neighbor1D>& nbs,
                    ? min_move_allowed : max_move_allowed;
     }
 
-    double best_d   = std::clamp(0.0, min_move_allowed, max_move_allowed);
-    double best_obj = cfg.disp_weight * best_d * best_d
-                    + cfg.overlap_weight
-                      * overlap_objective_1d(nbs, move_l, move_r, best_d);
-    if (nbs.empty()) return best_d;
-
-    const auto pts = build_breakpoints(nbs, move_l, move_r,
-                                       min_move_allowed, max_move_allowed);
-
-    auto try_d = [&](double d) {
-        const double obj = cfg.disp_weight * d * d
-                         + cfg.overlap_weight
-                           * overlap_objective_1d(nbs, move_l, move_r, d);
-        if (obj < best_obj - kEps) { best_obj = obj; best_d = d; }
+    auto eval_obj = [&](double d) {
+        const double center_after = center_base + d;
+        return cfg.disp_weight * d * d
+             + cfg.overlap_weight * overlap_objective_1d(nbs, move_l, move_r, d)
+             + side_bias_linear(cfg, axis, center_after);
     };
 
-    for (size_t i = 0; i + 1 < pts.size(); ++i) {
-        const double seg_lo = pts[i];
-        const double seg_hi = pts[i + 1];
-        if (seg_hi < seg_lo + kEps) continue;
+    double best_d   = std::clamp(0.0, min_move_allowed, max_move_allowed);
+    double best_obj = eval_obj(best_d);
 
-        try_d(seg_lo);
-        try_d(seg_hi);
-        try_d(solve_best_d_on_segment(nbs, move_l, move_r, seg_lo, seg_hi, cfg));
+    if (nbs.empty() && cfg.side_bias_weight <= kEps) return best_d;
+
+    // side bias 無 overlap 時：breakpoints 中沒有端點能被吸引，需手動加入極端值
+    std::vector<double> extra_pts;
+    if (cfg.side_bias_weight > kEps && cfg.side_bias_axis == axis) {
+        extra_pts.push_back(min_move_allowed);
+        extra_pts.push_back(max_move_allowed);
+    }
+
+    if (!nbs.empty()) {
+        const auto pts = build_breakpoints(nbs, move_l, move_r,
+                                           min_move_allowed, max_move_allowed);
+
+        auto try_d = [&](double d) {
+            const double obj = eval_obj(d);
+            if (obj < best_obj - kEps) { best_obj = obj; best_d = d; }
+        };
+
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const double seg_lo = pts[i];
+            const double seg_hi = pts[i + 1];
+            if (seg_hi < seg_lo + kEps) continue;
+
+            try_d(seg_lo);
+            try_d(seg_hi);
+            try_d(solve_best_d_on_segment(nbs, move_l, move_r, seg_lo, seg_hi, cfg, axis, center_base));
+        }
+    }
+
+    for (double d : extra_pts) {
+        const double obj = eval_obj(d);
+        if (obj < best_obj - kEps) { best_obj = obj; best_d = d; }
     }
 
     return best_d;
@@ -650,21 +766,24 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
             if (x_first) {
                 // 1) x 軸
                 const auto x_nbs = collect_x_neighbors(modules, base, cfg.max_search_dist);
-                r.dx = optimize_one_axis(x_nbs, base.lx(), base.rx(), min_dx, max_dx, cfg);
+                r.dx = optimize_one_axis(x_nbs, base.lx(), base.rx(), min_dx, max_dx, cfg,
+                                         /*axis=*/1, base.x);
                 Module after_x = base;
                 after_x.x += r.dx;
                 r.overlap_after_x = total_weighted_overlap(modules, after_x);
 
                 // 2) y 軸（以 x 移動後為基礎）
                 const auto y_nbs = collect_y_neighbors(modules, base, cfg.max_search_dist, r.dx);
-                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg);
+                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg,
+                                         /*axis=*/2, base.y);
                 Module after_xy = after_x;
                 after_xy.y += r.dy;
                 r.overlap_after_y = total_weighted_overlap(modules, after_xy);
             } else {
                 // 1) y 軸
                 const auto y_nbs = collect_y_neighbors(modules, base, cfg.max_search_dist, 0.0);
-                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg);
+                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg,
+                                         /*axis=*/2, base.y);
                 Module after_y = base;
                 after_y.y += r.dy;
                 r.overlap_after_x = total_weighted_overlap(modules, after_y); // 中間狀態
@@ -675,14 +794,22 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
                 base_shifted_y.y += r.dy;
                 const auto x_nbs = collect_x_neighbors(modules, base_shifted_y, cfg.max_search_dist);
                 r.dx = optimize_one_axis(x_nbs, base_shifted_y.lx(), base_shifted_y.rx(),
-                                         min_dx, max_dx, cfg);
+                                         min_dx, max_dx, cfg, /*axis=*/1, base_shifted_y.x);
                 Module after_yx = after_y;
                 after_yx.x += r.dx;
                 r.overlap_after_y = total_weighted_overlap(modules, after_yx);
             }
 
+            // 最終 objective：加入 side bias（僅偏好軸方向；以移動後中心計算）
+            Module final_m = base;
+            final_m.x += r.dx;
+            final_m.y += r.dy;
+            double side = 0.0;
+            if (cfg.side_bias_axis == 1) side = side_bias_linear(cfg, 1, final_m.x);
+            if (cfg.side_bias_axis == 2) side = side_bias_linear(cfg, 2, final_m.y);
             r.objective = cfg.disp_weight * (r.dx * r.dx + r.dy * r.dy)
-                        + cfg.overlap_weight * r.overlap_after_y;
+                        + cfg.overlap_weight * r.overlap_after_y
+                        + side;
             return r;
         };
 
@@ -691,17 +818,44 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         return (yx.objective < xy.objective - kEps) ? yx : xy;
     };
 
-    // 比較 0° 與 90° 解，取 objective 較小者（同分時偏好不旋轉）
-    const LocalMoveResult result_0  = eval_orientation(target, false);
-    Module target_rot = target;
-    std::swap(target_rot.width, target_rot.height);
-    const LocalMoveResult result_90 = eval_orientation(target_rot, true);
+    // 建立候選形狀列表：hard module 僅 (w0,h0)；soft module 使用等面積 shape curve
+    const double w0 = target.width;
+    const double h0 = target.height;
+    const std::vector<std::pair<double,double>> shapes =
+        target.is_soft ? build_soft_shape_curve(w0, h0, cfg)
+                       : std::vector<std::pair<double,double>>{{w0, h0}};
 
-    const LocalMoveResult best =
-        (result_90.objective < result_0.objective - kEps) ? result_90 : result_0;
+    // 對每個形狀評估 0° 與 90° 兩種 orientation，從全部候選中選 objective 最小者
+    LocalMoveResult best;
+    best.objective = std::numeric_limits<double>::infinity();
 
-    // 套用最佳解：旋轉、位移、提高 move_weight
+    for (const auto& [sw, sh] : shapes) {
+        // 0°：直接以 (sw, sh) 為基礎評估
+        Module base0 = target;
+        base0.width  = sw;
+        base0.height = sh;
+        LocalMoveResult r0 = eval_orientation(base0, false);
+        r0.final_width  = sw;
+        r0.final_height = sh;
+
+        // 90°：交換後評估（eval_orientation 內部以交換後的 w/h 計算邊界）
+        Module base90 = base0;
+        std::swap(base90.width, base90.height);
+        LocalMoveResult r90 = eval_orientation(base90, true);
+        r90.final_width  = sw;  // 記錄旋轉前的原始形狀
+        r90.final_height = sh;
+
+        // 更新 best（同 objective 偏好 0°、偏好較早形狀）
+        if (r0.objective  < best.objective - kEps) best = r0;
+        if (r90.objective < best.objective - kEps) best = r90;
+    }
+
+    // 套用最佳解：先設實際 w/h，再 rotate，最後位移
     Module& tm = modules[target_idx];
+    if (best.final_width > kEps) {
+        tm.width  = best.final_width;
+        tm.height = best.final_height;
+    }
     if (best.rotate_90) std::swap(tm.width, tm.height);
     tm.x += best.dx;
     tm.y += best.dy;
@@ -715,8 +869,11 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
                   << ", " << to_physical_len(tm.y, log_phys_scale) << ")"
                   << " dx=" << to_physical_len(best.dx, log_phys_scale)
                   << " dy=" << to_physical_len(best.dy, log_phys_scale)
-                  << " rot90=" << best.rotate_90
-                  << " weight=" << tm.move_weight << "\n";
+                  << " rot90=" << best.rotate_90;
+        if (target.is_soft && best.final_width > kEps)
+            *move_log << " wh=(" << to_physical_len(tm.width,  log_phys_scale)
+                      << "," << to_physical_len(tm.height, log_phys_scale) << ")";
+        *move_log << " weight=" << tm.move_weight << "\n";
     }
 
     return best;
@@ -829,6 +986,10 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   << gs << ")\n";
 
     // ---- 設定 ----
+    // sweep 方向偏好強度：objective += weight * sign * center
+    // 增大此值讓 module 更積極往 sweep 方向側靠；0 關閉
+    static constexpr double kSideBiasWeight = 10.0;
+
     LocalMoveConfig lcfg;
     lcfg.max_search_dist   = 30.0;
     lcfg.max_move_dist     = 30.0;
@@ -836,6 +997,11 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     lcfg.overlap_weight    = 1.0;
     lcfg.moved_weight_mul  = 3;
     lcfg.max_module_weight = 1e6;
+    // soft module 等面積 shape curve
+    lcfg.soft_aspect_curve_steps = 15;
+    lcfg.soft_aspect_min         = 0.25;
+    lcfg.soft_aspect_max         = 4.0;
+    // side_bias_* 預設關閉；由 sweep lambda 依 label 填入
 
     auto& modules = engine.modules_mutable();
     const auto& dies = engine.dies();
@@ -875,13 +1041,16 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
         else
             std::sort(key_id.begin(), key_id.end(), std::greater<>());
 
-        // 用此 sweep 指定的 moved_weight_mul
+        // 用此 sweep 指定的 moved_weight_mul 與方向偏好
         LocalMoveConfig sweep_cfg = lcfg;
         sweep_cfg.moved_weight_mul = moved_weight_mul;
+        apply_side_bias_from_label(sweep_cfg, label, kSideBiasWeight);
 
         std::cout << "  Tier " << tier << " [" << label << "]"
                   << " init_w=" << init_weight
-                  << " mul=" << moved_weight_mul << "\n";
+                  << " mul=" << moved_weight_mul
+                  << " side_bias=" << sweep_cfg.side_bias_weight * sweep_cfg.side_bias_sign
+                  << "(axis=" << sweep_cfg.side_bias_axis << ")\n";
         for (const auto& [key, mid] : key_id)
             optimize_module_local_move(modules, dies, mid, sweep_cfg, &log_file, inv_gs);
 
@@ -903,7 +1072,7 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   << " bbox_center=(" << to_physical_len(cx, inv_gs)
                   << ", " << to_physical_len(cy, inv_gs) << ")\n";
 
-        static constexpr int    kMaxShakeIters  = 6;
+        static constexpr int    kMaxShakeIters  = 10;
         static constexpr double kShakeRadius    = 50.0;
         static constexpr double kShakeProb      = 0.5;      // modified
 
@@ -937,6 +1106,14 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
             const double mw1 = use_strong ? (3.0  + iter * 4.0) : (2.0  + iter * 2.0);
             const double mw2 = use_strong ? (9.0  + iter * 6.0) : (3.0  + iter * 3.0);
             const double mw3 = use_strong ? (20.0 + iter * 8.0) : (4.0  + iter * 4.0);
+            // const double iw  = use_strong ? std::pow(1.2, iter) : std::pow(1.1, iter);
+            // const double mw1 = use_strong ? (1.0  + iter * 2.0) : (1.0  + iter * 1.0);
+            // const double mw2 = use_strong ? (2.0  + iter * 4.0) : (1.5  + iter * 1.0);
+            // const double mw3 = use_strong ? (3.0 + iter * 6.0) : (2.0  + iter * 1.0);
+            // const double iw  = use_strong ? std::pow(3.0, iter) : std::pow(3.0, iter);
+            // const double mw1 = use_strong ? (3.0  + iter * 4.0) : (3.0  + iter * 4.0);
+            // const double mw2 = use_strong ? (9.0  + iter * 6.0) : (9.0  + iter * 6.0);
+            // const double mw3 = use_strong ? (20.0 + iter * 8.0) : (20.0  + iter * 8.0);
 
             sweep(t, "near->far",
                   [cx, cy](const Module& m) {

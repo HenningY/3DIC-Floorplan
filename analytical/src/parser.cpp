@@ -23,7 +23,7 @@
 //
 //   <name> terminal <x> <y>              (端點，共 T 個，固定位置)
 // ============================================================
-bool PlacementEngine::parse_blocks(const std::string& filename)
+bool PlacementEngine::parse_blocks(const std::string& filename, bool placed_format)
 {
     std::ifstream fin(filename);
     if (!fin) {
@@ -106,6 +106,9 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
         break;
     }
 
+    if (placed_format)
+        std::cout << "[Parser] Placed block format (positions from bbox)\n";
+
     // ---- 解析方塊與 terminal ----
     modules_.clear();
     name_to_id_.clear();
@@ -142,8 +145,8 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
             m.y           = ty;
             m.tier_id     = -1;   // terminal 不屬於特定 Die
             m.is_terminal = true;
-        } else {
-            // Block：可移動方塊
+        } else if (!placed_format) {
+            // Block：可移動方塊（原始格式 "name w h tier [s]"）
             double w = std::stod(second_token);
             double h = 0.0;
             int    t = 0;
@@ -154,6 +157,55 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
             m.y           = die_heights[t] * 0.5;
             m.tier_id     = t;
             m.is_terminal = false;
+
+            // 可選屬性：行尾 s = soft module
+            m.is_soft = false;
+            std::string attr;
+            if (ss >> attr) {
+                if (attr == "s")
+                    m.is_soft = true;
+                else
+                    std::cerr << "[Warning] Unknown block attribute '" << attr
+                              << "' for " << name << " (ignored)\n";
+            }
+        } else {
+            // Block：placed 格式 "name tier llx lly urx ury [s]"
+            int    t   = std::stoi(second_token);
+            double llx = 0.0, lly = 0.0, urx = 0.0, ury = 0.0;
+            if (!(ss >> llx >> lly >> urx >> ury)) {
+                std::cerr << "[Parser] Malformed placed block line: " << line << "\n";
+                continue;
+            }
+            if (t < 0 || t >= num_dies) {
+                std::cerr << "[Parser] Placed block '" << name
+                          << "': tier=" << t << " out of range [0," << num_dies-1 << "]\n";
+                continue;
+            }
+            if (urx < llx) std::swap(llx, urx);
+            if (ury < lly) std::swap(lly, ury);
+            if (urx - llx < 1e-12 || ury - lly < 1e-12) {
+                std::cerr << "[Parser] Placed block '" << name
+                          << "': degenerate bbox (" << llx << " " << lly
+                          << " " << urx << " " << ury << ")\n";
+                continue;
+            }
+            m.width       = urx - llx;
+            m.height      = ury - lly;
+            m.x           = 0.5 * (llx + urx);
+            m.y           = 0.5 * (lly + ury);
+            m.tier_id     = t;
+            m.is_terminal = false;
+
+            // 可選屬性：行尾 s = soft module
+            m.is_soft = false;
+            std::string attr;
+            if (ss >> attr) {
+                if (attr == "s")
+                    m.is_soft = true;
+                else
+                    std::cerr << "[Warning] Unknown placed block attribute '" << attr
+                              << "' for " << name << " (ignored)\n";
+            }
         }
 
         name_to_id_[name] = id_counter;
@@ -172,11 +224,16 @@ bool PlacementEngine::parse_blocks(const std::string& filename)
     std::cout << "\n";
 
     // 驗證讀取數量
-    int actual_blocks    = 0, actual_terminals = 0;
+    int actual_blocks    = 0, actual_terminals = 0, actual_soft = 0;
     for (const Module& m : modules_) {
         if (m.is_terminal) ++actual_terminals;
-        else               ++actual_blocks;
+        else {
+            ++actual_blocks;
+            if (m.is_soft) ++actual_soft;
+        }
     }
+    std::cout << "[Parser] Soft blocks: " << actual_soft
+              << " / " << actual_blocks << "\n";
     if (actual_blocks != num_blocks || actual_terminals != num_terminals) {
         std::cerr << "[Warning] Expected " << num_blocks << " blocks and "
                   << num_terminals << " terminals, "

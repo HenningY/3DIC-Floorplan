@@ -12,19 +12,56 @@ int main(int argc, char* argv[])
 {
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0]
-                  << " <block_file> <net_file> [output_file] [constraint_file]\n";
+                  << " <block_file> <net_file> [output_file] [constraint_file]"
+                  << " [--leg_only] [--wl lse|wa]\n";
         return 1;
     }
 
-    const std::string block_file       = argv[1];
-    const std::string nets_file        = argv[2];
-    const std::string output_file      = (argc >= 4) ? argv[3] : "output.txt";
-    const std::string constraint_file  = (argc >= 5) ? argv[4] : "";
+    const std::string block_file = argv[1];
+    const std::string nets_file  = argv[2];
+
+    // 從 argv[3] 開始：-- 開頭視為 flag，否則依序填充 output_file / constraint_file
+    bool            leg_only        = false;
+    WirelengthModel wl_model        = WirelengthModel::LSE;
+    std::string     output_file     = "output.txt";
+    std::string     constraint_file = "";
+    int             positional_idx  = 0;  // 0 = output, 1 = constraint
+
+    for (int i = 3; i < argc; ++i) {
+        const std::string opt = argv[i];
+        if (opt == "--leg_only") {
+            leg_only = true;
+        } else if (opt == "--wl" && i + 1 < argc) {
+            const std::string val = argv[++i];
+            if (val == "wa" || val == "WA")
+                wl_model = WirelengthModel::WA;
+            else if (val == "lse" || val == "LSE")
+                wl_model = WirelengthModel::LSE;
+            else {
+                std::cerr << "[Error] Unknown wirelength model '" << val
+                          << "'. Use 'lse' or 'wa'.\n";
+                return 1;
+            }
+        } else if (opt.size() >= 2 && opt[0] == '-' && opt[1] == '-') {
+            std::cerr << "[Error] Unknown option: " << opt << "\n";
+            return 1;
+        } else {
+            // 非 flag 的引數依序為 output_file, constraint_file
+            if (positional_idx == 0)      output_file     = opt;
+            else if (positional_idx == 1) constraint_file = opt;
+            ++positional_idx;
+        }
+    }
+
+    std::cout << "[Config] mode = " << (leg_only ? "legalize-only" : "full pipeline") << "\n";
+    if (!leg_only)
+        std::cout << "[Config] wirelength_model = "
+                  << (wl_model == WirelengthModel::LSE ? "LSE" : "WA") << "\n";
 
     // ---- set hyperparameters ----
     PlacementConfig cfg;
     cfg.max_iterations  = 10000;     // 最大迭代次數 default 3000
-    cfg.wirelength_model = WirelengthModel::LSE;  // 線長平滑模型：LSE 或 WA
+    cfg.wirelength_model = wl_model;              // 線長平滑模型：LSE 或 WA（由 --wl 指定）
     cfg.gamma_lse       = 5.0;      // LSE 平滑參數 γ（越小越接近真實 HPWL）
     cfg.gamma_wa        = 10.0;     // WA 平滑參數 γ（ePlace；通常與 gamma_lse 獨立調整）
     cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, n100: 3.0
@@ -33,8 +70,8 @@ int main(int argc, char* argv[])
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
     cfg.bin_resolution  = 64;       // Bin 格數（每層 16x16） n100: 64
     cfg.convergence_tol = 1e-3;     // 收斂容忍度 default 1e-5
-    cfg.rotation_start_iter = 1000;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
-    cfg.rotation_interval   = 500;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
+    cfg.rotation_start_iter = 0;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
+    cfg.rotation_interval   = 0;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
 
     // ---- λ increasing schedule ----
     cfg.lambda_init_mult       = 200.0;     // 初始倍率（從極小值出發，讓 WL 先主導）default 0.001, n100: 200.0
@@ -59,12 +96,17 @@ int main(int argc, char* argv[])
     cfg.convergence_total_overflow_delta_tol = 1.5;
 
     // ---- routing congestion ----
-    cfg.routing_congestion_alpha = 0;
+    cfg.routing_congestion_alpha = 1;
     cfg.routing_capacity_C = 1.0;
     cfg.routing_sigmoid_eps = 1.0;
     cfg.routing_bbox_margin_bins = 1;
-    cfg.routing_congestion_start_iter = 2000;
+    cfg.routing_congestion_start_iter = 500;
     cfg.routing_congestion_refresh_interval = 100;
+
+    // ---- per-tier adaptive congestion alpha ----
+    cfg.routing_congestion_max = 0; //(0 = 關閉)
+    cfg.routing_congestion_alpha_boost_rate = 5;
+    cfg.routing_congestion_alpha_max_mult = 2000;
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -86,8 +128,8 @@ int main(int argc, char* argv[])
     // ---- parse input ----
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    if (!engine.parse_blocks(block_file)) return 1;
-    if (!engine.parse_nets(nets_file))    return 1;
+    if (!engine.parse_blocks(block_file, leg_only)) return 1;
+    if (!engine.parse_nets(nets_file))               return 1;
 
     // ---- 依實際 die 數量調整 tier_lambdas ----
     // #die < template length → 取後 n 個；#die > template length → 前面補第一個值
@@ -124,17 +166,19 @@ int main(int argc, char* argv[])
 
     // engine.set_hpwl_die_weight_override({1, 1, 1});
 
-    // ---- initialize positions ----
-    engine.initialize_positions();
+    if (!leg_only) {
+        // ---- initialize positions ----
+        engine.initialize_positions();
 
-    // ---- (optional) square modules: convert all modules to equal-area squares before analytical ----
-    // true = 啟用；false = 使用原始長寬
-    const bool squarify = false;
-    if (squarify) squarify_modules(engine);
+        // ---- (optional) square modules: convert all modules to equal-area squares before analytical ----
+        // true = 啟用；false = 使用原始長寬
+        const bool squarify = false;
+        if (squarify) squarify_modules(engine);
 
-    // ---- execute optimization ----
-    std::cout << "\n[Solve] Starting analytical placement...\n";
-    engine.solve();
+        // ---- execute optimization ----
+        std::cout << "\n[Solve] Starting analytical placement...\n";
+        engine.solve();
+    }
 
     // ---- record module positions after analytical ----
     const auto snap_analytical = record_positions(engine);

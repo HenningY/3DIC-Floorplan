@@ -11,6 +11,21 @@ struct LocalMoveConfig {
     double overlap_weight  = 1.0;      // 重疊面積成本權重
     double moved_weight_mul = 1.25;    // module 套用移動後，move_weight 乘上此倍率
     double max_module_weight = 1e6;    // move_weight 上限
+
+    // soft module 等面積 shape curve（僅 is_soft module 生效）
+    // 在 [soft_aspect_min, soft_aspect_max] 上均勻採樣 soft_aspect_curve_steps 個 w/h，
+    // 每個採樣點 ar 對應 w=sqrt(A*ar), h=sqrt(A/ar)；含原始形狀與去重。
+    // <= 1 時僅使用原始形狀（退化為不調整）
+    int    soft_aspect_curve_steps = 11;  // 採樣點數（含端點），tune here
+    double soft_aspect_min         = 0.5; // w/h 下限
+    double soft_aspect_max         = 2.0; // w/h 上限
+
+    // sweep 方向偏好（soft/hard 同等適用）
+    // objective += side_bias_weight * side_bias_sign * center_coord
+    // sign=-1/axis=y → bottom->top：中心 y 越小越好
+    double side_bias_weight = 0.0;  // 0 = 關閉
+    int    side_bias_axis   = 0;    // 0=none, 1=x, 2=y
+    double side_bias_sign   = 0.0;  // +1 偏好大座標, -1 偏好小座標
 };
 
 struct LocalMoveResult {
@@ -21,6 +36,9 @@ struct LocalMoveResult {
     double overlap_after_x = 0.0;
     double overlap_after_y = 0.0;
     double objective       = 0.0;
+    // 套用時使用的實際寬高（rotate 前；0.0 表示沿用原本 module 的 w/h）
+    double final_width     = 0.0;
+    double final_height    = 0.0;
 };
 
 // heuristic legalization 入口（目前先實作每層中心 module 偵測）
