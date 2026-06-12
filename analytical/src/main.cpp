@@ -104,9 +104,11 @@ int main(int argc, char* argv[])
     cfg.routing_congestion_refresh_interval = 100;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 0; //(0 = 關閉)
-    cfg.routing_congestion_alpha_boost_rate = 5;
-    cfg.routing_congestion_alpha_max_mult = 2000;
+    cfg.routing_congestion_max = 15.0; //(0 = 關閉)
+    cfg.routing_congestion_alpha_boost_rate = 1.5;
+    cfg.routing_congestion_alpha_max_mult = 500;
+    cfg.routing_congestion_small_module_divisor = 100.0;  // 僅小 module（面積 < max/100）受 congestion 推力；0 = 關閉
+    cfg.routing_congestion_max_bbox_bins = 5;              // pair bbox 超過此 bin 數則不施 congestion 力；0 = 停用
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -188,8 +190,8 @@ int main(int argc, char* argv[])
 
     // ---- TSV Placement ----
     // 物理 TSV 尺寸（die 座標單位），在 normalize 縮放空間中等比放大
-    const double base_tsv_w = 3;
-    const double base_tsv_h = 3;
+    const double base_tsv_w = 0.4;
+    const double base_tsv_h = 0.4;
     const double gs = engine.geometry_scale();  // 1.0 若未觸發 normalize
 
     TsvPlacementConfig tcfg;

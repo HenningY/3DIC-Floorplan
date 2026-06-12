@@ -320,7 +320,9 @@ export function activate(context: vscode.ExtensionContext): void {
             const exe    = process.platform === "win32" ? "analytical.exe" : "analytical";
             const exeAbs = path.join(adir, exe);
             const cstArg = cstFs ? ` ${quotePath(cstFs)}` : "";
-            const cmd    = `${quotePath(exeAbs)} ${quotePath(blockFs)} ${quotePath(netsFs)} ${quotePath(outAbs)}${cstArg}`;
+            const wlArg  = msg.legOnly ? "" : ` --wl ${msg.wlModel === "wa" ? "wa" : "lse"}`;
+            const legArg = msg.legOnly ? " --leg_only" : "";
+            const cmd    = `${quotePath(exeAbs)} ${quotePath(blockFs)} ${quotePath(netsFs)} ${quotePath(outAbs)}${cstArg}${wlArg}${legArg}`;
             appendLog(`[EXEC] $ ${cmd}`);
             const term = vscode.window.createTerminal({
               name: "analytical floorplan",

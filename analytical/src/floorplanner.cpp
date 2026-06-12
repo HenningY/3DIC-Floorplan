@@ -446,7 +446,9 @@ void PlacementEngine::solve()
                             (prev < 1.0 ? 1.0 : prev * cfg_.routing_congestion_alpha_boost_rate),
                             cfg_.routing_congestion_alpha_max_mult);
                     } else {
-                        tier_rc_alpha_mult_[ti] = 0.0;
+                        const double prev = tier_rc_alpha_mult_[ti];
+                        tier_rc_alpha_mult_[ti] = std::max(
+                            1.0, prev / cfg_.routing_congestion_alpha_boost_rate);
                     }
                     std::cout << " t" << t << "=" << std::fixed << std::setprecision(3)
                               << tmax << (tmax > cfg_.routing_congestion_max ? "!(a=" : " (a=")

@@ -988,7 +988,7 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     // ---- 設定 ----
     // sweep 方向偏好強度：objective += weight * sign * center
     // 增大此值讓 module 更積極往 sweep 方向側靠；0 關閉
-    static constexpr double kSideBiasWeight = 10.0;
+    static constexpr double kSideBiasWeight = 0.0;
 
     LocalMoveConfig lcfg;
     lcfg.max_search_dist   = 30.0;

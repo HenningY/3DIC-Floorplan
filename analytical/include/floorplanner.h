@@ -173,6 +173,12 @@ struct PlacementConfig {
     double routing_congestion_alpha_boost_rate = 5; // 每次調整的倍率幅度
     double routing_congestion_alpha_max_mult   = 1000.0;// alpha 倍率上限（防止爆炸）
 
+    // 僅 area < tier_max_area / n 的可移動 module 會收到 congestion 推力；<=0 關閉過濾
+    double routing_congestion_small_module_divisor = 50.0;
+
+    // pin pair 的 bounding box 橫跨超過此 bin 數時，不對該 pair 施加 congestion 推力；0 = 停用
+    int routing_congestion_max_bbox_bins = 0;
+
     // ---- 幾何 Normalize（縮放 die/module 到目標邊長再還原）----
     // 依全 die 最小邊長判斷是否觸發縮放，僅等比縮放幾何資料；超參數不變
     bool   enable_die_normalize      = false;  // 總開關

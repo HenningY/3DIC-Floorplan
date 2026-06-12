@@ -436,16 +436,40 @@ BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine
                     const int vc_hi = static_cast<int>(std::floor(xhi / bw));
 
                     // 累加水平邊段
-                    for (int hr = hr_lo; hr <= hr_hi && hr >= 0 && hr <= R; ++hr) {
+                    // 若兩 pin 在同一 bin row（hr_lo > hr_hi），改累加該 bin 的上下兩條邊
+                    if (hr_lo > hr_hi) {
+                        const int bin_row = static_cast<int>(std::floor(0.5 * (ylo + yhi) / bh));
+                        const int hr_bot  = std::max(0,   bin_row);
+                        const int hr_top  = std::min(R,   bin_row + 1);
                         for (int hc = hc_lo; hc <= hc_hi && hc >= 0 && hc < C; ++hc) {
-                            H[static_cast<size_t>(hr * C + hc)] += h_delta;
+                            H[static_cast<size_t>(hr_bot * C + hc)] += h_delta;
+                            if (hr_top != hr_bot)
+                                H[static_cast<size_t>(hr_top * C + hc)] += h_delta;
+                        }
+                    } else {
+                        for (int hr = hr_lo; hr <= hr_hi && hr >= 0 && hr <= R; ++hr) {
+                            for (int hc = hc_lo; hc <= hc_hi && hc >= 0 && hc < C; ++hc) {
+                                H[static_cast<size_t>(hr * C + hc)] += h_delta;
+                            }
                         }
                     }
 
                     // 累加垂直邊段
-                    for (int vc = vc_lo; vc <= vc_hi && vc >= 0 && vc <= C; ++vc) {
+                    // 若兩 pin 在同一 bin col（vc_lo > vc_hi），改累加該 bin 的左右兩條邊
+                    if (vc_lo > vc_hi) {
+                        const int bin_col = static_cast<int>(std::floor(0.5 * (xlo + xhi) / bw));
+                        const int vc_left  = std::max(0,   bin_col);
+                        const int vc_right = std::min(C,   bin_col + 1);
                         for (int vr = vr_lo; vr <= vr_hi && vr >= 0 && vr < R; ++vr) {
-                            V[static_cast<size_t>(vc * R + vr)] += v_delta;
+                            V[static_cast<size_t>(vc_left  * R + vr)] += v_delta;
+                            if (vc_right != vc_left)
+                                V[static_cast<size_t>(vc_right * R + vr)] += v_delta;
+                        }
+                    } else {
+                        for (int vc = vc_lo; vc <= vc_hi && vc >= 0 && vc <= C; ++vc) {
+                            for (int vr = vr_lo; vr <= vr_hi && vr >= 0 && vr < R; ++vr) {
+                                V[static_cast<size_t>(vc * R + vr)] += v_delta;
+                            }
                         }
                     }
                 }

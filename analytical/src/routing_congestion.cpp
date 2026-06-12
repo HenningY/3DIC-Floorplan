@@ -13,6 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <iostream>
+#include <limits>
 
 // ============================================================
 // 數值穩定 sigmoid：σ(t) = 1/(1+exp(t))
@@ -77,6 +80,7 @@ static inline void eval_cover(double u, double xe1, double xe2, double v, double
 static void accumulate_pair(
     double x1, double y1, double x2, double y2,
     int ia, int ib, bool ma_move, bool mb_move,
+    bool ma_rc, bool mb_rc,
     const Die& die,
     double eps, double cap,
     std::vector<double>& gx, std::vector<double>& gy)
@@ -130,11 +134,11 @@ static void accumulate_pair(
                 const double dU_dy1 = dVy_dy1 * cov * inv_cs;
                 const double dU_dy2 = dVy_dy2 * cov * inv_cs;
 
-                if (ma_move) {
+                if (ma_move && ma_rc) {
                     gx[ia] += dP_dU * dU_dx1;
                     gy[ia] += dP_dU * dU_dy1;
                 }
-                if (mb_move) {
+                if (mb_move && mb_rc) {
                     gx[ib] += dP_dU * dU_dx2;
                     gy[ib] += dP_dU * dU_dy2;
                 }
@@ -178,11 +182,11 @@ static void accumulate_pair(
                 const double dU_dx1 = dVx_dx1 * cov * inv_rs;
                 const double dU_dx2 = dVx_dx2 * cov * inv_rs;
 
-                if (ma_move) {
+                if (ma_move && ma_rc) {
                     gx[ia] += dP_dU * dU_dx1;
                     gy[ia] += dP_dU * dU_dy1;
                 }
-                if (mb_move) {
+                if (mb_move && mb_rc) {
                     gx[ib] += dP_dU * dU_dx2;
                     gy[ib] += dP_dU * dU_dy2;
                 }
@@ -204,13 +208,64 @@ void calculate_routing_congestion_gradient(
 
     // alpha 不在此處施加：gx_rc 儲存純梯度 ∂P_route/∂x，
     // alpha 與 RMS 縮放統一在 floorplanner.cpp 的 merge 步驟處理
-    const double eps = cfg.routing_sigmoid_eps;
-    const double cap = cfg.routing_capacity_C;
+    const double eps         = cfg.routing_sigmoid_eps;
+    const double cap         = cfg.routing_capacity_C;
+    const int    max_bbox_bins = cfg.routing_congestion_max_bbox_bins;
 
     const auto& modules   = engine.modules();
     const auto& nets      = engine.nets();
     const auto& dies      = engine.dies();
     const int   num_tiers = static_cast<int>(dies.size());
+    const int   nmod      = static_cast<int>(modules.size());
+
+    // ---- Small-module filter ----
+    // 僅當 divisor > 0 時啟用；否則全部 module 均可接收 congestion 推力
+    const double divisor = cfg.routing_congestion_small_module_divisor;
+    const bool   do_filter = (divisor > 0.0);
+
+    std::vector<bool> rc_eligible(static_cast<size_t>(nmod), true);
+    if (do_filter) {
+        // 1. 各 tier 的最大 block 面積
+        std::vector<double> tier_max_area(static_cast<size_t>(num_tiers), 0.0);
+        for (int i = 0; i < nmod; ++i) {
+            const Module& m = modules[i];
+            if (m.is_terminal) continue;
+            const size_t t = static_cast<size_t>(m.tier_id);
+            const double a = m.area();
+            if (a > tier_max_area[t]) tier_max_area[t] = a;
+        }
+
+        // 2. 各 module 是否符合：area < max_area / divisor
+        for (int i = 0; i < nmod; ++i) {
+            const Module& m = modules[i];
+            if (m.is_terminal) { rc_eligible[i] = false; continue; }
+            const double thresh = tier_max_area[static_cast<size_t>(m.tier_id)] / divisor;
+            rc_eligible[i] = (m.area() < thresh);
+        }
+
+        // 首次啟用時印出各 tier 的統計（static flag 避免每 iter 重刷）
+        static bool logged = false;
+        if (!logged) {
+            logged = true;
+            std::cout << std::fixed << std::setprecision(1);
+            std::cout << "[RoutingCongestion] small-module filter: n=" << divisor << "\n";
+            for (int t = 0; t < num_tiers; ++t) {
+                int eligible = 0, total = 0;
+                for (int i = 0; i < nmod; ++i) {
+                    const Module& m = modules[i];
+                    if (m.is_terminal || m.tier_id != t) continue;
+                    ++total;
+                    if (rc_eligible[i]) ++eligible;
+                }
+                std::cout << "  tier" << t
+                          << " eligible=" << eligible << "/" << total
+                          << " max_area=" << tier_max_area[static_cast<size_t>(t)]
+                          << " threshold=" << tier_max_area[static_cast<size_t>(t)] / divisor
+                          << "\n";
+            }
+            std::cout << std::defaultfloat;
+        }
+    }
 
     for (const Net& net : nets) {
         if (net.pins.size() < 2) continue;
@@ -241,9 +296,21 @@ void calculate_routing_congestion_gradient(
                     const bool mb_move = !mb.is_terminal && !mb.is_fixed;
                     if (!ma_move && !mb_move) continue;
 
+                    const bool ma_rc = rc_eligible[static_cast<size_t>(ia)];
+                    const bool mb_rc = rc_eligible[static_cast<size_t>(ib)];
+                    if (!ma_rc && !mb_rc) continue;  // 快速跳過：兩端均不受力
+
+                    // bbox 跨 bin 數過濾：pair 的 bbox 超過 max_bbox_bins 時跳過
+                    if (max_bbox_bins > 0) {
+                        const int span_x = static_cast<int>(std::ceil(std::fabs(ma.x - mb.x) / die.bin_w));
+                        const int span_y = static_cast<int>(std::ceil(std::fabs(ma.y - mb.y) / die.bin_h));
+                        if (std::max(span_x, span_y) > max_bbox_bins) continue;
+                    }
+
                     accumulate_pair(
                         ma.x, ma.y, mb.x, mb.y,
                         ia, ib, ma_move, mb_move,
+                        ma_rc, mb_rc,
                         die, eps, cap,
                         gx, gy);
                 }

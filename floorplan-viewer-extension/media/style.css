@@ -49,6 +49,11 @@ select.preset-select {
   border: 1px solid var(--vscode-input-border, #444);
   border-radius: 3px;
 }
+.run-opts-row { display: flex; gap: 8px; align-items: center; padding: 4px 8px 2px; flex-wrap: wrap; }
+.run-opt-group { display: flex; align-items: center; gap: 3px; }
+.run-opt-label { font-size: 11px; color: var(--vscode-descriptionForeground); margin-right: 2px; white-space: nowrap; }
+.run-toggle { flex: none; padding: 2px 8px; font-size: 11px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid transparent; border-radius: 3px; cursor: pointer; }
+.run-toggle.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-focusBorder, transparent); }
 .btn-row { display: flex; flex-direction: row; gap: 4px; padding: 4px 8px 8px; }
 .btn-row button { flex: 1; }
 button {

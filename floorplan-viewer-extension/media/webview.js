@@ -697,6 +697,24 @@ document.getElementById('pickBlock').onclick = function() {
 document.getElementById('pickNets').onclick = function() {
   vscode.postMessage(Object.assign({ type: 'pickNets' }, currentInputPaths()));
 };
+let selectedWlModel = 'lse';
+let legOnlyEnabled  = false;
+
+document.getElementById('toggleWlLse').onclick = function() {
+  selectedWlModel = 'lse';
+  document.getElementById('toggleWlLse').classList.add('active');
+  document.getElementById('toggleWlWa').classList.remove('active');
+};
+document.getElementById('toggleWlWa').onclick = function() {
+  selectedWlModel = 'wa';
+  document.getElementById('toggleWlWa').classList.add('active');
+  document.getElementById('toggleWlLse').classList.remove('active');
+};
+document.getElementById('toggleLegOnly').onclick = function() {
+  legOnlyEnabled = !legOnlyEnabled;
+  this.classList.toggle('active', legOnlyEnabled);
+};
+
 document.getElementById('runFloorplan').onclick = function() {
   vscode.postMessage({
     type:       'run',
@@ -704,6 +722,8 @@ document.getElementById('runFloorplan').onclick = function() {
     nets:       document.getElementById('netsPath').value,
     output:     document.getElementById('outPath').value,
     constraint: document.getElementById('constraintPath').value.trim(),
+    wlModel:    selectedWlModel,
+    legOnly:    legOnlyEnabled,
   });
 };
 document.getElementById('reload2d').onclick = function() {

@@ -301,7 +301,9 @@ function activate(context) {
                 const exe = process.platform === "win32" ? "analytical.exe" : "analytical";
                 const exeAbs = path.join(adir, exe);
                 const cstArg = cstFs ? ` ${(0, pathUtils_1.quotePath)(cstFs)}` : "";
-                const cmd = `${(0, pathUtils_1.quotePath)(exeAbs)} ${(0, pathUtils_1.quotePath)(blockFs)} ${(0, pathUtils_1.quotePath)(netsFs)} ${(0, pathUtils_1.quotePath)(outAbs)}${cstArg}`;
+                const wlArg = msg.legOnly ? "" : ` --wl ${msg.wlModel === "wa" ? "wa" : "lse"}`;
+                const legArg = msg.legOnly ? " --leg_only" : "";
+                const cmd = `${(0, pathUtils_1.quotePath)(exeAbs)} ${(0, pathUtils_1.quotePath)(blockFs)} ${(0, pathUtils_1.quotePath)(netsFs)} ${(0, pathUtils_1.quotePath)(outAbs)}${cstArg}${wlArg}${legArg}`;
                 appendLog(`[EXEC] $ ${cmd}`);
                 const term = vscode.window.createTerminal({
                     name: "analytical floorplan",

@@ -69,6 +69,16 @@ export function getHtml(
         </div>
       </div>
     </div>
+    <div class="run-opts-row">
+      <div class="run-opt-group">
+        <span class="run-opt-label">WL Model</span>
+        <button class="run-toggle active" id="toggleWlLse" data-wl="lse">LSE</button>
+        <button class="run-toggle" id="toggleWlWa" data-wl="wa">WA</button>
+      </div>
+      <div class="run-opt-group">
+        <button class="run-toggle" id="toggleLegOnly">Leg Only</button>
+      </div>
+    </div>
     <div class="btn-row">
       <button id="runFloorplan">Run Floorplan</button>
       <button class="secondary" id="reload2d">Reload 2D</button>
