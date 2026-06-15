@@ -26,6 +26,8 @@ struct Module {
     bool        is_fixed = false; // 是否被 constraint 固定（位置不可移動）
     bool        is_soft  = false; // true = soft module（.block 行尾 s）；預設 hard
     double      move_weight = 1.0; // heuristic legalize 權重（越大越不希望與其重疊）
+    bool        is_tsv_proxy = false; // true = 由 TSV 暫時注入的 proxy，legalize 後移除
+    int         tsv_proxy_id = -1;   // 對應 tsvs_[tsv_proxy_id]
 
     double area() const { return width * height; }
     double lx()   const { return x - width  * 0.5; }   // 左邊界
@@ -91,6 +93,16 @@ struct Die {
 enum class WirelengthModel { LSE, WA };
 
 // ============================================================
+// BinEdgeDemands：可增量更新的 H/V edge demand 陣列
+//   H[t][hr * C + hc]  hr∈[0,R], hc∈[0,C-1]
+//   V[t][vc * R + vr]  vc∈[0,C], vr∈[0,R-1]
+// ============================================================
+struct BinEdgeDemands {
+    std::vector<std::vector<double>> H;  // 長度 (R+1)*C，per tier
+    std::vector<std::vector<double>> V;  // 長度 (C+1)*R，per tier
+};
+
+// ============================================================
 // PlacementConfig: 優化超參數集合
 // ============================================================
 struct PlacementConfig {
@@ -147,37 +159,50 @@ struct PlacementConfig {
     // LSE / analytical 線長梯度始終只用 .block 的 Weight:，不受此欄位影響。
     std::vector<double> hpwl_die_weights;
 
-    // ---- Routability-Driven Congestion Penalty（可微 sigmoid）----
+    // ---- Routability-Driven Congestion Penalty（density-style 局部場模型）----
     // alpha = 0 → 整個壅塞懲罰關閉（early-return，不影響速度）。
-    // 懲罰能量：P = Σ_e (U(e) - routing_capacity_C)²，以 sigmoid-bbox 近似 U(e) 並對
-    // module 座標求解析梯度，不參與 density RMS 縮放，僅靠 alpha 調力道。
+    // 模型：先建 H/V edge demand 快取（update_routing_congestion_map），
+    //       再對附近 module 以 bell 核計算斥力（H→gy，V→gx）。
     double routing_congestion_alpha      = 0.5;  // 懲罰強度；0 = 關閉
     double routing_capacity_C            = 1.0;  // 每條邊的 routing capacity（全域常數）
-    double routing_sigmoid_eps           = 1.0;  // sigmoid 精度參數 ε
-    int    routing_bbox_margin_bins      = 1;    // bbox 裁剪外擴格數
 
     // 週期性計算：
     //   iter >= routing_congestion_start_iter
     //   且 (iter - routing_congestion_start_iter) % routing_congestion_refresh_interval == 0
-    // 時重算壅塞梯度；其餘 iter 直接將 gx_rc/gy_rc 清零。
+    // 時刷新 map 並重算梯度；其餘 iter 直接將 gx_rc/gy_rc 清零。
     int routing_congestion_start_iter       = 1000;   // 從第幾個 iter 開始啟用（n）
     int routing_congestion_refresh_interval = 100;   // 每幾個 iter 重算一次（m）
 
     // ---- Per-tier 自適應壅塞強度 ----
     // routing_congestion_max > 0 時啟用：每隔 routing_congestion_refresh_interval 次
-    // 以 compute_bin_edge_congestion 量測各層的 tier_max：
+    // 從快取 map 算各層 edge max（所有 H/V edge demand 的最大值）：
     //   tier_max >  routing_congestion_max → 該層 alpha 倍率 × boost_rate
     //   tier_max <= routing_congestion_max → 該層 alpha 倍率 ÷ boost_rate（最小 1.0）
     // 設 0 關閉自適應（tier_rc_alpha_mult_ 全程維持 1.0）。
-    double routing_congestion_max            = 15.0;   // 每層 tier_max 的目標上限（0=停用）
+    double routing_congestion_max            = 15.0;   // 每層 edge max 的目標上限（0=停用）
     double routing_congestion_alpha_boost_rate = 5; // 每次調整的倍率幅度
     double routing_congestion_alpha_max_mult   = 1000.0;// alpha 倍率上限（防止爆炸）
 
-    // 僅 area < tier_max_area / n 的可移動 module 會收到 congestion 推力；<=0 關閉過濾
-    double routing_congestion_small_module_divisor = 50.0;
+    // ---- Congestion 啟用門檻（小 module 比例）----
+    // area < 各層最大 module 面積 / divisor 的 module 視為「小 module」
+    // 全部可動 module 中小 module 比例 <= gate_min_ratio 時，將 routing_congestion_max 強制設為 0（停用）
+    // gate_divisor <= 0 → 停用此門檻，直接使用 routing_congestion_max 設定值
+    double routing_congestion_gate_divisor   = 0.0;   // <=0 停用門檻
+    double routing_congestion_gate_min_ratio = 0.20;  // 預設 20%
 
-    // pin pair 的 bounding box 橫跨超過此 bin 數時，不對該 pair 施加 congestion 推力；0 = 停用
-    int routing_congestion_max_bbox_bins = 0;
+
+    // ---- Phase 2 Analytical TSV ----
+    // 面積使用率門檻：build_tsvs() 後若任一 tier 的 module 面積佔比 > 此值，跳過 Phase 2
+    // （改走 solve_tsvs + reflow_tsvs_after_legalize）；<=0 停用檢查，一律走 Phase 2。
+    double tier_area_util_phase2_max      = 0.70;
+    // true：solve() 後 build_tsvs() 然後再跑一輪 joint analytical（module + TSV 一起移動）
+    bool   enable_analytical_tsv_phase    = false;
+    int    analytical_tsv_max_iterations  = 1000;  // Phase 2 最大迭代次數
+    double analytical_tsv_width           = 3.0;   // TSV 小矩形寬（density/congestion bell 半徑用）
+    double analytical_tsv_height          = 3.0;   // TSV 小矩形高
+    bool   analytical_tsv_warmup          = true;  // Phase 2 前是否先 solve_tsvs() 初始化位置
+    // Phase 2 congestion 對 TSV 上下層各算一次後累加，可能力道偏大；此係數縮放 TSV congestion 梯度
+    double analytical_tsv_congestion_scale = 0.5;
 
     // ---- 幾何 Normalize（縮放 die/module 到目標邊長再還原）----
     // 依全 die 最小邊長判斷是否觸發縮放，僅等比縮放幾何資料；超參數不變
@@ -215,6 +240,11 @@ struct PartitionConfig {
 
     // true：legalization 後在無 overlap 的 tier 執行 WL refinement（net-centroid 拉力）
     bool enable_wl_refine = true;
+
+    // true：legalize 前把 TSV 注入為 proxy module，一起做 overlap 消除；
+    //        legalize 後把座標寫回 tsvs_ 並移除 proxy，跳過 reflow_tsvs_after_legalize。
+    // false：舊流程（legalize module → reflow TSV）
+    bool legalize_tsv_as_module = true;
 
     // normalized space 中，module 最短邊超過此值視為「大型 module」，啟用 strong legalize
     double legalize_large_module_min_edge = 60.0;
@@ -334,17 +364,27 @@ public:
 
     // ---- 公開的優化計算（供測試與除錯）----
     double compute_lse_wirelength() const;
+    // gx_tsv/gy_tsv: 若非 nullptr 且 analytical_tsv_active_，累加 per-tier TSV 梯度（長度=tsvs_.size()）
     void   calculate_wirelength_gradient(std::vector<double>& gx,
-                                         std::vector<double>& gy) const;
+                                         std::vector<double>& gy,
+                                         std::vector<double>* gx_tsv = nullptr,
+                                         std::vector<double>* gy_tsv = nullptr) const;
 
     void   update_density_map();
+    // gx_tsv/gy_tsv: 若非 nullptr 且 analytical_tsv_active_，輸出 TSV 密度梯度（長度=tsvs_.size()）
     void   calculate_density_gradient(std::vector<double>& gx,
-                                      std::vector<double>& gy) const;
+                                      std::vector<double>& gy,
+                                      std::vector<double>* gx_tsv = nullptr,
+                                      std::vector<double>* gy_tsv = nullptr) const;
 
     // ---- Recursive Partitioning（Legalization 準備）----
     // 對所有 tier 做 Recursive Bi-partitioning，
     // 結果用 partition_all_tiers() 統一觸發並寫 log
     void partition_all_tiers(const struct PartitionConfig& pcfg);
+
+    // ---- Phase 2 Analytical TSV ----
+    // 以 TSV 為 movable entity 繼續 analytical（需先 build_tsvs()）
+    void solve_tsv_phase();
 
     // ---- 訪問器 ----
     const std::vector<Module>& modules()  const { return modules_; }
@@ -352,6 +392,8 @@ public:
     const std::vector<Net>&    nets()     const { return nets_; }
     const std::vector<Die>&    dies()     const { return dies_; }
     const std::vector<TSV>&    tsvs()     const { return tsvs_; }
+    // net_id → [tsv 索引] 正向索引；build_tsvs() 後有效
+    const std::vector<std::vector<int>>& net_to_tsvs() const { return net_to_tsvs_; }
     int                        num_dies() const { return static_cast<int>(dies_.size()); }
 
     // 由 .block 的 Weight: 行讀入；每層 die 一個係數（供之後 weighted net 使用）
@@ -359,6 +401,14 @@ public:
 
     // 取得當前 PlacementConfig（供外部模組如 routing_congestion 讀取超參數）
     const PlacementConfig& config() const { return cfg_; }
+
+    // ---- Routing Congestion Map（density-style 場模型）----
+    // 建立/刷新 H/V edge demand 快取（供 calculate_routing_congestion_gradient 使用）
+    void update_routing_congestion_map();
+    // 讀取快取（供 routing_congestion.cpp 的 gradient 計算讀取）
+    const BinEdgeDemands& routing_edge_demands() const { return rc_edge_demands_; }
+    // 讀取當前迭代的平滑半徑 σ（供 routing_congestion.cpp 決定影響半徑）
+    double smooth_sigma() const { return smooth_sigma_; }
 
     // 僅覆寫 compute_hpwl() 的每層乘數；analytical（LSE）仍只用 .block 的 Weight:
     void set_hpwl_die_weight_override(std::vector<double> w) { cfg_.hpwl_die_weights = std::move(w); }
@@ -368,6 +418,13 @@ public:
     // 覆寫 TSV placement 用的每層乘數（可不經 solve_tsvs 先設）；tsv_die_weights 空則跟 .block
     void set_tsv_placement_config(const TsvPlacementConfig& cfg) { tsv_placement_cfg_ = cfg; }
     const TsvPlacementConfig& tsv_placement_config() const { return tsv_placement_cfg_; }
+
+    // ---- TSV Proxy for Unified Legalization ----
+    // 把每個 TSV 以小矩形（tsv_w × tsv_h）注入 modules_ 作為 proxy（tier_id = tier_below）
+    // 供 run_legalize_heu 與真實 module 一起做 overlap 消除
+    void inject_tsv_proxies_for_legalize(double tsv_w, double tsv_h);
+    // legalize 結束後把 proxy 的 (x,y) 寫回 tsvs_，再從 modules_ 移除所有 proxy
+    void commit_tsv_proxies_from_legalize();
 
     // ---- 幾何 Normalize ----
     // parse_blocks + parse_constraints 之後呼叫；依 PlacementConfig 判斷是否縮放
@@ -404,16 +461,35 @@ private:
     std::unordered_map<std::string, int> name_to_id_;
 
     // Nesterov 加速梯度的歷史狀態
-    std::vector<double> prev_x_, prev_y_;   // x_{k-1}
-    std::vector<double> vel_x_,  vel_y_;    // 動量向量
+    std::vector<double> prev_x_, prev_y_;         // x_{k-1}（module）
+    std::vector<double> vel_x_,  vel_y_;          // 動量向量
+    std::vector<double> prev_tsv_x_, prev_tsv_y_; // x_{k-1}（TSV，Phase 2 用）
+
+    // ---- Routing Congestion Map 快取 ----
+    BinEdgeDemands rc_edge_demands_;
 
     // ---- 動態狀態（每次迭代更新）----
     // 當前 σ 平滑半徑，供 update_density_map / calculate_density_gradient 使用
     double smooth_sigma_ = 0.0;
     // 當前 λ 倍率，在 solve() 內每 lambda_update_interval 次迭代遞增
     double lambda_mult_  = 1.0;
+    // NAG 步長：Phase 1 結束時寫入，Phase 2 從此值繼續（不再重置為 init_step_size）
+    double nag_step_     = 0.0;
+    // 跨 Phase 累積迭代次數（σ / λ / RC 排程與 log 皆用此值，Phase 2 接續 Phase 1）
+    int    nag_iter_     = 0;
     // Per-tier routing congestion alpha 動態倍率（routing_congestion_max > 0 時更新）
     std::vector<double> tier_rc_alpha_mult_;
+
+    // Phase 2 Analytical TSV 啟用旗標（由 solve_tsv_phase() 設定/清除）
+    bool analytical_tsv_active_ = false;
+
+    // TSV proxy 注入後記錄的 modules_ 索引，供 commit_tsv_proxies_from_legalize 使用
+    std::vector<int> proxy_module_indices_;
+
+    // net_id → [tsv 在 tsvs_ 的索引]，在 build_tsvs() 後建立；
+    // 大小 = nets_.size()，非 cross-tier net 的 entry 為空 vector。
+    // 供 WL 梯度 / HPWL / congestion map 用，避免對每個 (net,tier) 全掃 tsvs_。
+    std::vector<std::vector<int>> net_to_tsvs_;
 
     // ---- 內部輔助函式 ----
 
@@ -441,6 +517,11 @@ private:
 
     // 邊界夾取：確保模組中心在 Die 內部（留 0.5 邊距）
     void clamp_to_die(Module& m, const Die& die) const;
+    // 邊界夾取：確保 TSV 中心在 tier_below die 內部（留半寬邊距）
+    void clamp_tsv_to_die(TSV& tsv) const;
+
+    // Phase 2 NAG 主迴圈（include_tsv=true 時 TSV 一起移動）
+    void run_nag_loop(int max_iter, bool include_tsv);
 
     // 記錄每次迭代的 HPWL 用於收斂判斷
     double prev_hpwl_ = std::numeric_limits<double>::max();

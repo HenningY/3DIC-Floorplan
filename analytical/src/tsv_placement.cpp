@@ -59,6 +59,14 @@ void PlacementEngine::build_tsvs()
 
     std::cout << "[TSV] Built " << tsvs_.size() << " TSVs from cross-tier nets "
               << "(num_dies=" << num_dies() << ").\n";
+
+    // 建立 net_id → [tsv idx] 正向索引（以 net.id 為 key，大小 = nets_.size()）
+    net_to_tsvs_.assign(nets_.size(), std::vector<int>{});
+    for (int i = 0; i < static_cast<int>(tsvs_.size()); ++i) {
+        const int nid = tsvs_[static_cast<size_t>(i)].net_id;
+        if (nid >= 0 && nid < static_cast<int>(nets_.size()))
+            net_to_tsvs_[static_cast<size_t>(nid)].push_back(i);
+    }
 }
 
 // ============================================================

@@ -1,13 +1,11 @@
 // 3D IC Analytical Floorplanner - Routability-Driven Congestion Penalty
 //
-// 懲罰能量（對 module 位置完全可微）：
-//   P_route = Σ_e (U(e) - C)²
-//
-// 平滑指示函數：f(u, x, v) = σ(ε*(u-x)*(v-x)) = 1/(1+exp(ε*(u-x)*(v-x)))
-//   x 在 [min(u,v), max(u,v)] 內時乘積 < 0 → σ > 0.5（近似「在區間內」）
-//
-// Usage_H(e) = Vy(y1,y_e,y2) * cover_x(x1,x_e1,x_e2,x2) / col_span
-// Usage_V(e) = Vx(x1,x_e,x2) * cover_y(y1,y_e1,y_e2,y2) / row_span
+// density-style 局部場模型：
+//   1. update_routing_congestion_map()（PlacementEngine 成員）
+//      → 建立 H/V edge demand 快取（BinEdgeDemands）
+//   2. calculate_routing_congestion_gradient()（本檔）
+//      → 對每個可動 module 掃描影響半徑內的 hotspot edge，
+//        以 bell 核計算斥力（horizontal edge → gy，vertical edge → gx）
 //
 // routing_congestion_alpha = 0 時立即 return，不影響既有行為。
 #pragma once
@@ -16,8 +14,11 @@
 #include <vector>
 
 // 對 gx[i]/gy[i]（與 modules_[i] 對應，長度 = modules_.size()）累加壅塞梯度。
-// alpha=0 時函式立即返回。
+// gx_tsv/gy_tsv 非 nullptr 時同步計算 TSV 在上下層的合力（長度 = tsvs_.size()）。
+// 呼叫前需已完成 engine.update_routing_congestion_map()。
 void calculate_routing_congestion_gradient(
     const PlacementEngine& engine,
     std::vector<double>&   gx,
-    std::vector<double>&   gy);
+    std::vector<double>&   gy,
+    std::vector<double>*   gx_tsv = nullptr,
+    std::vector<double>*   gy_tsv = nullptr);

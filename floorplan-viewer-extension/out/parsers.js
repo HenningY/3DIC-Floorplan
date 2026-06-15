@@ -84,6 +84,7 @@ function parseBlockFile(text) {
             width: parseFloat(parts[1]),
             height: parseFloat(parts[2]),
             tier: parseInt(parts[3], 10),
+            isSoft: parts.length > 4 && parts[4].toLowerCase() === "s",
         });
     }
     // 解析 terminal 行（格式：name terminal x y）

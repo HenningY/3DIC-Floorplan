@@ -4,6 +4,7 @@
 #include "legalize_heu.h"
 #include "util.h"
 
+#include <iomanip>
 #include <iostream>
 #include <string>
 #include <chrono>
@@ -64,7 +65,7 @@ int main(int argc, char* argv[])
     cfg.wirelength_model = wl_model;              // 線長平滑模型：LSE 或 WA（由 --wl 指定）
     cfg.gamma_lse       = 5.0;      // LSE 平滑參數 γ（越小越接近真實 HPWL）
     cfg.gamma_wa        = 10.0;     // WA 平滑參數 γ（ePlace；通常與 gamma_lse 獨立調整）
-    cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, n100: 3.0
+    cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, n100: 1.0
     cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, 0.999
     cfg.momentum        = 0.9;      // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
@@ -95,20 +96,26 @@ int main(int argc, char* argv[])
     cfg.convergence_max_overflow_delta_tol = 0.001;
     cfg.convergence_total_overflow_delta_tol = 1.5;
 
-    // ---- routing congestion ----
+    // ---- routing congestion（density-style 局部場模型）----
     cfg.routing_congestion_alpha = 1;
     cfg.routing_capacity_C = 1.0;
-    cfg.routing_sigmoid_eps = 1.0;
-    cfg.routing_bbox_margin_bins = 1;
-    cfg.routing_congestion_start_iter = 500;
-    cfg.routing_congestion_refresh_interval = 100;
+    cfg.routing_congestion_start_iter = 100;
+    cfg.routing_congestion_refresh_interval = 10;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 15.0; //(0 = 關閉)
-    cfg.routing_congestion_alpha_boost_rate = 1.5;
-    cfg.routing_congestion_alpha_max_mult = 500;
-    cfg.routing_congestion_small_module_divisor = 100.0;  // 僅小 module（面積 < max/100）受 congestion 推力；0 = 關閉
-    cfg.routing_congestion_max_bbox_bins = 5;              // pair bbox 超過此 bin 數則不施 congestion 力；0 = 停用
+    cfg.routing_congestion_max = 50.0; //(0 = 關閉)
+    cfg.routing_congestion_alpha_boost_rate = 1.2;
+    cfg.routing_congestion_alpha_max_mult = 100;
+    // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
+    // 比例 <= gate_min_ratio（預設 20%）時停用 routing_congestion_max
+    // gate_divisor <= 0 停用此門檻
+    cfg.routing_congestion_gate_divisor   = 100.0;
+    cfg.routing_congestion_gate_min_ratio = 0.20;
+
+    // phase 2 analytical tsv
+    cfg.analytical_tsv_max_iterations = 1000;
+    // 任一 tier module 面積使用率超過此值則跳過 Phase 2（走 solve_tsvs + reflow）；<=0 停用，一律 Phase 2
+    cfg.tier_area_util_phase2_max = 0.70;
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -188,18 +195,57 @@ int main(int argc, char* argv[])
     // ---- build TSV list ----
     engine.build_tsvs();
 
-    // ---- TSV Placement ----
+    // ---- TSV Placement / Phase 2 ----
     // 物理 TSV 尺寸（die 座標單位），在 normalize 縮放空間中等比放大
     const double base_tsv_w = 0.4;
     const double base_tsv_h = 0.4;
     const double gs = engine.geometry_scale();  // 1.0 若未觸發 normalize
 
     TsvPlacementConfig tcfg;
-    tcfg.tsv_width      = base_tsv_w * gs;  // scaled 座標空間的 TSV 寬
-    tcfg.tsv_height     = base_tsv_h * gs;  // scaled 座標空間的 TSV 高
-    // TSV cost 每層乘數：留空則與 .block 的 Weight: 相同；若要覆寫例如：
+    tcfg.tsv_width      = base_tsv_w * gs;
+    tcfg.tsv_height     = base_tsv_h * gs;
     tcfg.tsv_die_weights = {1, 1, 1};
-    engine.solve_tsvs(tcfg);
+
+    // ---- Phase 2 決策：依各 tier 面積使用率自動選流程 ----
+    {
+        const auto util = compute_tier_module_utilization(engine);
+        const double thr = cfg.tier_area_util_phase2_max;
+        std::cout << "[Config] tier module util:";
+        for (int t = 0; t < static_cast<int>(util.size()); ++t)
+            std::cout << " t" << t << "=" << std::fixed << std::setprecision(1)
+                      << util[static_cast<size_t>(t)] * 100.0 << "%";
+        if (thr > 0.0)
+            std::cout << " (threshold=" << std::setprecision(1) << thr * 100.0 << "%)";
+        std::cout << "\n";
+
+        bool skip_phase2 = false;
+        if (thr > 0.0) {
+            for (int t = 0; t < static_cast<int>(util.size()); ++t) {
+                if (util[static_cast<size_t>(t)] > thr) {
+                    std::cout << "[Config] Phase2 skipped: tier " << t
+                              << " util " << std::setprecision(1)
+                              << util[static_cast<size_t>(t)] * 100.0 << "% > "
+                              << thr * 100.0 << "% -> legalize+reflow\n";
+                    skip_phase2 = true;
+                    break;
+                }
+            }
+        }
+        cfg.enable_analytical_tsv_phase = !skip_phase2;
+    }
+
+    cfg.analytical_tsv_width          = base_tsv_w * gs;
+    cfg.analytical_tsv_height         = base_tsv_h * gs;
+    cfg.analytical_tsv_warmup         = true;   // Phase 2 前先 solve_tsvs() 初始化位置
+
+    if (cfg.enable_analytical_tsv_phase) {
+        if (cfg.analytical_tsv_warmup)
+            engine.solve_tsvs(tcfg);         // 暖機：幾何初始化 TSV 位置
+        engine.solve_tsv_phase();            // Phase 2 joint analytical
+        // 跳過 post-analytical solve_tsvs()
+    } else {
+        engine.solve_tsvs(tcfg);             // 舊流程
+    }
 
     // ---- Recursive Bi-partitioning（Legalization 前準備）---- 目前沒用到
     PartitionConfig pcfg;
@@ -227,11 +273,26 @@ int main(int argc, char* argv[])
     pcfg.legalize_vis_upscale  = 4;
     pcfg.legalize_gif_fps      = 5;
 
-    // ---- Heuristic legalization flow (WIP) ----
+    // Phase 2 有跑 → unified legalize（TSV 作為 proxy module）；否則走 reflow
+    pcfg.legalize_tsv_as_module = cfg.enable_analytical_tsv_phase;
+
+    // ---- Heuristic legalization flow ----
+    if (pcfg.legalize_tsv_as_module) {
+        engine.inject_tsv_proxies_for_legalize(pcfg.tsv_width, pcfg.tsv_height);
+    }
     run_legalize_heu(engine, pcfg);
 
-    // ---- TSV：sort by net bbox length, first-fit / congestion-order in two bbox geometric regions ----
-    engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height, pcfg.tsv_reflow_congestion_order, pcfg.tsv_reflow_bbox_edge_weight);
+    if (pcfg.legalize_tsv_as_module) {
+        engine.commit_tsv_proxies_from_legalize();
+    } else {
+        // 舊流程：legalize module → reflow TSV
+        engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height,
+                                          pcfg.tsv_reflow_congestion_order,
+                                          pcfg.tsv_reflow_bbox_edge_weight);
+    }
+    // engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height,
+    //     pcfg.tsv_reflow_congestion_order,
+    //     pcfg.tsv_reflow_bbox_edge_weight);
     
     // ---- Recursive Bi-partitioning and Legalization ---- 目前沒用到
     // engine.partition_all_tiers(pcfg);
@@ -276,18 +337,23 @@ int main(int argc, char* argv[])
     }
 
     // Die 使用率統計
-    for (int t = 0; t < engine.num_dies(); ++t) {
-        double total_area = 0.0;
-        for (const Module& m : engine.modules()) {
-            if (!m.is_terminal && m.tier_id == t)
-                total_area += m.area();
+    {
+        const auto utils = compute_tier_module_utilization(engine);
+        const auto& dies = engine.dies();
+        const auto& mods = engine.modules();
+        for (int t = 0; t < engine.num_dies(); ++t) {
+            double total_area = 0.0;
+            for (const Module& m : mods) {
+                if (!m.is_terminal && m.tier_id == t)
+                    total_area += m.area();
+            }
+            const Die& die = dies[static_cast<size_t>(t)];
+            std::cout << "  Die " << t << " utilization: "
+                      << total_area << " / "
+                      << (die.width * die.height) << " = "
+                      << std::fixed << std::setprecision(1)
+                      << utils[static_cast<size_t>(t)] * 100.0 << "%\n";
         }
-        const Die& die = engine.dies()[t];
-        double util = total_area / (die.width * die.height) * 100.0;
-        std::cout << "  Die " << t << " utilization: "
-                  << total_area << " / "
-                  << (die.width * die.height) << " = "
-                  << util << "%\n";
     }
 
     // ---- 寫出結果（含 runtime）----

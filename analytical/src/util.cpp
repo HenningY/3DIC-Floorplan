@@ -281,13 +281,49 @@ void bin_edge_accumulate_pair(const Die& die,
     const int vc_lo = static_cast<int>(std::ceil(xlo / bw));
     const int vc_hi = static_cast<int>(std::floor(xhi / bw));
 
-    for (int hr = hr_lo; hr <= hr_hi && hr >= 0 && hr <= R; ++hr)
-        for (int hc = hc_lo; hc <= hc_hi && hc >= 0 && hc < C; ++hc)
-            H[static_cast<size_t>(hr * C + hc)] += h_delta;
+    // 若兩 pin 在同一 bin row（hr_lo > hr_hi），累加該 bin 的上下兩條邊
+    if (hr_lo > hr_hi) {
+        const int bin_row = static_cast<int>(std::floor(0.5 * (ylo + yhi) / bh));
+        const int hr_bot  = std::clamp(bin_row, 0, R);
+        const int hr_top  = std::clamp(bin_row + 1, 0, R);
+        const int hc0 = std::clamp(hc_lo, 0, C - 1);
+        const int hc1 = std::clamp(hc_hi, 0, C - 1);
+        for (int hc = hc0; hc <= hc1; ++hc) {
+            H[static_cast<size_t>(hr_bot * C + hc)] += h_delta;
+            if (hr_top != hr_bot)
+                H[static_cast<size_t>(hr_top * C + hc)] += h_delta;
+        }
+    } else {
+        const int hr0 = std::clamp(hr_lo, 0, R);
+        const int hr1 = std::clamp(hr_hi, 0, R);
+        const int hc0 = std::clamp(hc_lo, 0, C - 1);
+        const int hc1 = std::clamp(hc_hi, 0, C - 1);
+        for (int hr = hr0; hr <= hr1; ++hr)
+            for (int hc = hc0; hc <= hc1; ++hc)
+                H[static_cast<size_t>(hr * C + hc)] += h_delta;
+    }
 
-    for (int vc = vc_lo; vc <= vc_hi && vc >= 0 && vc <= C; ++vc)
-        for (int vr = vr_lo; vr <= vr_hi && vr >= 0 && vr < R; ++vr)
-            V[static_cast<size_t>(vc * R + vr)] += v_delta;
+    // 若兩 pin 在同一 bin col（vc_lo > vc_hi），累加該 bin 的左右兩條邊
+    if (vc_lo > vc_hi) {
+        const int bin_col  = static_cast<int>(std::floor(0.5 * (xlo + xhi) / bw));
+        const int vc_left  = std::clamp(bin_col, 0, C);
+        const int vc_right = std::clamp(bin_col + 1, 0, C);
+        const int vr0 = std::clamp(vr_lo, 0, R - 1);
+        const int vr1 = std::clamp(vr_hi, 0, R - 1);
+        for (int vr = vr0; vr <= vr1; ++vr) {
+            V[static_cast<size_t>(vc_left  * R + vr)] += v_delta;
+            if (vc_right != vc_left)
+                V[static_cast<size_t>(vc_right * R + vr)] += v_delta;
+        }
+    } else {
+        const int vc0 = std::clamp(vc_lo, 0, C);
+        const int vc1 = std::clamp(vc_hi, 0, C);
+        const int vr0 = std::clamp(vr_lo, 0, R - 1);
+        const int vr1 = std::clamp(vr_hi, 0, R - 1);
+        for (int vc = vc0; vc <= vc1; ++vc)
+            for (int vr = vr0; vr <= vr1; ++vr)
+                V[static_cast<size_t>(vc * R + vr)] += v_delta;
+    }
 }
 
 void bin_edge_accumulate_clique(const Die& die,
@@ -351,200 +387,210 @@ BinEdgeDemands build_bin_edge_baseline_modules_only(const PlacementEngine& engin
 }
 
 // ============================================================
-// compute_bin_edge_congestion
+// bin_edge_stats_from_demands：從已建好的 BinEdgeDemands 計算統計量
+// 避免重複遍歷 net；供 solve() 的 RC-alpha 判斷使用
+// tier_max / top10%_mean 以單條 H/V edge 為單位；tier_cell_avg 供推力與 PPM
 // ============================================================
-BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine)
+static void edge_demand_stats(const std::vector<double>& H,
+                              const std::vector<double>& V,
+                              double& out_max,
+                              double& out_top10p_mean)
 {
-    const auto& nets    = engine.nets();
-    const auto& modules = engine.modules();
-    const auto& tsvs    = engine.tsvs();
-    const auto& dies    = engine.dies();
-    const int   nd      = engine.num_dies();
+    std::vector<double> edges;
+    edges.reserve(H.size() + V.size());
+    edges.insert(edges.end(), H.begin(), H.end());
+    edges.insert(edges.end(), V.begin(), V.end());
+    if (edges.empty()) {
+        out_max = 0.0;
+        out_top10p_mean = 0.0;
+        return;
+    }
+    double mx = 0.0;
+    for (double v : edges) mx = std::max(mx, v);
+    out_max = mx;
 
+    std::sort(edges.begin(), edges.end());
+    const int total = static_cast<int>(edges.size());
+    const int top_k = std::max(1, static_cast<int>(
+        std::ceil(0.1 * static_cast<double>(total))));
+    double top_sum = 0.0;
+    for (int i = total - top_k; i < total; ++i)
+        top_sum += edges[static_cast<size_t>(i)];
+    out_top10p_mean = top_sum / static_cast<double>(top_k);
+}
+
+BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
+                                                    const std::vector<Die>& dies)
+{
+    const int nd = static_cast<int>(dies.size());
     BinEdgeCongestionStats result;
-    result.tier_cell_avg.resize(nd);
-    result.tier_max.resize(nd, 0.0);
-    result.tier_top10p_mean.resize(nd, 0.0);
+    result.tier_cell_avg.resize(static_cast<size_t>(nd));
+    result.tier_max.resize(static_cast<size_t>(nd), 0.0);
+    result.tier_top10p_mean.resize(static_cast<size_t>(nd), 0.0);
 
-    for (int t = 0; t < nd; ++t) {
-        const Die& die = dies[t];
-        const int  R   = die.bin_rows;
-        const int  C   = die.bin_cols;
-        const double bw = die.bin_w;
-        const double bh = die.bin_h;
+    std::vector<double> all_edges;
 
-        // H[hr * C + hc]：水平邊段 demand，hr∈[0,R]，hc∈[0,C-1]
-        // V[vc * R + vr]：垂直邊段 demand，vc∈[0,C]，vr∈[0,R-1]
-        std::vector<double> H(static_cast<size_t>((R + 1) * C), 0.0);
-        std::vector<double> V(static_cast<size_t>((C + 1) * R), 0.0);
+    for (int t = 0; t < nd && t < static_cast<int>(dem.H.size()); ++t) {
+        const Die& die = dies[static_cast<size_t>(t)];
+        const auto& H = dem.H[static_cast<size_t>(t)];
+        const auto& V = dem.V[static_cast<size_t>(t)];
+        bin_edge_cells_from_hv(die, H, V,
+                               result.tier_cell_avg[static_cast<size_t>(t)]);
 
-        for (const Net& net : nets) {
-            if (net.pins.size() < 2) continue;
+        edge_demand_stats(H, V,
+                          result.tier_max[static_cast<size_t>(t)],
+                          result.tier_top10p_mean[static_cast<size_t>(t)]);
+        if (result.tier_max[static_cast<size_t>(t)] > result.global_max)
+            result.global_max = result.tier_max[static_cast<size_t>(t)];
 
-            // 收集此 net 在 tier t 的端點（含 TSV 虛擬端點）
-            std::vector<std::pair<double,double>> pts;
-
-            for (int pid : net.pins) {
-                const Module& m = modules[pid];
-                const int mt = m.is_terminal ? 0 : m.tier_id;
-                if (mt == t)
-                    pts.push_back({ m.x, m.y });
-            }
-
-            for (const TSV& tsv : tsvs) {
-                if (tsv.net_id != net.id) continue;
-                if (tsv.tier_below() == t) pts.push_back({ tsv.x, tsv.y });
-                if (tsv.tier_above() == t) pts.push_back({ tsv.x, tsv.y });
-            }
-
-            if (pts.size() < 2) continue;
-
-            // 所有無序 pair
-            for (size_t i = 0; i < pts.size(); ++i) {
-                for (size_t j = i + 1; j < pts.size(); ++j) {
-                    const double x1 = pts[i].first,  y1 = pts[i].second;
-                    const double x2 = pts[j].first,  y2 = pts[j].second;
-
-                    // bbox（clamp 到 die 範圍）
-                    const double xlo = std::max(0.0, std::min(x1, x2));
-                    const double xhi = std::min(die.width,  std::max(x1, x2));
-                    const double ylo = std::max(0.0, std::min(y1, y2));
-                    const double yhi = std::min(die.height, std::max(y1, y2));
-
-                    const double dx = std::fabs(x1 - x2);
-                    const double dy = std::fabs(y1 - y2);
-
-                    // span：橫跨多少格（至少 1）
-                    const int col_span = std::max(1, static_cast<int>(std::ceil(dx / bw)));
-                    const int row_span = std::max(1, static_cast<int>(std::ceil(dy / bh)));
-
-                    const double h_delta = 1.0 / col_span;
-                    const double v_delta = 1.0 / row_span;
-
-                    // bbox 對應的 col/row 索引範圍
-                    // 水平邊段 (hr, hc)：hr 對應 y 方向的邊線，hc 對應 x 方向的格子
-                    const int hc_lo = static_cast<int>(std::floor(xlo / bw));
-                    const int hc_hi = static_cast<int>(std::ceil(xhi / bw)) - 1;
-                    // 水平邊線 hr∈[hr_lo, hr_hi]（bbox ylo 下方到 yhi 上方的橫線）
-                    const int hr_lo = static_cast<int>(std::ceil(ylo / bh));
-                    const int hr_hi = static_cast<int>(std::floor(yhi / bh));
-
-                    // 垂直邊段 (vr, vc)：vc 對應 x 方向的邊線，vr 對應 y 方向的格子
-                    const int vr_lo = static_cast<int>(std::floor(ylo / bh));
-                    const int vr_hi = static_cast<int>(std::ceil(yhi / bh)) - 1;
-                    const int vc_lo = static_cast<int>(std::ceil(xlo / bw));
-                    const int vc_hi = static_cast<int>(std::floor(xhi / bw));
-
-                    // 累加水平邊段
-                    // 若兩 pin 在同一 bin row（hr_lo > hr_hi），改累加該 bin 的上下兩條邊
-                    if (hr_lo > hr_hi) {
-                        const int bin_row = static_cast<int>(std::floor(0.5 * (ylo + yhi) / bh));
-                        const int hr_bot  = std::max(0,   bin_row);
-                        const int hr_top  = std::min(R,   bin_row + 1);
-                        for (int hc = hc_lo; hc <= hc_hi && hc >= 0 && hc < C; ++hc) {
-                            H[static_cast<size_t>(hr_bot * C + hc)] += h_delta;
-                            if (hr_top != hr_bot)
-                                H[static_cast<size_t>(hr_top * C + hc)] += h_delta;
-                        }
-                    } else {
-                        for (int hr = hr_lo; hr <= hr_hi && hr >= 0 && hr <= R; ++hr) {
-                            for (int hc = hc_lo; hc <= hc_hi && hc >= 0 && hc < C; ++hc) {
-                                H[static_cast<size_t>(hr * C + hc)] += h_delta;
-                            }
-                        }
-                    }
-
-                    // 累加垂直邊段
-                    // 若兩 pin 在同一 bin col（vc_lo > vc_hi），改累加該 bin 的左右兩條邊
-                    if (vc_lo > vc_hi) {
-                        const int bin_col = static_cast<int>(std::floor(0.5 * (xlo + xhi) / bw));
-                        const int vc_left  = std::max(0,   bin_col);
-                        const int vc_right = std::min(C,   bin_col + 1);
-                        for (int vr = vr_lo; vr <= vr_hi && vr >= 0 && vr < R; ++vr) {
-                            V[static_cast<size_t>(vc_left  * R + vr)] += v_delta;
-                            if (vc_right != vc_left)
-                                V[static_cast<size_t>(vc_right * R + vr)] += v_delta;
-                        }
-                    } else {
-                        for (int vc = vc_lo; vc <= vc_hi && vc >= 0 && vc <= C; ++vc) {
-                            for (int vr = vr_lo; vr <= vr_hi && vr >= 0 && vr < R; ++vr) {
-                                V[static_cast<size_t>(vc * R + vr)] += v_delta;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 計算每個 cell 的四邊平均
-        auto& cell_avg = result.tier_cell_avg[t];
-        cell_avg.resize(static_cast<size_t>(R * C), 0.0);
-
-        double mx = 0.0;
-        for (int r = 0; r < R; ++r) {
-            for (int c = 0; c < C; ++c) {
-                // cell (r,c) 的四條邊：
-                //   bottom H: hr=r,   hc=c
-                //   top    H: hr=r+1, hc=c
-                //   left   V: vc=c,   vr=r
-                //   right  V: vc=c+1, vr=r
-                const double bot   = H[static_cast<size_t>(r       * C + c)];
-                const double top   = H[static_cast<size_t>((r + 1) * C + c)];
-                const double left  = V[static_cast<size_t>(c       * R + r)];
-                const double right = V[static_cast<size_t>((c + 1) * R + r)];
-                const double avg   = (bot + top + left + right) * 0.25;
-
-                cell_avg[static_cast<size_t>(r * C + c)] = avg;
-                if (avg > mx) mx = avg;
-            }
-        }
-        result.tier_max[t] = mx;
-        if (mx > result.global_max) result.global_max = mx;
-
-        // 前 10% 高壅塞 bin 的平均：排序後取末尾 ceil(10% * total) 個
-        const int total_bins = R * C;
-        if (total_bins > 0) {
-            std::vector<double> sorted_vals(cell_avg.begin(), cell_avg.end());
-            std::sort(sorted_vals.begin(), sorted_vals.end());
-            const int top_k = std::max(1, static_cast<int>(
-                std::ceil(0.1 * static_cast<double>(total_bins))));
-            double top_sum = 0.0;
-            for (int i = total_bins - top_k; i < total_bins; ++i)
-                top_sum += sorted_vals[static_cast<size_t>(i)];
-            result.tier_top10p_mean[t] = top_sum / top_k;
-        }
+        all_edges.insert(all_edges.end(), H.begin(), H.end());
+        all_edges.insert(all_edges.end(), V.begin(), V.end());
     }
 
-    // global top-10% mean = 跨所有 tier 的 cell_avg 合併後取前 10%
-    {
-        std::vector<double> all_vals;
-        for (int t = 0; t < nd; ++t)
-            all_vals.insert(all_vals.end(),
-                            result.tier_cell_avg[t].begin(),
-                            result.tier_cell_avg[t].end());
-        const int total = static_cast<int>(all_vals.size());
-        if (total > 0) {
-            std::sort(all_vals.begin(), all_vals.end());
-            const int top_k = std::max(1, static_cast<int>(
-                std::ceil(0.1 * static_cast<double>(total))));
-            double top_sum = 0.0;
-            for (int i = total - top_k; i < total; ++i)
-                top_sum += all_vals[static_cast<size_t>(i)];
-            result.global_top10p_mean = top_sum / top_k;
-        }
+    if (!all_edges.empty()) {
+        std::sort(all_edges.begin(), all_edges.end());
+        const int total = static_cast<int>(all_edges.size());
+        const int top_k = std::max(1, static_cast<int>(
+            std::ceil(0.1 * static_cast<double>(total))));
+        double top_sum = 0.0;
+        for (int i = total - top_k; i < total; ++i)
+            top_sum += all_edges[static_cast<size_t>(i)];
+        result.global_top10p_mean = top_sum / static_cast<double>(top_k);
     }
 
     return result;
 }
 
+// ============================================================
+// build_bin_edge_demands_with_tsv：baseline + TSV overlay，回傳 BinEdgeDemands
+// ============================================================
+BinEdgeDemands build_bin_edge_demands_with_tsv(const PlacementEngine& engine)
+{
+    const auto& tsvs          = engine.tsvs();
+    const auto& dies          = engine.dies();
+    const int   nd            = engine.num_dies();
+    const auto& net_to_tsvs   = engine.net_to_tsvs();
+
+    BinEdgeDemands dem = build_bin_edge_baseline_modules_only(engine);
+
+    if (!tsvs.empty()) {
+        const auto& nets    = engine.nets();
+        const auto& modules = engine.modules();
+
+        for (int ni = 0; ni < static_cast<int>(nets.size()); ++ni) {
+            const Net& net = nets[static_cast<size_t>(ni)];
+            if (net.pins.size() < 2) continue;
+
+            // 用索引取出此 net 的 TSV；若索引未建立則回退全掃
+            const std::vector<int>* tsv_idx_ptr = nullptr;
+            std::vector<int> fallback;
+            if (!net_to_tsvs.empty()) {
+                tsv_idx_ptr = &net_to_tsvs[static_cast<size_t>(ni)];
+            } else {
+                for (int k = 0; k < static_cast<int>(tsvs.size()); ++k)
+                    if (tsvs[static_cast<size_t>(k)].net_id == net.id)
+                        fallback.push_back(k);
+                tsv_idx_ptr = &fallback;
+            }
+            if (tsv_idx_ptr->empty()) continue;
+
+            // 確定 tier 範圍（只掃 cross-tier net 的相關層）
+            const int t_lo = net.is_cross_tier ? net.min_tier : 0;
+            const int t_hi = net.is_cross_tier ? net.max_tier : (nd - 1);
+
+            for (int t = t_lo; t <= t_hi; ++t) {
+                const Die& die = dies[static_cast<size_t>(t)];
+                std::vector<std::pair<double,double>> tsv_pts;
+                for (int ti : *tsv_idx_ptr) {
+                    const TSV& tsv = tsvs[static_cast<size_t>(ti)];
+                    if (tsv.tier_below() == t) tsv_pts.push_back({ tsv.x, tsv.y });
+                    if (tsv.tier_above() == t) tsv_pts.push_back({ tsv.x, tsv.y });
+                }
+                if (tsv_pts.empty()) continue;
+
+                std::vector<std::pair<double,double>> mod_pts;
+                for (int pid : net.pins) {
+                    const Module& m = modules[static_cast<size_t>(pid)];
+                    const int mt = m.is_terminal ? 0 : m.tier_id;
+                    if (mt == t) mod_pts.push_back({ m.x, m.y });
+                }
+
+                bin_edge_accumulate_clique(die, tsv_pts,
+                    dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
+                for (const auto& tp : tsv_pts)
+                    for (const auto& mp : mod_pts)
+                        bin_edge_accumulate_pair(die, tp.first, tp.second,
+                            mp.first, mp.second,
+                            dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
+            }
+        }
+    }
+
+    return dem;
+}
+
+// ============================================================
+// compute_bin_edge_congestion：複用 baseline + TSV overlay
+// ============================================================
+BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine)
+{
+    const auto& tsvs = engine.tsvs();
+    const auto& dies = engine.dies();
+    const int   nd   = engine.num_dies();
+
+    // baseline：只有 module/terminal pin
+    BinEdgeDemands dem = build_bin_edge_baseline_modules_only(engine);
+
+    // TSV overlay（若已 build_tsvs）
+    if (!tsvs.empty()) {
+        const auto& nets = engine.nets();
+        for (int t = 0; t < nd; ++t) {
+            const Die& die = dies[static_cast<size_t>(t)];
+            for (const Net& net : nets) {
+                if (net.pins.size() < 2) continue;
+                std::vector<std::pair<double,double>> tsv_pts;
+                for (const TSV& tsv : tsvs) {
+                    if (tsv.net_id != net.id) continue;
+                    if (tsv.tier_below() == t) tsv_pts.push_back({ tsv.x, tsv.y });
+                    if (tsv.tier_above() == t) tsv_pts.push_back({ tsv.x, tsv.y });
+                }
+                // 只對 tsv_pts 和該 net 在 tier t 的 module pin 的交叉 pair 累加
+                // （若無 TSV 端點，不需處理）
+                if (tsv_pts.empty()) continue;
+
+                // 收集該 net 在 tier t 的 module pin
+                const auto& modules = engine.modules();
+                std::vector<std::pair<double,double>> mod_pts;
+                for (int pid : net.pins) {
+                    const Module& m = modules[pid];
+                    const int mt = m.is_terminal ? 0 : m.tier_id;
+                    if (mt == t) mod_pts.push_back({ m.x, m.y });
+                }
+
+                // TSV-TSV pair
+                bin_edge_accumulate_clique(die, tsv_pts,
+                    dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
+                // TSV-module cross pair
+                for (const auto& tp : tsv_pts)
+                    for (const auto& mp : mod_pts)
+                        bin_edge_accumulate_pair(die, tp.first, tp.second,
+                            mp.first, mp.second,
+                            dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
+            }
+        }
+    }
+
+    return bin_edge_stats_from_demands(dem, dies);
+}
+
 void print_bin_edge_congestion_summary(const BinEdgeCongestionStats& s, std::ostream& os)
 {
-    os << "  [Congestion] Global max=" << s.global_max
+    os << "  [Congestion edge] Global max=" << s.global_max
        << "  top10%_mean=" << s.global_top10p_mean << "\n";
     for (int t = 0; t < static_cast<int>(s.tier_cell_avg.size()); ++t) {
         os << "    Die " << t
-           << "  max=" << s.tier_max[t]
-           << "  top10%_mean=" << s.tier_top10p_mean[t] << "\n";
+           << "  edge_max=" << s.tier_max[t]
+           << "  edge_top10%_mean=" << s.tier_top10p_mean[t] << "\n";
     }
 }
 
@@ -613,7 +659,7 @@ void write_bin_edge_congestion_maps(const PlacementEngine&        engine,
         }
 
         std::cout << "[Congestion map] " << path << "  (" << PixW << "x" << PixH
-                  << "  tier_max=" << vmax << ")\n";
+                  << "  edge_max=" << vmax << ")\n";
     }
 }
 
@@ -795,4 +841,35 @@ void LegalizeFrameWriter::end_tier()
     std::cout << "[LegalizeVis] Tier " << tier_id_
               << "  " << frame_seq_ << " frames  -> "
               << cfg_.out_dir + "/tier" + std::to_string(tier_id_) << "/\n";
+}
+
+// ============================================================
+// Tier 面積使用率
+// ============================================================
+std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine)
+{
+    const int nd = engine.num_dies();
+    const auto& modules = engine.modules();
+    const auto& dies    = engine.dies();
+    std::vector<double> util(static_cast<size_t>(nd), 0.0);
+    for (const Module& m : modules) {
+        if (m.is_terminal) continue;
+        const int t = m.tier_id;
+        if (t < 0 || t >= nd) continue;
+        util[static_cast<size_t>(t)] += m.area();
+    }
+    for (int t = 0; t < nd; ++t) {
+        const Die& die = dies[static_cast<size_t>(t)];
+        const double die_area = die.width * die.height;
+        util[static_cast<size_t>(t)] = (die_area > 0.0) ? util[static_cast<size_t>(t)] / die_area : 0.0;
+    }
+    return util;
+}
+
+bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold)
+{
+    const auto util = compute_tier_module_utilization(engine);
+    for (double u : util)
+        if (u > threshold) return true;
+    return false;
 }

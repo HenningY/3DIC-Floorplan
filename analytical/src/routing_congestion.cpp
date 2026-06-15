@@ -1,319 +1,141 @@
-// 3D IC Analytical Floorplanner - Routability-Driven Congestion Penalty (可微)
+// 3D IC Analytical Floorplanner - Routability-Driven Congestion Penalty
 //
-// 懲罰能量：P_route = Σ_e (U(e) - C)²
-//
-// 平滑指示函數（數值穩定型）：
-//   f(u, x, v) = σ(t),  t = ε*(u-x)*(v-x)
-//   σ(t) = 1/(1+exp(t))
-//   若 t >= 0 改寫為 exp(-t)/(1+exp(-t)) 避免 exp overflow
-//
-// Usage_H / Usage_V 對 module 座標的解析梯度以 chain rule 推導並逐 edge 累加。
+// 兩階段 density-style bin 場模型：
+//   1. update_routing_congestion_map()（floorplanner.cpp）
+//      → 建立 H/V edge demand 快取（BinEdgeDemands）
+//   2. calculate_routing_congestion_gradient()（本檔）
+//      → 從 H/V 算出每個 bin 的 cell_avg（四邊平均 demand）
+//      → 對每個可動 module，掃描影響半徑內的 overflow bin，
+//        以 2D bell 核向 bin 中心方向施加斥力（gx + gy，與 density 機制相同）
 
 #include "routing_congestion.h"
+#include "util.h"
 
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
-#include <limits>
 
-// ============================================================
-// 數值穩定 sigmoid：σ(t) = 1/(1+exp(t))
-// ============================================================
-static inline double sigmoid_stable(double t)
+// Bell 函數與梯度（與 PlacementEngine 內 static 版本相同語義）
+// Φ(d, r) = 1 - (d/r)²   if |d| < r,  else 0
+static inline double bell_func(double d, double r)
 {
-    if (t >= 0.0)
-        return std::exp(-t) / (1.0 + std::exp(-t));
-    return 1.0 / (1.0 + std::exp(t));
+    if (std::fabs(d) >= r) return 0.0;
+    const double u = d / r;
+    return 1.0 - u * u;
 }
 
-// σ'(t) = -σ(t)*(1-σ(t))
-static inline double sigmoid_deriv(double sig_val)
+// ∂Φ/∂d = -2d/r²   if |d| < r,  else 0
+static inline double bell_grad(double d, double r)
 {
-    return -sig_val * (1.0 - sig_val);
-}
-
-// ============================================================
-// f(u, x_eval, v) = σ(ε*(u-x_eval)*(v-x_eval))
-// 回傳 f 值與 ∂f/∂u、∂f/∂v（x_eval 是常數邊座標）
-// ============================================================
-static inline void eval_f(double u, double x_eval, double v, double eps,
-                           double& f, double& df_du, double& df_dv)
-{
-    const double t   = eps * (u - x_eval) * (v - x_eval);
-    const double sg  = sigmoid_stable(t);
-    const double sgd = sigmoid_deriv(sg);
-    f     = sg;
-    // ∂t/∂u = ε*(v - x_eval)
-    df_du = sgd * eps * (v - x_eval);
-    // ∂t/∂v = ε*(u - x_eval)
-    df_dv = sgd * eps * (u - x_eval);
-}
-
-// ============================================================
-// cover(u, xe1, xe2, v, eps)：
-//   cover = 1 - (1-f1)*(1-f2)
-//   f1 = f(u, xe1, v),  f2 = f(u, xe2, v)
-// 回傳 cover 與 ∂cover/∂u、∂cover/∂v
-// ============================================================
-static inline void eval_cover(double u, double xe1, double xe2, double v, double eps,
-                               double& cov, double& dcov_du, double& dcov_dv)
-{
-    double f1, df1_du, df1_dv;
-    double f2, df2_du, df2_dv;
-    eval_f(u, xe1, v, eps, f1, df1_du, df1_dv);
-    eval_f(u, xe2, v, eps, f2, df2_du, df2_dv);
-
-    const double A = 1.0 - f1;
-    const double B = 1.0 - f2;
-    cov      = 1.0 - A * B;
-    // ∂cov/∂u = df1_du*B + A*df2_du
-    dcov_du  = df1_du * B + A * df2_du;
-    // ∂cov/∂v = df1_dv*B + A*df2_dv
-    dcov_dv  = df1_dv * B + A * df2_dv;
-}
-
-// ============================================================
-// 對一對 2-pin (p1, p2) 在同一 tier 的 die 上累加壅塞梯度
-// 回傳純梯度 ∂P_route/∂x，不乘 alpha（alpha 在外部 merge 步驟施加）
-// ============================================================
-static void accumulate_pair(
-    double x1, double y1, double x2, double y2,
-    int ia, int ib, bool ma_move, bool mb_move,
-    bool ma_rc, bool mb_rc,
-    const Die& die,
-    double eps, double cap,
-    std::vector<double>& gx, std::vector<double>& gy)
-{
-    const double bw  = die.bin_w;
-    const double bh  = die.bin_h;
-    const int    R   = die.bin_rows;
-    const int    C   = die.bin_cols;
-
-    // col_span / row_span：可微連續近似（避免 floor 斷點）
-    constexpr double EPS_FLOOR = 1e-6;
-    const double col_span = std::max(EPS_FLOOR, std::fabs(x1 - x2) / bw + 1.0);
-    const double row_span = std::max(EPS_FLOOR, std::fabs(y1 - y2) / bh + 1.0);
-
-    // ---- Horizontal edges：e_H(hr, hc) ----
-    // hr ∈ [0,R]，y_e = hr*bh；hc ∈ [0,C-1]，x ∈ [hc*bw,(hc+1)*bw]
-    {
-        const int hr_lo = std::max(0, static_cast<int>(std::floor(std::min(y1,y2)/bh)));
-        const int hr_hi = std::min(R, static_cast<int>(std::ceil (std::max(y1,y2)/bh)));
-        const int hc_lo = std::max(0,   static_cast<int>(std::floor(std::min(x1,x2)/bw)) - 1);
-        const int hc_hi = std::min(C-1, static_cast<int>(std::ceil (std::max(x1,x2)/bw)));
-
-        for (int hr = hr_lo; hr <= hr_hi; ++hr) {
-            const double ye = hr * bh;
-            // Vy = σ(ε*(y1-ye)*(y2-ye))
-            double Vy, dVy_dy1, dVy_dy2;
-            eval_f(y1, ye, y2, eps, Vy, dVy_dy1, dVy_dy2);
-
-            for (int hc = hc_lo; hc <= hc_hi; ++hc) {
-                const double xe1 = hc * bw;
-                const double xe2 = (hc + 1) * bw;
-
-                double cov, dcov_dx1, dcov_dx2;
-                eval_cover(x1, xe1, xe2, x2, eps, cov, dcov_dx1, dcov_dx2);
-
-                const double U    = Vy * cov / col_span;
-                const double dP_dU = 2.0 * (U - cap);
-
-                // ∂col_span/∂x1 = sign(x1-x2)/bw；∂col_span/∂x2 = -sign(x1-x2)/bw
-                const double sgn_dx  = (x1 >= x2) ? 1.0 : -1.0;
-                const double d_cs_x1 =  sgn_dx / bw;
-                const double d_cs_x2 = -sgn_dx / bw;
-
-                const double inv_cs  = 1.0 / col_span;
-                const double inv_cs2 = inv_cs * inv_cs;
-
-                // ∂U/∂x1 = Vy*(dcov_dx1*col_span - cov*d_cs_x1) / col_span²
-                const double dU_dx1 = Vy * (dcov_dx1 * col_span - cov * d_cs_x1) * inv_cs2;
-                const double dU_dx2 = Vy * (dcov_dx2 * col_span - cov * d_cs_x2) * inv_cs2;
-                // ∂U/∂y1 = dVy_dy1*cov/col_span
-                const double dU_dy1 = dVy_dy1 * cov * inv_cs;
-                const double dU_dy2 = dVy_dy2 * cov * inv_cs;
-
-                if (ma_move && ma_rc) {
-                    gx[ia] += dP_dU * dU_dx1;
-                    gy[ia] += dP_dU * dU_dy1;
-                }
-                if (mb_move && mb_rc) {
-                    gx[ib] += dP_dU * dU_dx2;
-                    gy[ib] += dP_dU * dU_dy2;
-                }
-            }
-        }
-    }
-
-    // ---- Vertical edges：e_V(vc, vr) ----
-    // vc ∈ [0,C]，x_e = vc*bw；vr ∈ [0,R-1]，y ∈ [vr*bh,(vr+1)*bh]
-    {
-        const int vc_lo = std::max(0, static_cast<int>(std::floor(std::min(x1,x2)/bw)));
-        const int vc_hi = std::min(C, static_cast<int>(std::ceil (std::max(x1,x2)/bw)));
-        const int vr_lo = std::max(0,   static_cast<int>(std::floor(std::min(y1,y2)/bh)) - 1);
-        const int vr_hi = std::min(R-1, static_cast<int>(std::ceil (std::max(y1,y2)/bh)));
-
-        for (int vc = vc_lo; vc <= vc_hi; ++vc) {
-            const double xe = vc * bw;
-            // Vx = σ(ε*(x1-xe)*(x2-xe))
-            double Vx, dVx_dx1, dVx_dx2;
-            eval_f(x1, xe, x2, eps, Vx, dVx_dx1, dVx_dx2);
-
-            for (int vr = vr_lo; vr <= vr_hi; ++vr) {
-                const double ye1 = vr * bh;
-                const double ye2 = (vr + 1) * bh;
-
-                double cov, dcov_dy1, dcov_dy2;
-                eval_cover(y1, ye1, ye2, y2, eps, cov, dcov_dy1, dcov_dy2);
-
-                const double U     = Vx * cov / row_span;
-                const double dP_dU = 2.0 * (U - cap);
-
-                const double sgn_dy  = (y1 >= y2) ? 1.0 : -1.0;
-                const double d_rs_y1 =  sgn_dy / bh;
-                const double d_rs_y2 = -sgn_dy / bh;
-
-                const double inv_rs  = 1.0 / row_span;
-                const double inv_rs2 = inv_rs * inv_rs;
-
-                const double dU_dy1 = Vx * (dcov_dy1 * row_span - cov * d_rs_y1) * inv_rs2;
-                const double dU_dy2 = Vx * (dcov_dy2 * row_span - cov * d_rs_y2) * inv_rs2;
-                const double dU_dx1 = dVx_dx1 * cov * inv_rs;
-                const double dU_dx2 = dVx_dx2 * cov * inv_rs;
-
-                if (ma_move && ma_rc) {
-                    gx[ia] += dP_dU * dU_dx1;
-                    gy[ia] += dP_dU * dU_dy1;
-                }
-                if (mb_move && mb_rc) {
-                    gx[ib] += dP_dU * dU_dx2;
-                    gy[ib] += dP_dU * dU_dy2;
-                }
-            }
-        }
-    }
+    if (std::fabs(d) >= r) return 0.0;
+    return -2.0 * d / (r * r);
 }
 
 // ============================================================
 // 公開介面
 // ============================================================
+// bin 斥力輔助：掃描 (px,py) 在 die 的 cell_avg 中的 overflow bin 並累加斥力
+// rx/ry：影響半徑；gx_out/gy_out：梯度累加目標
+static void accumulate_cong_gradient(
+    double px, double py, double rx, double ry,
+    const Die& die, const std::vector<double>& cell_avg,
+    double cap, double& gx_out, double& gy_out)
+{
+    const double bw = die.bin_w;
+    const double bh = die.bin_h;
+    const int R = die.bin_rows;
+    const int C = die.bin_cols;
+
+    const int r_lo = std::max(0,     static_cast<int>(std::floor((py - ry) / bh)));
+    const int r_hi = std::min(R - 1, static_cast<int>(std::ceil ((py + ry) / bh)));
+    const int c_lo = std::max(0,     static_cast<int>(std::floor((px - rx) / bw)));
+    const int c_hi = std::min(C - 1, static_cast<int>(std::ceil ((px + rx) / bw)));
+
+    for (int r = r_lo; r <= r_hi; ++r) {
+        for (int c = c_lo; c <= c_hi; ++c) {
+            const double overflow = cell_avg[static_cast<size_t>(r * C + c)] - cap;
+            if (overflow <= 0.0) continue;
+            const double xe = (c + 0.5) * bw;
+            const double ye = (r + 0.5) * bh;
+            const double dx = px - xe;
+            const double dy = py - ye;
+            gx_out += 2.0 * overflow * bell_grad(dx, rx) * bell_func(dy, ry);
+            gy_out += 2.0 * overflow * bell_func(dx, rx) * bell_grad(dy, ry);
+        }
+    }
+}
+
 void calculate_routing_congestion_gradient(
     const PlacementEngine& engine,
     std::vector<double>&   gx,
-    std::vector<double>&   gy)
+    std::vector<double>&   gy,
+    std::vector<double>*   gx_tsv,
+    std::vector<double>*   gy_tsv)
 {
     const PlacementConfig& cfg = engine.config();
-    if (cfg.routing_congestion_alpha == 0.0) return;
+    if (cfg.routing_congestion_alpha == 0.0
+        && cfg.routing_congestion_max == 0.0) return;
 
-    // alpha 不在此處施加：gx_rc 儲存純梯度 ∂P_route/∂x，
-    // alpha 與 RMS 縮放統一在 floorplanner.cpp 的 merge 步驟處理
-    const double eps         = cfg.routing_sigmoid_eps;
-    const double cap         = cfg.routing_capacity_C;
-    const int    max_bbox_bins = cfg.routing_congestion_max_bbox_bins;
+    const double cap      = cfg.routing_capacity_C;
+    const double sigma    = engine.smooth_sigma();
 
     const auto& modules   = engine.modules();
-    const auto& nets      = engine.nets();
     const auto& dies      = engine.dies();
+    const auto& tsvs      = engine.tsvs();
     const int   num_tiers = static_cast<int>(dies.size());
     const int   nmod      = static_cast<int>(modules.size());
 
-    // ---- Small-module filter ----
-    // 僅當 divisor > 0 時啟用；否則全部 module 均可接收 congestion 推力
-    const double divisor = cfg.routing_congestion_small_module_divisor;
-    const bool   do_filter = (divisor > 0.0);
+    const BinEdgeDemands& dem = engine.routing_edge_demands();
+    if (dem.H.empty()) return;
 
-    std::vector<bool> rc_eligible(static_cast<size_t>(nmod), true);
-    if (do_filter) {
-        // 1. 各 tier 的最大 block 面積
-        std::vector<double> tier_max_area(static_cast<size_t>(num_tiers), 0.0);
-        for (int i = 0; i < nmod; ++i) {
-            const Module& m = modules[i];
-            if (m.is_terminal) continue;
-            const size_t t = static_cast<size_t>(m.tier_id);
-            const double a = m.area();
-            if (a > tier_max_area[t]) tier_max_area[t] = a;
-        }
-
-        // 2. 各 module 是否符合：area < max_area / divisor
-        for (int i = 0; i < nmod; ++i) {
-            const Module& m = modules[i];
-            if (m.is_terminal) { rc_eligible[i] = false; continue; }
-            const double thresh = tier_max_area[static_cast<size_t>(m.tier_id)] / divisor;
-            rc_eligible[i] = (m.area() < thresh);
-        }
-
-        // 首次啟用時印出各 tier 的統計（static flag 避免每 iter 重刷）
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            std::cout << std::fixed << std::setprecision(1);
-            std::cout << "[RoutingCongestion] small-module filter: n=" << divisor << "\n";
-            for (int t = 0; t < num_tiers; ++t) {
-                int eligible = 0, total = 0;
-                for (int i = 0; i < nmod; ++i) {
-                    const Module& m = modules[i];
-                    if (m.is_terminal || m.tier_id != t) continue;
-                    ++total;
-                    if (rc_eligible[i]) ++eligible;
-                }
-                std::cout << "  tier" << t
-                          << " eligible=" << eligible << "/" << total
-                          << " max_area=" << tier_max_area[static_cast<size_t>(t)]
-                          << " threshold=" << tier_max_area[static_cast<size_t>(t)] / divisor
-                          << "\n";
-            }
-            std::cout << std::defaultfloat;
-        }
+    std::vector<std::vector<double>> tier_cell_avg(static_cast<size_t>(num_tiers));
+    for (int t = 0; t < num_tiers && t < static_cast<int>(dem.H.size()); ++t) {
+        bin_edge_cells_from_hv(dies[static_cast<size_t>(t)],
+                               dem.H[static_cast<size_t>(t)],
+                               dem.V[static_cast<size_t>(t)],
+                               tier_cell_avg[static_cast<size_t>(t)]);
     }
 
-    for (const Net& net : nets) {
-        if (net.pins.size() < 2) continue;
+    // ---- Module congestion 斥力 ----
+    for (int i = 0; i < nmod; ++i) {
+        const Module& m = modules[i];
+        if (m.is_terminal || m.is_fixed) continue;
 
-        for (int tk = 0; tk < num_tiers; ++tk) {
-            // 蒐集屬於 tier tk 的 pin（terminal 歸 tier 0）
-            std::vector<int> tier_pins;
-            tier_pins.reserve(net.pins.size());
-            for (int pid : net.pins) {
-                const Module& m = modules[pid];
-                const int m_tier = m.is_terminal ? 0 : m.tier_id;
-                if (m_tier == tk) tier_pins.push_back(pid);
-            }
-            if (static_cast<int>(tier_pins.size()) < 2) continue;
+        const int t = m.tier_id;
+        if (t < 0 || t >= num_tiers) continue;
+        if (t >= static_cast<int>(tier_cell_avg.size())) continue;
 
-            const Die& die = dies[tk];
-            const int  np  = static_cast<int>(tier_pins.size());
+        const Die& die = dies[static_cast<size_t>(t)];
+        const double rx = m.width  * 0.5 + std::max(sigma, die.bin_w);
+        const double ry = m.height * 0.5 + std::max(sigma, die.bin_h);
 
-            // 所有無序對 (a, b)
-            for (int ai = 0; ai < np; ++ai) {
-                for (int bi = ai + 1; bi < np; ++bi) {
-                    const int ia = tier_pins[ai];
-                    const int ib = tier_pins[bi];
-                    const Module& ma = modules[ia];
-                    const Module& mb = modules[ib];
+        accumulate_cong_gradient(m.x, m.y, rx, ry,
+                                 die, tier_cell_avg[static_cast<size_t>(t)],
+                                 cap, gx[i], gy[i]);
+    }
 
-                    const bool ma_move = !ma.is_terminal && !ma.is_fixed;
-                    const bool mb_move = !mb.is_terminal && !mb.is_fixed;
-                    if (!ma_move && !mb_move) continue;
+    // ---- TSV congestion 斥力（Phase 2）：tier_below + tier_above 合力 ----
+    if (gx_tsv && gy_tsv && !tsvs.empty()) {
+        const double tsv_rw = cfg.analytical_tsv_width  * 0.5;
+        const double tsv_rh = cfg.analytical_tsv_height * 0.5;
 
-                    const bool ma_rc = rc_eligible[static_cast<size_t>(ia)];
-                    const bool mb_rc = rc_eligible[static_cast<size_t>(ib)];
-                    if (!ma_rc && !mb_rc) continue;  // 快速跳過：兩端均不受力
+        for (int i = 0; i < static_cast<int>(tsvs.size()); ++i) {
+            const TSV& tsv = tsvs[static_cast<size_t>(i)];
+            double& gxi = (*gx_tsv)[static_cast<size_t>(i)];
+            double& gyi = (*gy_tsv)[static_cast<size_t>(i)];
 
-                    // bbox 跨 bin 數過濾：pair 的 bbox 超過 max_bbox_bins 時跳過
-                    if (max_bbox_bins > 0) {
-                        const int span_x = static_cast<int>(std::ceil(std::fabs(ma.x - mb.x) / die.bin_w));
-                        const int span_y = static_cast<int>(std::ceil(std::fabs(ma.y - mb.y) / die.bin_h));
-                        if (std::max(span_x, span_y) > max_bbox_bins) continue;
-                    }
+            for (int tier : {tsv.tier_below(), tsv.tier_above()}) {
+                if (tier < 0 || tier >= num_tiers) continue;
+                if (tier >= static_cast<int>(tier_cell_avg.size())) continue;
 
-                    accumulate_pair(
-                        ma.x, ma.y, mb.x, mb.y,
-                        ia, ib, ma_move, mb_move,
-                        ma_rc, mb_rc,
-                        die, eps, cap,
-                        gx, gy);
-                }
+                const Die& die = dies[static_cast<size_t>(tier)];
+                const double rx = tsv_rw + std::max(sigma, die.bin_w);
+                const double ry = tsv_rh + std::max(sigma, die.bin_h);
+
+                accumulate_cong_gradient(tsv.x, tsv.y, rx, ry,
+                                         die, tier_cell_avg[static_cast<size_t>(tier)],
+                                         cap, gxi, gyi);
             }
         }
     }

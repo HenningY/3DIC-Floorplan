@@ -596,10 +596,11 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
     std::vector<double> fy(static_cast<size_t>(nmod), 0.0);
     compute_net_centroid_wl_force(modules, nets, fx, fy);
 
-    // near→far 排序（針對此 tier 的可動 module）
+    // near→far 排序（針對此 tier 的可動 module；跳過 TSV proxy）
     std::vector<std::pair<double, int>> order;
     for (const Module& m : modules) {
         if (m.is_terminal || m.is_fixed || m.tier_id != tier) continue;
+        if (m.is_tsv_proxy) continue;
         const double dx = m.x - bbox_cx, dy = m.y - bbox_cy;
         order.push_back({ dx * dx + dy * dy, m.id });
     }
@@ -838,6 +839,11 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         r0.final_width  = sw;
         r0.final_height = sh;
 
+        if (r0.objective < best.objective - kEps) best = r0;
+
+        // TSV proxy 不允許旋轉，只評估 0°
+        if (target.is_tsv_proxy) continue;
+
         // 90°：交換後評估（eval_orientation 內部以交換後的 w/h 計算邊界）
         Module base90 = base0;
         std::swap(base90.width, base90.height);
@@ -845,8 +851,6 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         r90.final_width  = sw;  // 記錄旋轉前的原始形狀
         r90.final_height = sh;
 
-        // 更新 best（同 objective 偏好 0°、偏好較早形狀）
-        if (r0.objective  < best.objective - kEps) best = r0;
         if (r90.objective < best.objective - kEps) best = r90;
     }
 
@@ -916,6 +920,7 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
 
     for (Module& m : modules) {
         if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
+        if (m.is_tsv_proxy) continue; // TSV proxy 不旋轉
 
         // 判斷是否在任一重疊 module 的 radius 內
         bool nearby = false;

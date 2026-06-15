@@ -7,7 +7,6 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
-#include <stdexcept>
 
 // ============================================================
 // parse_blocks: 解析 .block 檔案

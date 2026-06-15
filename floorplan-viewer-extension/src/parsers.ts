@@ -12,6 +12,7 @@ export interface BlockDef {
   width: number;
   height: number;
   tier: number;
+  isSoft?: boolean;
 }
 
 export interface TerminalPin {
@@ -138,6 +139,7 @@ export function parseBlockFile(text: string): BlockFile {
       width: parseFloat(parts[1]),
       height: parseFloat(parts[2]),
       tier: parseInt(parts[3], 10),
+      isSoft: parts.length > 4 && parts[4].toLowerCase() === "s",
     });
   }
 

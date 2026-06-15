@@ -48,6 +48,15 @@ void print_intra_die_stats(const IntraDieStats& stats, std::ostream& os = std::c
 void squarify_modules(PlacementEngine& engine);
 
 // ============================================================
+// Tier 面積使用率
+// ============================================================
+// 回傳每 tier 的 module 面積佔比（非 terminal，含 fixed），索引對應 tier 編號
+std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine);
+
+// 回傳是否任一 tier 的佔比嚴格大於 threshold
+bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold);
+
+// ============================================================
 // Overlap 檢查：module 與 TSV 的重疊對數統計
 // ============================================================
 // 印出每一層的 overlap pair 數量（module-module / module-TSV / TSV-TSV 全部算）
@@ -77,34 +86,30 @@ void print_overlap_report(const PlacementEngine& engine,
 //   對 pair bbox 內每條垂直邊段 += 1/row_span
 //
 // cell_avg[r,c] = (top_H + bot_H + left_V + right_V) / 4
+//
+// 統計量（tier_max / top10%_mean / global_*）以「單條 H/V edge demand」為單位；
+// tier_cell_avg 仍保留供 congestion 推力與 PPM 視覺化（四邊平均，連續場）。
 // ============================================================
 struct BinEdgeCongestionStats {
-    // 每個 tier 的 cell 壅塞度，row-major，長度 = bin_rows * bin_cols
+    // 每個 tier 的 cell 壅塞度（四邊平均），row-major，長度 = bin_rows * bin_cols
     std::vector<std::vector<double>> tier_cell_avg;
-    // 各 tier 的 cell 最大壅塞值
+    // 各 tier 所有 H/V edge 的最大 demand
     std::vector<double> tier_max;
-    // 各 tier 前 10% 高壅塞 bin 的平均壅塞值
+    // 各 tier 前 10% 高 demand edge 的平均值
     std::vector<double> tier_top10p_mean;
-    // 全域最大
+    // 全域 edge 最大 demand
     double global_max        = 0.0;
-    // 全域前 10% 高壅塞 bin 的平均壅塞值
+    // 全域前 10% 高 demand edge 的平均值
     double global_top10p_mean = 0.0;
 };
 
+// 從已建好的 BinEdgeDemands 快速計算統計量（不遍歷 net）
+BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
+                                                    const std::vector<Die>& dies);
+
 BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine);
 
-// ============================================================
-// BinEdgeDemands：可增量更新的 H/V edge demand 陣列
-//
-// 格式與 compute_bin_edge_congestion 內部完全一致：
-//   H[t][hr * C + hc]  hr∈[0,R], hc∈[0,C-1]
-//   V[t][vc * R + vr]  vc∈[0,C], vr∈[0,R-1]
-// ============================================================
-struct BinEdgeDemands {
-    // 每層各一個 H/V 向量
-    std::vector<std::vector<double>> H;  // 長度 (R+1)*C，per tier
-    std::vector<std::vector<double>> V;  // 長度 (C+1)*R，per tier
-};
+// BinEdgeDemands 定義在 floorplanner.h（已由上方 #include 引入）
 
 // 配置並清零（依 dies 決定每層大小）
 void bin_edge_clear(BinEdgeDemands& d, const std::vector<Die>& dies);
@@ -132,11 +137,15 @@ void bin_edge_cells_from_hv(const Die& die,
 // （per-tier 切片，與 compute_bin_edge_congestion 之 module 端點部分行為一致）
 BinEdgeDemands build_bin_edge_baseline_modules_only(const PlacementEngine& engine);
 
+// 建立含 module + TSV overlay 的 BinEdgeDemands（供 analytical TSV phase 快取用）
+BinEdgeDemands build_bin_edge_demands_with_tsv(const PlacementEngine& engine);
+
 // 印每層 max / top-10% mean 以及全域摘要（不 dump 完整格子）
 void print_bin_edge_congestion_summary(const BinEdgeCongestionStats& s,
     std::ostream& os = std::cout);
 
-// 將各 tier 的 cell 壅塞度畫成 PPM（RGB）；淺色＝壅塞低、深色＝壅塞高（每 die 對 [0,tier_max] 線性對應）
+// 將各 tier 的 cell 壅塞度畫成 PPM（RGB）；淺色＝壅塞低、深色＝壅塞高
+// 著色用 tier_cell_avg（四邊平均）；正規化上限用 stats.tier_max（edge max）
 // upscale：每個 bin 在影像中佔 upscale×upscale 像素（預設 8）
 // y 軸對齊：影像上方 = die y 較大一側（row index 較大的 bin）
 void write_bin_edge_congestion_maps(const PlacementEngine&        engine,

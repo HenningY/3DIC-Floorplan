@@ -30,6 +30,38 @@ var constraintFileLoaded = false; // 是否已載入 constraint 檔
 var TIER_FILLS   = ['#4a90d9','#5cb85c','#f0ad4e','#d9534f','#9b59b6','#1abc9c'];
 var TIER_STROKES = ['#2c6fa8','#3d8b3d','#c8892a','#b33030','#7d3f9c','#148a74'];
 
+function shadeHex(hex, t) {
+  var h = hex.replace('#', '');
+  if (h.length === 3) {
+    h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  }
+  var r = parseInt(h.slice(0, 2), 16);
+  var g = parseInt(h.slice(2, 4), 16);
+  var b = parseInt(h.slice(4, 6), 16);
+  if (t >= 0) {
+    r = Math.round(r + (255 - r) * t);
+    g = Math.round(g + (255 - g) * t);
+    b = Math.round(b + (255 - b) * t);
+  } else {
+    var f = 1 + t;
+    r = Math.round(r * f);
+    g = Math.round(g * f);
+    b = Math.round(b * f);
+  }
+  return '#' + [r, g, b].map(function(v) {
+    return Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0');
+  }).join('');
+}
+
+function moduleStyle(tier, isSoft) {
+  var fill = TIER_FILLS[tier % TIER_FILLS.length];
+  var stroke = TIER_STROKES[tier % TIER_STROKES.length];
+  if (isSoft) {
+    return { fill: shadeHex(fill, 0.45), stroke: shadeHex(stroke, 0.3) };
+  }
+  return { fill: shadeHex(fill, -0.12), stroke: stroke };
+}
+
 // ── Result / Info 區塊更新 ──
 function updateInfoSection() {
   var infoEl = document.getElementById('rpInfoRows');
@@ -476,12 +508,11 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
 
   // Modules（只顯示此層，支援 override 位置與選取高亮）
   if (chk('chkModules')) {
-    var fill   = TIER_FILLS[tier % TIER_FILLS.length];
-    var stroke = TIER_STROKES[tier % TIER_STROKES.length];
     var showML = chk('chkModuleLabels');
     var mods = sceneData.modules.filter(function(m) { return m.tier === tier; });
     for (var mi = 0; mi < mods.length; mi++) {
       var m = mods[mi];
+      var ms = moduleStyle(tier, !!m.isSoft);
       var em = getEffMod(m);
       var rx = tx(em.xll), ry = ty(em.yur);
       var rw = Math.max((em.xur - em.xll) * scale, 0.8);
@@ -489,10 +520,10 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
       var isSel = selectedMod === m.name;
       var fixed = isFixed(m.name);
       var rgi = repulseGroupIdx(m.name);
-      parts.push('<rect class="module-rect" data-modname="' + escXml(m.name) + '"' +
+      parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
         ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
-        ' fill="' + fill + '" fill-opacity="' + (isSel ? '0.6' : '0.35') + '"' +
-        ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.8')) + '"/>');
+        ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.42' : '0.35')) + '"' +
+        ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : ms.stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.8')) + '"/>');
       if (fixed) {
         parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-fixed)" style="pointer-events:none"/>');
       }
@@ -566,11 +597,10 @@ function renderOverlaid(parts, cw, ch) {
   if (chk('chkModules')) {
     var showML = chk('chkModuleLabels');
     for (var t = 0; t < sceneData.outlines.length; t++) {
-      var fill   = TIER_FILLS[t % TIER_FILLS.length];
-      var stroke = TIER_STROKES[t % TIER_STROKES.length];
       var mods = sceneData.modules.filter(function(m) { return m.tier === t; });
       for (var mi = 0; mi < mods.length; mi++) {
         var m = mods[mi];
+        var ms = moduleStyle(t, !!m.isSoft);
         var em = getEffMod(m);
         var rx = tx(em.xll), ry = ty(em.yur);
         var rw = Math.max((em.xur - em.xll) * scale, 0.8);
@@ -578,10 +608,10 @@ function renderOverlaid(parts, cw, ch) {
         var isSel = selectedMod === m.name;
         var fixed = isFixed(m.name);
         var rgi = repulseGroupIdx(m.name);
-        parts.push('<rect class="module-rect" data-modname="' + escXml(m.name) + '"' +
+        parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
           ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
-          ' fill="' + fill + '" fill-opacity="' + (isSel ? '0.6' : '0.28') + '"' +
-          ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.7')) + '"/>');
+          ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.38' : '0.28')) + '"' +
+          ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : ms.stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.7')) + '"/>');
         if (fixed) {
           parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-fixed)" style="pointer-events:none"/>');
         }

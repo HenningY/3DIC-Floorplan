@@ -11,9 +11,15 @@ export function buildViewPayload(
   const die  = outLines[3]?.trim() ?? "";
   const time = outLines[4]?.trim() ?? "";
   const nets = netsText ? parseNetsFile(netsText) : [];
+  const softNames = new Set(
+    block.blocks.filter((b) => b.isSoft).map((b) => b.name)
+  );
   return {
     outlines:  block.outlines,
-    modules:   floor.modules,
+    modules:   floor.modules.map((m) => ({
+      ...m,
+      isSoft: softNames.has(m.name),
+    })),
     tsvs:      floor.tsvs,
     terminals: block.terminals,
     nets,

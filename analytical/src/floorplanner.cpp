@@ -330,40 +330,35 @@ void PlacementEngine::initialize_positions()
 }
 
 // ============================================================
-// solve: Nesterov Accelerated Gradient 主迴圈
-//
-//   每次迭代流程：
-//   1. 更新動態參數（σ 線性退火；λ 每 interval 次迭代 ×1.2）
-//   2. 由當前位置 x_k 計算 NAG lookahead y_k
-//   3. 在 y_k 處更新密度圖並計算兩路梯度
-//   4. RMS 正規化，使 WL 與 Density 梯度量級一致後相加
-//   5. 更新位置並夾取至 Die 邊界
+// clamp_tsv_to_die: TSV 中心夾取到 tier_below die 邊界（留半寬邊距）
 // ============================================================
-
-void PlacementEngine::solve()
+void PlacementEngine::clamp_tsv_to_die(TSV& tsv) const
 {
-    const int    max_iter = cfg_.max_iterations;
-    const double mu       = cfg_.momentum;
-    double       step     = cfg_.init_step_size;
-    const double decay    = cfg_.step_decay;
-    const double tol      = cfg_.convergence_tol;
+    const Die& die = dies_[static_cast<size_t>(tsv.tier_below())];
+    const double hw = cfg_.analytical_tsv_width  * 0.5;
+    const double hh = cfg_.analytical_tsv_height * 0.5;
+    tsv.x = std::max(hw, std::min(die.width  - hw, tsv.x));
+    tsv.y = std::max(hh, std::min(die.height - hh, tsv.y));
+}
 
-    int n = static_cast<int>(modules_.size());
+// ============================================================
+// run_nag_loop: Nesterov Accelerated Gradient 主迴圈
+//   include_tsv=false → Phase 1（純 module，維持舊行為）
+//   include_tsv=true  → Phase 2（module + TSV joint）
+// ============================================================
+void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
+{
+    const double mu    = cfg_.momentum;
+    double       step  = include_tsv && nag_step_ > 0.0
+                         ? nag_step_
+                         : cfg_.init_step_size;
+    const double decay = cfg_.step_decay;
+    const double tol   = cfg_.convergence_tol;
 
-    // λ 從 init_mult 出發，每 interval 次迭代乘以 increase_rate
-    lambda_mult_ = cfg_.lambda_init_mult;
+    int n  = static_cast<int>(modules_.size());
+    int nt = include_tsv ? static_cast<int>(tsvs_.size()) : 0;
 
     const int nd = static_cast<int>(dies_.size());
-    tier_rc_alpha_mult_.assign(static_cast<size_t>(nd), 0.0);
-
-    // ---- log 目前 wirelength model ----
-    {
-        const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
-        std::cout << "[Solve] wirelength_model="
-                  << (use_wa ? "WA" : "LSE")
-                  << "  gamma=" << (use_wa ? cfg_.gamma_wa : cfg_.gamma_lse)
-                  << "\n";
-    }
 
     // σ 平滑半徑：以各層 Die 寬度最大值為基準
     double die_w = 268.0;
@@ -373,73 +368,143 @@ void PlacementEngine::solve()
     }
     const double sigma_start = cfg_.sigma_start_frac * die_w;
     const double sigma_end   = cfg_.sigma_end_frac   * die_w;
+    const int    sigma_budget = cfg_.max_iterations + cfg_.analytical_tsv_max_iterations;
 
-    std::vector<double> gx_wl(n), gy_wl(n);   // Wirelength 梯度
-    std::vector<double> gx_d(n),  gy_d(n);    // Density 梯度
-    std::vector<double> gx_rep(n), gy_rep(n); // Repulsion 梯度（REPULSE constraint）
-    std::vector<double> gx_rc(n),  gy_rc(n);  // Routing congestion 梯度（週期性更新）
-    std::vector<double> gx(n),    gy(n);       // 合併梯度
-    std::vector<double> look_x(n), look_y(n);  // NAG lookahead 暫存
+    // Module 梯度向量
+    std::vector<double> gx_wl(n), gy_wl(n);
+    std::vector<double> gx_d(n),  gy_d(n);
+    std::vector<double> gx_rep(n), gy_rep(n);
+    std::vector<double> gx_rc(n),  gy_rc(n);
+    std::vector<double> gx(n),    gy(n);
+    std::vector<double> look_x(n), look_y(n);
+
+    // TSV 梯度向量（Phase 2 用）
+    std::vector<double> gx_tsv_wl(static_cast<size_t>(nt)),
+                        gy_tsv_wl(static_cast<size_t>(nt));
+    std::vector<double> gx_tsv_d(static_cast<size_t>(nt)),
+                        gy_tsv_d(static_cast<size_t>(nt));
+    std::vector<double> gx_tsv_rc(static_cast<size_t>(nt)),
+                        gy_tsv_rc(static_cast<size_t>(nt));
+    std::vector<double> look_tsv_x(static_cast<size_t>(nt)),
+                        look_tsv_y(static_cast<size_t>(nt));
 
     double prev_max_overflow   = 0.0;
     double prev_total_overflow = 0.0;
     bool   have_prev_overflow  = false;
     int    overflow_stable_streak = 0;
 
+    // Phase 2：所有非 terminal / 非 fixed 的 module 都可移動
+    std::vector<bool> phase2_movable(static_cast<size_t>(n), false);
+    if (include_tsv) {
+        int n_movable = 0;
+        for (int i = 0; i < n; ++i) {
+            const Module& m = modules_[i];
+            if (m.is_terminal || m.is_fixed || m.tier_id < 0) continue;
+            phase2_movable[static_cast<size_t>(i)] = true;
+            ++n_movable;
+        }
+        std::cout << "[SolveTSV phase] all modules movable: " << n_movable << "/" << n << "\n";
+    }
+
     for (int iter = 0; iter < max_iter; ++iter) {
 
-        // ---- Step 1a: σ 線性退火 ----
-        // 前半段快速退火（cosine annealing 的線性近似）
-        double t      = static_cast<double>(iter) / max_iter;
-        smooth_sigma_ = sigma_start + (sigma_end - sigma_start) * t;
+        // ---- Step 1a: σ 線性退火（跨 Phase 累積 nag_iter_，Phase 2 不接續從 0 重算）----
+        if (sigma_budget > 0) {
+            const double t = std::min(1.0,
+                static_cast<double>(nag_iter_) / static_cast<double>(sigma_budget));
+            smooth_sigma_ = sigma_start + (sigma_end - sigma_start) * t;
+        }
 
-        // ---- Step 1b: λ 遞增排程（每 interval 次 ×rate，上限 lambda_max_mult）----
-        if (iter > 0 && iter % cfg_.lambda_update_interval == 0) {
+        // ---- Step 1b: λ 遞增排程 ----
+        if (nag_iter_ > 0 && nag_iter_ % cfg_.lambda_update_interval == 0) {
             lambda_mult_ = std::min(lambda_mult_ * cfg_.lambda_increase_rate,
                                     cfg_.lambda_max_mult);
         }
 
-        // ---- Step 2: NAG lookahead y_k = x_k + μ*(x_k - x_{k-1}) ----
-        for (int i = 0; i < n; ++i) {
-            // terminal 和 fixed module 均保持原位不做 lookahead 偏移
-            if (modules_[i].is_terminal || modules_[i].is_fixed) {
-                look_x[i] = modules_[i].x;
-                look_y[i] = modules_[i].y;
-                continue;
+        // ---- Step 2: NAG lookahead（module）----
+        // Phase 2 時大 module 凍結（look = 當前座標）；小 module 同 Phase 1 做 NAG lookahead
+        if (include_tsv) {
+            for (int i = 0; i < n; ++i) {
+                if (phase2_movable[static_cast<size_t>(i)]) {
+                    look_x[i] = modules_[i].x + mu * (modules_[i].x - prev_x_[i]);
+                    look_y[i] = modules_[i].y + mu * (modules_[i].y - prev_y_[i]);
+                } else {
+                    look_x[i] = modules_[i].x;
+                    look_y[i] = modules_[i].y;
+                }
             }
-            look_x[i] = modules_[i].x + mu * (modules_[i].x - prev_x_[i]);
-            look_y[i] = modules_[i].y + mu * (modules_[i].y - prev_y_[i]);
+            for (int i = 0; i < n; ++i) {
+                if (!phase2_movable[static_cast<size_t>(i)]) continue;
+                prev_x_[i]    = modules_[i].x;
+                prev_y_[i]    = modules_[i].y;
+                modules_[i].x = look_x[i];
+                modules_[i].y = look_y[i];
+            }
+        } else {
+            for (int i = 0; i < n; ++i) {
+                if (modules_[i].is_terminal || modules_[i].is_fixed) {
+                    look_x[i] = modules_[i].x;
+                    look_y[i] = modules_[i].y;
+                    continue;
+                }
+                look_x[i] = modules_[i].x + mu * (modules_[i].x - prev_x_[i]);
+                look_y[i] = modules_[i].y + mu * (modules_[i].y - prev_y_[i]);
+            }
+            for (int i = 0; i < n; ++i) {
+                prev_x_[i]    = modules_[i].x;
+                prev_y_[i]    = modules_[i].y;
+                modules_[i].x = look_x[i];
+                modules_[i].y = look_y[i];
+            }
         }
 
-        // 暫存 x_k，再把 module 座標移到 lookahead 位置以計算梯度
-        // fixed module 也暫存但不搬移（density map 和 WL gradient 仍需感知其位置）
-        for (int i = 0; i < n; ++i) {
-            prev_x_[i]    = modules_[i].x;
-            prev_y_[i]    = modules_[i].y;
-            modules_[i].x = look_x[i];
-            modules_[i].y = look_y[i];
+        // TSV NAG lookahead（Phase 2）
+        if (include_tsv) {
+            for (int i = 0; i < nt; ++i) {
+                look_tsv_x[static_cast<size_t>(i)] =
+                    tsvs_[static_cast<size_t>(i)].x
+                    + mu * (tsvs_[static_cast<size_t>(i)].x - prev_tsv_x_[static_cast<size_t>(i)]);
+                look_tsv_y[static_cast<size_t>(i)] =
+                    tsvs_[static_cast<size_t>(i)].y
+                    + mu * (tsvs_[static_cast<size_t>(i)].y - prev_tsv_y_[static_cast<size_t>(i)]);
+            }
+            for (int i = 0; i < nt; ++i) {
+                prev_tsv_x_[static_cast<size_t>(i)] = tsvs_[static_cast<size_t>(i)].x;
+                prev_tsv_y_[static_cast<size_t>(i)] = tsvs_[static_cast<size_t>(i)].y;
+                tsvs_[static_cast<size_t>(i)].x = look_tsv_x[static_cast<size_t>(i)];
+                tsvs_[static_cast<size_t>(i)].y = look_tsv_y[static_cast<size_t>(i)];
+            }
         }
 
-        // ---- Step 3: 計算梯度（fixed module 位置已正確反映在 look_x/y 中）----
+        // ---- Step 3: 計算梯度 ----
         update_density_map();
-        calculate_wirelength_gradient(gx_wl, gy_wl);
-        calculate_density_gradient(gx_d,  gy_d);
-        calculate_repulsion_gradient(gx_rep, gy_rep); // REPULSE constraint 斥力
+        if (include_tsv) {
+            calculate_wirelength_gradient(gx_wl, gy_wl, &gx_tsv_wl, &gy_tsv_wl);
+            calculate_density_gradient(gx_d, gy_d, &gx_tsv_d, &gy_tsv_d);
+        } else {
+            calculate_wirelength_gradient(gx_wl, gy_wl);
+            calculate_density_gradient(gx_d, gy_d);
+        }
+        calculate_repulsion_gradient(gx_rep, gy_rep);
 
-        // Routing congestion 梯度：alpha>0 或 adaptive 模式時依週期排程重算，否則清零
+        // Routing congestion 梯度
         if ((cfg_.routing_congestion_alpha > 0.0 || cfg_.routing_congestion_max > 0.0)
-            && iter >= cfg_.routing_congestion_start_iter
-            && ((iter - cfg_.routing_congestion_start_iter)
+            && nag_iter_ >= cfg_.routing_congestion_start_iter
+            && ((nag_iter_ - cfg_.routing_congestion_start_iter)
                     % cfg_.routing_congestion_refresh_interval == 0))
         {
-            // Per-tier adaptive alpha：先更新倍率再決定是否需要算梯度
+            update_routing_congestion_map();
+
             if (cfg_.routing_congestion_max > 0.0) {
-                BinEdgeCongestionStats cstats = compute_bin_edge_congestion(*this);
-                std::cout << "[RC-alpha] iter=" << iter;
+                BinEdgeCongestionStats cstats =
+                    bin_edge_stats_from_demands(rc_edge_demands_, dies_);
+                std::cout << "[RC-alpha] iter=" << nag_iter_;
                 for (int t = 0; t < nd; ++t) {
                     const size_t ti = static_cast<size_t>(t);
                     const double tmax = t < static_cast<int>(cstats.tier_max.size())
                                         ? cstats.tier_max[ti] : 0.0;
+                    const double ttop = t < static_cast<int>(cstats.tier_top10p_mean.size())
+                                        ? cstats.tier_top10p_mean[ti] : 0.0;
                     if (tmax > cfg_.routing_congestion_max) {
                         const double prev = tier_rc_alpha_mult_[ti];
                         tier_rc_alpha_mult_[ti] = std::min(
@@ -450,14 +515,14 @@ void PlacementEngine::solve()
                         tier_rc_alpha_mult_[ti] = std::max(
                             1.0, prev / cfg_.routing_congestion_alpha_boost_rate);
                     }
-                    std::cout << " t" << t << "=" << std::fixed << std::setprecision(3)
-                              << tmax << (tmax > cfg_.routing_congestion_max ? "!(a=" : " (a=")
+                    std::cout << " t" << t << "=max " << std::fixed << std::setprecision(3)
+                              << tmax << "/top10% " << std::setprecision(3) << ttop
+                              << (tmax > cfg_.routing_congestion_max ? "!(a=" : " (a=")
                               << std::setprecision(2) << tier_rc_alpha_mult_[ti] << ")";
                 }
                 std::cout << "\n";
             }
 
-            // 若所有層 alpha 倍率皆為 0 則跳過梯度計算
             const bool any_active = [&] {
                 if (cfg_.routing_congestion_max <= 0.0) return cfg_.routing_congestion_alpha > 0.0;
                 for (int t = 0; t < nd; ++t)
@@ -467,16 +532,27 @@ void PlacementEngine::solve()
 
             std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
             std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
-            if (any_active)
-                calculate_routing_congestion_gradient(*this, gx_rc, gy_rc);
+            if (include_tsv) {
+                std::fill(gx_tsv_rc.begin(), gx_tsv_rc.end(), 0.0);
+                std::fill(gy_tsv_rc.begin(), gy_tsv_rc.end(), 0.0);
+            }
+            if (any_active) {
+                if (include_tsv)
+                    calculate_routing_congestion_gradient(*this, gx_rc, gy_rc,
+                                                          &gx_tsv_rc, &gy_tsv_rc);
+                else
+                    calculate_routing_congestion_gradient(*this, gx_rc, gy_rc);
+            }
         } else {
             std::fill(gx_rc.begin(), gx_rc.end(), 0.0);
             std::fill(gy_rc.begin(), gy_rc.end(), 0.0);
+            if (include_tsv) {
+                std::fill(gx_tsv_rc.begin(), gx_tsv_rc.end(), 0.0);
+                std::fill(gy_tsv_rc.begin(), gy_tsv_rc.end(), 0.0);
+            }
         }
 
-        // ---- Step 4: RMS 正規化（只統計真正可動模組）----
-        // wl_rms 為基準；density 與 routing congestion 梯度均以 wl_rms / x_rms 縮放，
-        // 使三路梯度的位移量尺度一致，再分別由 lambda（density）與 alpha（congestion）控制力道。
+        // ---- Step 4: RMS 正規化 ----
         double wl_sq = 0.0, d_sq = 0.0, rc_sq = 0.0;
         int    movable = 0;
         for (int i = 0; i < n; ++i) {
@@ -494,44 +570,77 @@ void PlacementEngine::solve()
         const double scale_d  = (d_rms  > 1e-12) ? (wl_rms / d_rms)  : 0.0;
         const double scale_rc = (rc_rms > 1e-12) ? (wl_rms / rc_rms) : 0.0;
 
-        // ---- Step 5: 合併梯度並更新位置（fixed module 不更新）----
-        for (int i = 0; i < n; ++i) {
-            if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
+        // ---- Step 5a: 更新 module 位置
+        //   Phase 1：所有可動 module 更新
+        //   Phase 2：所有非 terminal / 非 fixed module 均更新（phase2_movable 已全設為 true）
+        {
+            const bool phase1 = !include_tsv;
+            for (int i = 0; i < n; ++i) {
+                if (modules_[i].is_terminal || modules_[i].is_fixed) continue;
+                if (!phase1 && !phase2_movable[static_cast<size_t>(i)]) continue;
 
-            double lam = dies_[modules_[i].tier_id].lambda * lambda_mult_;
-            const double rc_mult = tier_rc_alpha_mult_.empty() ? 1.0
-                : tier_rc_alpha_mult_[static_cast<size_t>(modules_[i].tier_id)];
-            // adaptive 模式：rc_mult 本身即為有效 alpha（0 = 關閉，1+ = 啟動並遞增）
-            // 非 adaptive 模式：沿用固定的 routing_congestion_alpha × rc_mult
-            const double rc_alpha = (cfg_.routing_congestion_max > 0.0)
-                ? rc_mult
-                : cfg_.routing_congestion_alpha * rc_mult;
+                double lam = dies_[static_cast<size_t>(modules_[i].tier_id)].lambda * lambda_mult_;
+                const double rc_mult = tier_rc_alpha_mult_.empty() ? 1.0
+                    : tier_rc_alpha_mult_[static_cast<size_t>(modules_[i].tier_id)];
+                const double rc_alpha = (cfg_.routing_congestion_max > 0.0)
+                    ? rc_mult
+                    : cfg_.routing_congestion_alpha * rc_mult;
 
-            gx[i] = gx_wl[i] + gx_rep[i]
-                    + rc_alpha * scale_rc * gx_rc[i]
-                    + lam * scale_d * gx_d[i];
-            gy[i] = gy_wl[i] + gy_rep[i]
-                    + rc_alpha * scale_rc * gy_rc[i]
-                    + lam * scale_d * gy_d[i];
+                gx[i] = gx_wl[i] + gx_rep[i]
+                        + rc_alpha * scale_rc * gx_rc[i]
+                        + lam * scale_d * gx_d[i];
+                gy[i] = gy_wl[i] + gy_rep[i]
+                        + rc_alpha * scale_rc * gy_rc[i]
+                        + lam * scale_d * gy_d[i];
 
-            modules_[i].x = look_x[i] - step * gx[i];
-            modules_[i].y = look_y[i] - step * gy[i];
+                modules_[i].x = look_x[i] - step * gx[i];
+                modules_[i].y = look_y[i] - step * gy[i];
 
-            clamp_to_die(modules_[i], dies_[modules_[i].tier_id]);
+                clamp_to_die(modules_[i], dies_[static_cast<size_t>(modules_[i].tier_id)]);
+            }
+        }
+
+        // ---- Step 5b: 更新 TSV 位置（Phase 2）----
+        if (include_tsv) {
+            for (int i = 0; i < nt; ++i) {
+                const size_t si = static_cast<size_t>(i);
+                TSV& tsv = tsvs_[si];
+                const Die& die_tb = dies_[static_cast<size_t>(tsv.tier_below())];
+                const double lam_tsv = die_tb.lambda * lambda_mult_;
+
+                // rc_mult：取 tier_below 與 tier_above 的最大值
+                const double rc_mult_lo = tier_rc_alpha_mult_.empty() ? 1.0
+                    : tier_rc_alpha_mult_[static_cast<size_t>(tsv.tier_below())];
+                const double rc_mult_hi = tier_rc_alpha_mult_.empty() ? 1.0
+                    : tier_rc_alpha_mult_[static_cast<size_t>(tsv.tier_above())];
+                const double rc_mult_tsv = std::max(rc_mult_lo, rc_mult_hi);
+                const double rc_alpha_tsv = (cfg_.routing_congestion_max > 0.0)
+                    ? rc_mult_tsv
+                    : cfg_.routing_congestion_alpha * rc_mult_tsv;
+                const double tsv_cong_scale = cfg_.analytical_tsv_congestion_scale;
+
+                const double total_gx = gx_tsv_wl[si]
+                    + lam_tsv * scale_d  * gx_tsv_d[si]
+                    + rc_alpha_tsv * scale_rc * tsv_cong_scale * gx_tsv_rc[si];
+                const double total_gy = gy_tsv_wl[si]
+                    + lam_tsv * scale_d  * gy_tsv_d[si]
+                    + rc_alpha_tsv * scale_rc * tsv_cong_scale * gy_tsv_rc[si];
+
+                tsv.x = look_tsv_x[si] - step * total_gx;
+                tsv.y = look_tsv_y[si] - step * total_gy;
+                clamp_tsv_to_die(tsv);
+            }
         }
 
         step *= decay;
 
-        // ---- Step 5b: 週期性旋轉優化（pairwise 重疊面積）----
-        // 在 rotation_start_iter 之後，每隔 rotation_interval 次對所有可動 module
-        // 試旋轉 90°（以中心點為軸），比較旋轉前後與同 tier 所有其他 module 的
-        // 重疊面積總和，取較小者保留。
-        if (cfg_.rotation_start_iter > 0
+        // ---- Step 5c: 週期性旋轉優化（Phase 1 Only，Phase 2 跳過）----
+        if (!include_tsv
+         && cfg_.rotation_start_iter > 0
          && cfg_.rotation_interval   > 0
-         && iter >= cfg_.rotation_start_iter
-         && (iter - cfg_.rotation_start_iter) % cfg_.rotation_interval == 0)
+         && nag_iter_ >= cfg_.rotation_start_iter
+         && (nag_iter_ - cfg_.rotation_start_iter) % cfg_.rotation_interval == 0)
         {
-            // 計算 m 與同 tier 所有其他 module 的重疊面積加總
             auto pairwise_overlap = [&](const Module& m) -> double {
                 constexpr double eps = 1e-12;
                 double total = 0.0;
@@ -543,40 +652,36 @@ void PlacementEngine::solve()
                                                   - std::max(m.ly(), o.ly()));
                     total += ox * oy;
                 }
-                return total + eps; // eps 防止浮點相等時不必要旋轉
+                return total + eps;
             };
 
             int rotated_count = 0;
             for (Module& m : modules_) {
                 if (m.is_terminal || m.is_fixed) continue;
                 const Die& die = dies_[static_cast<size_t>(m.tier_id)];
-
-                // 旋轉後（swap 長寬）若 footprint 會超出 die，則不嘗試旋轉
-                const double hw_after = m.height * 0.5; // swap 後的半寬 = 原半高
-                const double hh_after = m.width  * 0.5; // swap 後的半高 = 原半寬
+                const double hw_after = m.height * 0.5;
+                const double hh_after = m.width  * 0.5;
                 if (m.x < hw_after || m.x > die.width  - hw_after
                  || m.y < hh_after || m.y > die.height - hh_after)
                     continue;
-
                 const double ov_before = pairwise_overlap(m);
                 std::swap(m.width, m.height);
                 const double ov_after  = pairwise_overlap(m);
-
-                if (ov_after >= ov_before)
-                    std::swap(m.width, m.height); // 無改善，還原
-                else
-                    ++rotated_count;
+                if (ov_after >= ov_before) std::swap(m.width, m.height);
+                else ++rotated_count;
             }
-            std::cout << "[Rotation] iter=" << iter
+            std::cout << "[Rotation] iter=" << nag_iter_
                       << " rotated_modules=" << rotated_count << "\n";
         }
 
+        ++nag_iter_;
+
         // ---- Step 6: 收斂監控（每 50 次）----
-        if (iter % 50 == 0) {
+        if (nag_iter_ % 50 == 0) {
             double hpwl = compute_hpwl();
 
             double max_overflow    = 0.0;
-            double total_overflow  = 0.0; // 所有 bin 的正超出量加總
+            double total_overflow  = 0.0;
             for (const Die& die : dies_) {
                 for (const Bin& b : die.bins) {
                     const double ex = b.density - b.target_density;
@@ -585,10 +690,8 @@ void PlacementEngine::solve()
                 }
             }
 
-            double rel_change = std::fabs(prev_hpwl_ - hpwl) /
-                                (prev_hpwl_ + 1e-12);
+            double rel_change = std::fabs(prev_hpwl_ - hpwl) / (prev_hpwl_ + 1e-12);
 
-            // 相鄰兩次「每 50 iter」記錄點的 overflow 變化量（連續 n 次皆小才累積）
             if (have_prev_overflow) {
                 const double d_max = std::fabs(max_overflow - prev_max_overflow);
                 const double d_tot = std::fabs(total_overflow - prev_total_overflow);
@@ -602,32 +705,33 @@ void PlacementEngine::solve()
             prev_total_overflow = total_overflow;
             have_prev_overflow    = true;
 
-            std::cout << "[Iter " << std::setw(5) << iter << "]"
-                      << " HPWL="       << std::fixed      << std::setprecision(1) << hpwl
-                      << " Overflow="   << std::setprecision(3) << max_overflow
+            std::cout << "[Iter " << std::setw(5) << nag_iter_ << "]"
+                      << " HPWL="          << std::fixed      << std::setprecision(1) << hpwl
+                      << " Overflow="      << std::setprecision(3) << max_overflow
                       << " TotalOverflow=" << std::setprecision(3) << total_overflow
-                      << " λ_mult="     << std::setprecision(4) << lambda_mult_
-                      << " σ="          << std::setprecision(1) << smooth_sigma_
-                      << " WLrms="      << std::scientific  << std::setprecision(2) << wl_rms
-                      << " Drms="       << d_rms
-                      << " step="       << step
+                      << " λ_mult="        << std::setprecision(4) << lambda_mult_
+                      << " σ="             << std::setprecision(1) << smooth_sigma_
+                      << " WLrms="         << std::scientific  << std::setprecision(2) << wl_rms
+                      << " Drms="          << d_rms
+                      << " step="          << step
                       << "\n";
 
-            if (cfg_.dump_analytical_iter_trace
+            if (!include_tsv
+                && cfg_.dump_analytical_iter_trace
                 && !cfg_.analytical_iter_trace_path.empty()) {
                 std::ofstream ofs(cfg_.analytical_iter_trace_path,
-                                  (iter == 0) ? (std::ios::out | std::ios::trunc)
-                                              : (std::ios::out | std::ios::app));
+                                  (nag_iter_ == 50) ? (std::ios::out | std::ios::trunc)
+                                                    : (std::ios::out | std::ios::app));
                 if (ofs) {
                     ofs << std::fixed << std::setprecision(6);
-                    ofs << "[Iter " << iter << "]\n";
+                    ofs << "[Iter " << nag_iter_ << "]\n";
                     for (const Module& m : modules_) {
                         if (m.is_terminal) continue;
                         ofs << m.name << ' ' << m.lx() << ' ' << m.ly() << ' '
                             << m.rx() << ' ' << m.ry() << '\n';
                     }
                     ofs << '\n';
-                } else if (iter == 0) {
+                } else if (nag_iter_ == 50) {
                     std::cerr << "[Solve] WARNING: cannot open analytical trace file: "
                               << cfg_.analytical_iter_trace_path << "\n";
                 }
@@ -637,8 +741,9 @@ void PlacementEngine::solve()
                 (cfg_.convergence_overflow_stable_steps > 0
                  && overflow_stable_streak >= cfg_.convergence_overflow_stable_steps);
 
-            if (iter > 1000 && rel_change < tol && overflow_stable) {
-                std::cout << "[Converged] iter=" << iter
+            if (!include_tsv
+                && nag_iter_ > 1000 && rel_change < tol && overflow_stable) {
+                std::cout << "[Converged] iter=" << nag_iter_
                           << " HPWL=" << std::fixed << hpwl << "\n";
                 break;
             }
@@ -648,10 +753,103 @@ void PlacementEngine::solve()
 
     const double hpwl_scaled = compute_hpwl();
     const double gs          = geometry_scale_;
-    std::cout << "\n[Final] HPWL = " << std::fixed << std::setprecision(2) << hpwl_scaled;
+    const char*  phase_tag   = include_tsv ? "[SolveTSV phase]" : "[Final]";
+    std::cout << "\n" << phase_tag << " HPWL = "
+              << std::fixed << std::setprecision(2) << hpwl_scaled;
     if (std::fabs(gs - 1.0) > 1e-12)
-        std::cout << "  (actual HPWL = " << (hpwl_scaled / gs) << ", scale:" << gs << ")";
+        std::cout << "  (actual = " << (hpwl_scaled / gs) << ", scale:" << gs << ")";
     std::cout << "\n";
+    nag_step_ = step;
+}
+
+// ============================================================
+// solve: Phase 1 module-only analytical
+// ============================================================
+void PlacementEngine::solve()
+{
+    analytical_tsv_active_ = false;
+    lambda_mult_ = cfg_.lambda_init_mult;
+    nag_iter_    = 0;
+    nag_step_    = 0.0;
+    const int nd = static_cast<int>(dies_.size());
+    tier_rc_alpha_mult_.assign(static_cast<size_t>(nd), 0.0);
+
+    {
+        const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
+        std::cout << "[Solve] wirelength_model="
+                  << (use_wa ? "WA" : "LSE")
+                  << "  gamma=" << (use_wa ? cfg_.gamma_wa : cfg_.gamma_lse)
+                  << "\n";
+    }
+
+    // ---- Congestion 小 module 比例門檻：比例 <= gate_min_ratio 時停用 routing_congestion_max ----
+    if (cfg_.routing_congestion_gate_divisor > 0.0 && cfg_.routing_congestion_max > 0.0) {
+        const int nm = static_cast<int>(modules_.size());
+        std::vector<double> tier_max_area(static_cast<size_t>(nd), 0.0);
+        for (const Module& m : modules_) {
+            if (m.is_terminal || m.tier_id < 0 || m.tier_id >= nd) continue;
+            const double a = m.area();
+            if (a > tier_max_area[static_cast<size_t>(m.tier_id)])
+                tier_max_area[static_cast<size_t>(m.tier_id)] = a;
+        }
+        int small_count = 0, total_count = 0;
+        for (const Module& m : modules_) {
+            if (m.is_terminal || m.is_fixed || m.tier_id < 0 || m.tier_id >= nd) continue;
+            ++total_count;
+            const double thresh = tier_max_area[static_cast<size_t>(m.tier_id)]
+                                  / cfg_.routing_congestion_gate_divisor;
+            if (m.area() < thresh) ++small_count;
+        }
+        const double ratio = (total_count > 0)
+            ? static_cast<double>(small_count) / static_cast<double>(total_count)
+            : 0.0;
+        std::cout << "[Solve] congestion gate: small=" << small_count
+                  << "/" << total_count
+                  << " (" << std::fixed << std::setprecision(1) << ratio * 100.0 << "%)"
+                  << " threshold=" << cfg_.routing_congestion_gate_min_ratio * 100.0 << "%\n";
+        if (ratio <= cfg_.routing_congestion_gate_min_ratio) {
+            std::cout << "[Solve] congestion disabled (small module ratio too low)\n";
+            cfg_.routing_congestion_max = 0.0;
+        }
+        (void)nm;
+    }
+
+    run_nag_loop(cfg_.max_iterations, false);
+}
+
+// ============================================================
+// solve_tsv_phase: Phase 2 joint analytical（module + TSV）
+// ============================================================
+void PlacementEngine::solve_tsv_phase()
+{
+    if (tsvs_.empty()) {
+        std::cout << "[SolveTSV phase] No TSVs - skipping.\n";
+        return;
+    }
+
+    std::cout << "[SolveTSV phase] Starting Phase 2 joint analytical ("
+              << tsvs_.size() << " TSVs)...\n";
+    std::cout << "[SolveTSV phase] Continuing from Phase 1 end:"
+              << " iter=" << nag_iter_
+              << " step=" << std::fixed << std::setprecision(4) << nag_step_
+              << " λ_mult=" << std::setprecision(4) << lambda_mult_
+              << " σ=" << std::setprecision(1) << smooth_sigma_
+              << "\n";
+
+    analytical_tsv_active_ = true;
+
+    // 初始化 TSV NAG 動量
+    const int nt = static_cast<int>(tsvs_.size());
+    prev_tsv_x_.resize(static_cast<size_t>(nt));
+    prev_tsv_y_.resize(static_cast<size_t>(nt));
+    for (int i = 0; i < nt; ++i) {
+        prev_tsv_x_[static_cast<size_t>(i)] = tsvs_[static_cast<size_t>(i)].x;
+        prev_tsv_y_[static_cast<size_t>(i)] = tsvs_[static_cast<size_t>(i)].y;
+    }
+
+    run_nag_loop(cfg_.analytical_tsv_max_iterations, true);
+
+    analytical_tsv_active_ = false;
 }
 
 
@@ -719,21 +917,159 @@ double PlacementEngine::compute_lse_wirelength() const
 //
 //   兩者均使用 max/min shift 以確保數值穩定；w_net 為跨 tier die weight 平均。
 // ============================================================
+// 共用 LSE/WA 梯度累加核心：對一組 endpoints 計算 WL 梯度
+// pts[k] = {x, y}; module_ids[k] >= 0 表示 module pin（累加到 gx/gy），< 0 表示 TSV
+// tsv_ids[k] >= 0 時累加到 gx_tsv/gy_tsv（忽略 nullptr）
+static void accumulate_wl_gradient(
+    const std::vector<std::pair<double,double>>& pts,
+    const std::vector<int>&   module_ids,   // -1 = TSV
+    const std::vector<int>&   tsv_ids,      // -1 = module
+    double w, bool use_wa, double g,
+    std::vector<double>& gx, std::vector<double>& gy,
+    std::vector<double>* gx_tsv, std::vector<double>* gy_tsv)
+{
+    if (pts.size() < 2) return;
+
+    double max_x = -1e18, min_x = 1e18;
+    double max_y = -1e18, min_y = 1e18;
+    for (const auto& p : pts) {
+        max_x = std::max(max_x, p.first);
+        min_x = std::min(min_x, p.first);
+        max_y = std::max(max_y, p.second);
+        min_y = std::min(min_y, p.second);
+    }
+
+    double A_x = 0.0, C_x = 0.0, A_y = 0.0, C_y = 0.0;
+    double B_x = 0.0, D_x = 0.0, B_y = 0.0, D_y = 0.0;
+    for (const auto& p : pts) {
+        const double xi = p.first, yi = p.second;
+        const double ep_x = std::exp((xi - max_x) / g);
+        const double en_x = std::exp((min_x - xi) / g);
+        const double ep_y = std::exp((yi - max_y) / g);
+        const double en_y = std::exp((min_y - yi) / g);
+        A_x += ep_x; C_x += en_x; A_y += ep_y; C_y += en_y;
+        if (use_wa) {
+            B_x += xi * ep_x; D_x += xi * en_x;
+            B_y += yi * ep_y; D_y += yi * en_y;
+        }
+    }
+
+    const size_t np = pts.size();
+    if (use_wa) {
+        const double x_bar_p = B_x / A_x, x_bar_n = D_x / C_x;
+        const double y_bar_p = B_y / A_y, y_bar_n = D_y / C_y;
+        const double inv_g = 1.0 / g;
+        for (size_t k = 0; k < np; ++k) {
+            const double xi = pts[k].first, yi = pts[k].second;
+            const double ep_x = std::exp((xi - max_x) / g);
+            const double en_x = std::exp((min_x - xi) / g);
+            const double ep_y = std::exp((yi - max_y) / g);
+            const double en_y = std::exp((min_y - yi) / g);
+            const double dgx = w * inv_g * (
+                (ep_x / A_x) * (g + xi - x_bar_p) - (en_x / C_x) * (g - xi + x_bar_n));
+            const double dgy = w * inv_g * (
+                (ep_y / A_y) * (g + yi - y_bar_p) - (en_y / C_y) * (g - yi + y_bar_n));
+            if (module_ids[k] >= 0) {
+                gx[static_cast<size_t>(module_ids[k])] += dgx;
+                gy[static_cast<size_t>(module_ids[k])] += dgy;
+            } else if (tsv_ids[k] >= 0 && gx_tsv && gy_tsv) {
+                (*gx_tsv)[static_cast<size_t>(tsv_ids[k])] += dgx;
+                (*gy_tsv)[static_cast<size_t>(tsv_ids[k])] += dgy;
+            }
+        }
+    } else {
+        for (size_t k = 0; k < np; ++k) {
+            const double xi = pts[k].first, yi = pts[k].second;
+            const double ep_x = std::exp((xi - max_x) / g);
+            const double en_x = std::exp((min_x - xi) / g);
+            const double ep_y = std::exp((yi - max_y) / g);
+            const double en_y = std::exp((min_y - yi) / g);
+            const double dgx = w * (ep_x / A_x - en_x / C_x);
+            const double dgy = w * (ep_y / A_y - en_y / C_y);
+            if (module_ids[k] >= 0) {
+                gx[static_cast<size_t>(module_ids[k])] += dgx;
+                gy[static_cast<size_t>(module_ids[k])] += dgy;
+            } else if (tsv_ids[k] >= 0 && gx_tsv && gy_tsv) {
+                (*gx_tsv)[static_cast<size_t>(tsv_ids[k])] += dgx;
+                (*gy_tsv)[static_cast<size_t>(tsv_ids[k])] += dgy;
+            }
+        }
+    }
+}
+
 void PlacementEngine::calculate_wirelength_gradient(
-    std::vector<double>& gx, std::vector<double>& gy) const
+    std::vector<double>& gx, std::vector<double>& gy,
+    std::vector<double>* gx_tsv, std::vector<double>* gy_tsv) const
 {
     std::fill(gx.begin(), gx.end(), 0.0);
     std::fill(gy.begin(), gy.end(), 0.0);
+    if (gx_tsv) std::fill(gx_tsv->begin(), gx_tsv->end(), 0.0);
+    if (gy_tsv) std::fill(gy_tsv->begin(), gy_tsv->end(), 0.0);
 
     const bool use_wa = (cfg_.wirelength_model == WirelengthModel::WA);
     const double g = use_wa ? cfg_.gamma_wa : cfg_.gamma_lse;
+    const int num_tiers = static_cast<int>(dies_.size());
 
+    // ---- Phase 2 per-tier 模式 ----
+    if (analytical_tsv_active_ && !tsvs_.empty() && gx_tsv && gy_tsv) {
+        for (int ni = 0; ni < static_cast<int>(nets_.size()); ++ni) {
+            const Net& net = nets_[static_cast<size_t>(ni)];
+            if (net.pins.size() < 2) continue;
+
+            // 利用 net_to_tsvs_ 索引：只有有 TSV 的 cross-tier net 才需要 per-tier 展開
+            const auto& tsv_ids_for_net = net_to_tsvs_.empty()
+                ? std::vector<int>{}
+                : net_to_tsvs_[static_cast<size_t>(ni)];
+
+            // 確定此 net 涉及的 tier 範圍（只遍歷有意義的 tier）
+            const int t_lo = net.is_cross_tier ? net.min_tier : 0;
+            const int t_hi = net.is_cross_tier ? net.max_tier : (num_tiers - 1);
+
+            for (int t = t_lo; t <= t_hi; ++t) {
+                const double w_tier = analytical_tier_net_weight(t);
+
+                std::vector<std::pair<double,double>> pts;
+                std::vector<int> mod_ids, tsv_ids_vec;
+
+                // module/terminal pins on tier t
+                for (int pid : net.pins) {
+                    const Module& m = modules_[pid];
+                    const int mt = m.is_terminal ? 0 : m.tier_id;
+                    if (mt != t) continue;
+                    if (m.is_terminal) {
+                        pts.push_back({m.x, m.y});
+                        mod_ids.push_back(-1);
+                        tsv_ids_vec.push_back(-1);
+                    } else {
+                        pts.push_back({m.x, m.y});
+                        mod_ids.push_back(pid);
+                        tsv_ids_vec.push_back(-1);
+                    }
+                }
+
+                // TSV 虛擬端點：只查屬於此 net 的 TSV（已由索引給出）
+                for (int ti : tsv_ids_for_net) {
+                    const TSV& tsv = tsvs_[static_cast<size_t>(ti)];
+                    if (tsv.tier_below() == t || tsv.tier_above() == t) {
+                        pts.push_back({tsv.x, tsv.y});
+                        mod_ids.push_back(-1);
+                        tsv_ids_vec.push_back(ti);
+                    }
+                }
+
+                accumulate_wl_gradient(pts, mod_ids, tsv_ids_vec, w_tier,
+                                       use_wa, g, gx, gy, gx_tsv, gy_tsv);
+            }
+        }
+        return;
+    }
+
+    // ---- Phase 1：全域 all-pin（維持原有行為）----
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
 
         const double w_net = net_wirelength_die_weight(net);
 
-        // ---- 共用前處理：max/min shift 與基本 exp 分母 ----
         double max_x = -1e18, min_x = 1e18;
         double max_y = -1e18, min_y = 1e18;
         for (int id : net.pins) {
@@ -743,11 +1079,9 @@ void PlacementEngine::calculate_wirelength_gradient(
             min_y = std::min(min_y, modules_[id].y);
         }
 
-        // A = Σ exp((xi-max_x)/g)，C = Σ exp((min_x-xi)/g)
-        // B, D 為 WA 額外需要的加權和（LSE 不用，但統一計算以共用迴圈）
         double A_x = 0.0, C_x = 0.0;
         double A_y = 0.0, C_y = 0.0;
-        double B_x = 0.0, D_x = 0.0;  // WA: Σ xi*exp_p, Σ xi*exp_n
+        double B_x = 0.0, D_x = 0.0;
         double B_y = 0.0, D_y = 0.0;
 
         for (int id : net.pins) {
@@ -766,7 +1100,6 @@ void PlacementEngine::calculate_wirelength_gradient(
         }
 
         if (use_wa) {
-            // WA: x̄+ = B/A, x̄- = D/C（shift 後仍等價）
             const double x_bar_p = B_x / A_x;
             const double x_bar_n = D_x / C_x;
             const double y_bar_p = B_y / A_y;
@@ -781,7 +1114,6 @@ void PlacementEngine::calculate_wirelength_gradient(
                 const double en_x = std::exp((min_x - xi) / g);
                 const double ep_y = std::exp((yi - max_y) / g);
                 const double en_y = std::exp((min_y - yi) / g);
-                // ∂WL_x/∂xj = (1/γ)*[ (ep/A)*(γ+xj-x̄+) - (en/C)*(γ-xj+x̄-) ]
                 gx[id] += w_net * inv_g * (
                     (ep_x / A_x) * (g + xi - x_bar_p)
                   - (en_x / C_x) * (g - xi + x_bar_n)
@@ -792,7 +1124,6 @@ void PlacementEngine::calculate_wirelength_gradient(
                 );
             }
         } else {
-            // LSE: ∂WL/∂xj = w_net * (ep/A - en/C)
             for (int id : net.pins) {
                 if (modules_[id].is_terminal) continue;
                 const double xi = modules_[id].x;
@@ -809,9 +1140,91 @@ void PlacementEngine::calculate_wirelength_gradient(
 }
 
 // ============================================================
+// inject_tsv_proxies_for_legalize:
+//   把每個 TSV 以小矩形（tsv_w × tsv_h）注入 modules_ 作為 proxy module，
+//   tier_id = tsv.tier_below()（tier_below = layer_index）。
+//   供 run_legalize_heu 與真實 module 一起做 overlap 消除。
+// ============================================================
+void PlacementEngine::inject_tsv_proxies_for_legalize(double tsv_w, double tsv_h)
+{
+    proxy_module_indices_.clear();
+    if (tsvs_.empty()) return;
+
+    // 取現有最大 id（proxy id 從此後遞增）
+    int next_id = 0;
+    for (const Module& m : modules_)
+        next_id = std::max(next_id, m.id + 1);
+
+    std::cout << "[InjectProxy] Injecting " << tsvs_.size()
+              << " TSV proxies for unified legalization.\n";
+
+    for (int k = 0; k < static_cast<int>(tsvs_.size()); ++k) {
+        const TSV& tsv = tsvs_[static_cast<size_t>(k)];
+        const int tier = tsv.tier_below();
+        const Die& die = dies_[static_cast<size_t>(tier)];
+
+        Module proxy;
+        proxy.id            = next_id++;
+        proxy.name          = "__tsv_" + std::to_string(k) + "__";
+        proxy.width         = tsv_w;
+        proxy.height        = tsv_h;
+        proxy.x             = tsv.x;
+        proxy.y             = tsv.y;
+        proxy.tier_id       = tier;
+        proxy.is_terminal   = false;
+        proxy.is_fixed      = false;
+        proxy.is_soft       = false;
+        proxy.move_weight   = 1.0;
+        proxy.is_tsv_proxy  = true;
+        proxy.tsv_proxy_id  = k;
+
+        // 夾取初始位置在 die 邊界內
+        proxy.x = std::max(tsv_w * 0.5, std::min(die.width  - tsv_w * 0.5, proxy.x));
+        proxy.y = std::max(tsv_h * 0.5, std::min(die.height - tsv_h * 0.5, proxy.y));
+
+        proxy_module_indices_.push_back(static_cast<int>(modules_.size()));
+        modules_.push_back(proxy);
+    }
+}
+
+// ============================================================
+// commit_tsv_proxies_from_legalize:
+//   把 proxy 的 (x,y) 寫回 tsvs_，再從 modules_ 移除所有 proxy。
+// ============================================================
+void PlacementEngine::commit_tsv_proxies_from_legalize()
+{
+    int synced = 0;
+    for (const Module& m : modules_) {
+        if (!m.is_tsv_proxy || m.tsv_proxy_id < 0) continue;
+        TSV& tsv = tsvs_[static_cast<size_t>(m.tsv_proxy_id)];
+        tsv.x = m.x;
+        tsv.y = m.y;
+        ++synced;
+    }
+
+    // 移除所有 proxy（從後往前 erase 保持索引正確性）
+    std::vector<Module> kept;
+    kept.reserve(modules_.size() - static_cast<size_t>(synced));
+    for (const Module& m : modules_)
+        if (!m.is_tsv_proxy) kept.push_back(m);
+    modules_ = std::move(kept);
+    proxy_module_indices_.clear();
+
+    std::cout << "[CommitProxy] Synced " << synced << " TSV proxy positions back to tsvs_.\n";
+}
+
+// ============================================================
 // update_density_map:
 //   對每個可移動方塊，計算其對鄰近 Bin 的密度貢獻
 //   密度貢獻 = (module 面積 / bin 面積) * Φx * Φy
+void PlacementEngine::update_routing_congestion_map()
+{
+    if (analytical_tsv_active_ && !tsvs_.empty())
+        rc_edge_demands_ = build_bin_edge_demands_with_tsv(*this);
+    else
+        rc_edge_demands_ = build_bin_edge_baseline_modules_only(*this);
+}
+
 //   Φ(d, r) 為二次型 Bell 函數（緊支撐平滑核）
 //
 //   影響半徑 r = 模組半寬 + smooth_sigma_
@@ -827,16 +1240,10 @@ void PlacementEngine::update_density_map()
     for (const Module& m : modules_) {
         if (m.is_terminal) continue;
 
-        Die& die = dies_[m.tier_id];
+        Die& die = dies_[static_cast<size_t>(m.tier_id)];
 
-        // 影響半徑：模組半寬 + 當前平滑 σ（確保至少涵蓋一個 bin 寬度）
         double rx = m.width  * 0.5 + std::max(smooth_sigma_, die.bin_w);
         double ry = m.height * 0.5 + std::max(smooth_sigma_, die.bin_h);
-
-        // 正規化係數：Bell 核在 [-rx,rx]×[-ry,ry] 的積分面積 = 4*rx*ry*(∫Φ)^2
-        // Φ(d,r) = 1-(d/r)^2 在 [-r,r] 的積分 = 4r/3，故 2D 積分 = 16*rx*ry/9
-        // 令 A_ratio = m.area() / (16*rx*ry/9) 使所有 bin 的密度總和 = m.area()/bin_area，
-        // 即核函數面積守恆（density 值落在合理的 0~1 量級，而非百倍以上的數值）
         double A_ratio = m.area() * (9.0 / 16.0) / (rx * ry);
 
         int c_min = std::max(0, static_cast<int>((m.x - rx) / die.bin_w));
@@ -848,10 +1255,41 @@ void PlacementEngine::update_density_map()
 
         for (int r = r_min; r <= r_max; ++r) {
             for (int c = c_min; c <= c_max; ++c) {
-                Bin& b       = die.bins[r * die.bin_cols + c];
+                Bin& b       = die.bins[static_cast<size_t>(r * die.bin_cols + c)];
                 double phi_x = bell_func(m.x - b.cx, rx);
                 double phi_y = bell_func(m.y - b.cy, ry);
                 b.density   += A_ratio * phi_x * phi_y;
+            }
+        }
+    }
+
+    // Phase 2：TSV 以小矩形貢獻到 tier_below density
+    if (analytical_tsv_active_) {
+        const double tsv_w = cfg_.analytical_tsv_width;
+        const double tsv_h = cfg_.analytical_tsv_height;
+        const double tsv_area = tsv_w * tsv_h;
+
+        for (const TSV& tsv : tsvs_) {
+            Die& die = dies_[static_cast<size_t>(tsv.tier_below())];
+
+            double rx = tsv_w * 0.5 + std::max(smooth_sigma_, die.bin_w);
+            double ry = tsv_h * 0.5 + std::max(smooth_sigma_, die.bin_h);
+            double A_ratio = tsv_area * (9.0 / 16.0) / (rx * ry);
+
+            int c_min = std::max(0, static_cast<int>((tsv.x - rx) / die.bin_w));
+            int c_max = std::min(die.bin_cols - 1,
+                                 static_cast<int>((tsv.x + rx) / die.bin_w));
+            int r_min = std::max(0, static_cast<int>((tsv.y - ry) / die.bin_h));
+            int r_max = std::min(die.bin_rows - 1,
+                                 static_cast<int>((tsv.y + ry) / die.bin_h));
+
+            for (int r = r_min; r <= r_max; ++r) {
+                for (int c = c_min; c <= c_max; ++c) {
+                    Bin& b = die.bins[static_cast<size_t>(r * die.bin_cols + c)];
+                    b.density += A_ratio
+                        * bell_func(tsv.x - b.cx, rx)
+                        * bell_func(tsv.y - b.cy, ry);
+                }
             }
         }
     }
@@ -868,19 +1306,21 @@ void PlacementEngine::update_density_map()
 //   使梯度與密度圖精確對應
 // ============================================================
 void PlacementEngine::calculate_density_gradient(
-    std::vector<double>& gx, std::vector<double>& gy) const
+    std::vector<double>& gx, std::vector<double>& gy,
+    std::vector<double>* gx_tsv, std::vector<double>* gy_tsv) const
 {
     int n = static_cast<int>(modules_.size());
     std::fill(gx.begin(), gx.end(), 0.0);
     std::fill(gy.begin(), gy.end(), 0.0);
+    if (gx_tsv) std::fill(gx_tsv->begin(), gx_tsv->end(), 0.0);
+    if (gy_tsv) std::fill(gy_tsv->begin(), gy_tsv->end(), 0.0);
 
     for (int i = 0; i < n; ++i) {
         const Module& m = modules_[i];
         if (m.is_terminal) continue;
 
-        const Die& die = dies_[m.tier_id];
+        const Die& die = dies_[static_cast<size_t>(m.tier_id)];
 
-        // 與 update_density_map 完全相同的影響半徑與正規化係數
         double rx = m.width  * 0.5 + std::max(smooth_sigma_, die.bin_w);
         double ry = m.height * 0.5 + std::max(smooth_sigma_, die.bin_h);
         double A_ratio = m.area() * (9.0 / 16.0) / (rx * ry);
@@ -894,20 +1334,52 @@ void PlacementEngine::calculate_density_gradient(
 
         for (int r = r_min; r <= r_max; ++r) {
             for (int c = c_min; c <= c_max; ++c) {
-                const Bin& b    = die.bins[r * die.bin_cols + c];
+                const Bin& b    = die.bins[static_cast<size_t>(r * die.bin_cols + c)];
                 double overflow = b.density - b.target_density;
-                if (overflow <= 0.0) continue;  // 未超載不產生排斥力
+                if (overflow <= 0.0) continue;
 
                 double dx_m   = m.x - b.cx;
                 double dy_m   = m.y - b.cy;
-                double phi_x  = bell_func(dx_m, rx);
-                double phi_y  = bell_func(dy_m, ry);
-                double dphi_x = bell_grad(dx_m, rx);
-                double dphi_y = bell_grad(dy_m, ry);
+                double coeff  = 2.0 * overflow * A_ratio;
+                gx[static_cast<size_t>(i)] += coeff * bell_grad(dx_m, rx) * bell_func(dy_m, ry);
+                gy[static_cast<size_t>(i)] += coeff * bell_func(dx_m, rx) * bell_grad(dy_m, ry);
+            }
+        }
+    }
 
-                double coeff = 2.0 * overflow * A_ratio;
-                gx[i] += coeff * dphi_x * phi_y;
-                gy[i] += coeff * phi_x  * dphi_y;
+    // Phase 2：TSV 只從 tier_below density overflow 收到斥力
+    if (analytical_tsv_active_ && gx_tsv && gy_tsv) {
+        const double tsv_w    = cfg_.analytical_tsv_width;
+        const double tsv_h    = cfg_.analytical_tsv_height;
+        const double tsv_area = tsv_w * tsv_h;
+
+        for (int i = 0; i < static_cast<int>(tsvs_.size()); ++i) {
+            const TSV& tsv  = tsvs_[static_cast<size_t>(i)];
+            const Die& die  = dies_[static_cast<size_t>(tsv.tier_below())];
+
+            double rx = tsv_w * 0.5 + std::max(smooth_sigma_, die.bin_w);
+            double ry = tsv_h * 0.5 + std::max(smooth_sigma_, die.bin_h);
+            double A_ratio = tsv_area * (9.0 / 16.0) / (rx * ry);
+
+            int c_min = std::max(0, static_cast<int>((tsv.x - rx) / die.bin_w));
+            int c_max = std::min(die.bin_cols - 1,
+                                 static_cast<int>((tsv.x + rx) / die.bin_w));
+            int r_min = std::max(0, static_cast<int>((tsv.y - ry) / die.bin_h));
+            int r_max = std::min(die.bin_rows - 1,
+                                 static_cast<int>((tsv.y + ry) / die.bin_h));
+
+            for (int r = r_min; r <= r_max; ++r) {
+                for (int c = c_min; c <= c_max; ++c) {
+                    const Bin& b    = die.bins[static_cast<size_t>(r * die.bin_cols + c)];
+                    double overflow = b.density - b.target_density;
+                    if (overflow <= 0.0) continue;
+
+                    double dx = tsv.x - b.cx;
+                    double dy = tsv.y - b.cy;
+                    double coeff = 2.0 * overflow * A_ratio;
+                    (*gx_tsv)[static_cast<size_t>(i)] += coeff * bell_grad(dx, rx) * bell_func(dy, ry);
+                    (*gy_tsv)[static_cast<size_t>(i)] += coeff * bell_func(dx, rx) * bell_grad(dy, ry);
+                }
             }
         }
     }
@@ -1058,8 +1530,26 @@ double PlacementEngine::compute_hpwl() const
         return total;
     }
 
-    for (const Net& net : nets_) {
-        for (int t = 0; t < num_tiers; ++t) {
+    for (int ni = 0; ni < static_cast<int>(nets_.size()); ++ni) {
+        const Net& net = nets_[static_cast<size_t>(ni)];
+        if (net.pins.size() < 2) continue;
+
+        // 取此 net 的 TSV 索引（索引已在 build_tsvs() 後建立）
+        const std::vector<int>* tsv_idx_ptr = nullptr;
+        std::vector<int> fallback;
+        if (!net_to_tsvs_.empty()) {
+            tsv_idx_ptr = &net_to_tsvs_[static_cast<size_t>(ni)];
+        } else {
+            for (int k = 0; k < static_cast<int>(tsvs_.size()); ++k)
+                if (tsvs_[static_cast<size_t>(k)].net_id == net.id)
+                    fallback.push_back(k);
+            tsv_idx_ptr = &fallback;
+        }
+
+        const int t_lo = net.is_cross_tier ? net.min_tier : 0;
+        const int t_hi = net.is_cross_tier ? net.max_tier : (num_tiers - 1);
+
+        for (int t = t_lo; t <= t_hi; ++t) {
             double x_min = 1e18, x_max = -1e18;
             double y_min = 1e18, y_max = -1e18;
 
@@ -1076,8 +1566,8 @@ double PlacementEngine::compute_hpwl() const
                 if (mt == t) expand(m.x, m.y);
             }
 
-            for (const TSV& tsv : tsvs_) {
-                if (tsv.net_id != net.id) continue;
+            for (int ti : *tsv_idx_ptr) {
+                const TSV& tsv = tsvs_[static_cast<size_t>(ti)];
                 if (tsv.tier_below() == t || tsv.tier_above() == t)
                     expand(tsv.x, tsv.y);
             }
