@@ -170,6 +170,13 @@ function getHtml(webview, extensionUri) {
           </div>
           <label class="fp-check"><input type="checkbox" id="chkTerminals" checked /><span class="color-dot" style="background:#44cc88"></span>Terminals</label>
           <hr class="fp-sep" />
+          <div class="fp-title">Bin Grid</div>
+          <label class="fp-check"><input type="checkbox" id="chkBinGrid" /><span class="line-legend"><svg width="14" height="8" aria-hidden="true"><line x1="0" y1="4" x2="14" y2="4" stroke="#e8c840" stroke-width="1.2"/></svg></span>Bin grid</label>
+          <div class="fp-tsv-size">
+            <span>N</span>
+            <input type="number" id="binGridN" value="64" min="2" max="512" step="1" title="Divide die into N×N bins" />
+          </div>
+          <hr class="fp-sep" />
           <div class="fp-title">Nets</div>
           <label class="fp-check"><input type="checkbox" id="chkNetsIntra" /><span class="line-legend"><svg width="14" height="8" aria-hidden="true"><line x1="0" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5"/></svg></span>Intra-tier nets</label>
           <label class="fp-check"><input type="checkbox" id="chkNetsInter" /><span class="line-legend"><svg width="14" height="8" aria-hidden="true"><line x1="0" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5" stroke-dasharray="4 2"/></svg></span>Inter-tier nets</label>

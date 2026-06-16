@@ -80,14 +80,15 @@ void print_overlap_report(const PlacementEngine& engine,
 //   - 前提：需先呼叫 engine.build_tsvs()；若未呼叫則跨層 net 不含 TSV 端點
 //
 // 對 tier t 中屬於同一 net 的 Pts，取所有無序 pair i<j：
-//   col_span = max(1, ceil(|dx| / bin_w))
-//   row_span = max(1, ceil(|dy| / bin_h))
+//   col_span = hc_hi - hc_lo + 1   // bbox 覆蓋的 cell 欄數
+//   row_span = vr_hi - vr_lo + 1   // bbox 覆蓋的 cell 列數
 //   對 pair bbox 內每條水平邊段 += 1/col_span
 //   對 pair bbox 內每條垂直邊段 += 1/row_span
+//   同 row 時上下兩邊各 += (1/col_span)/2；同 col 時左右兩邊各 += (1/row_span)/2
 //
 // cell_avg[r,c] = (top_H + bot_H + left_V + right_V) / 4
 //
-// 統計量（tier_max / top10%_mean / global_*）以「單條 H/V edge demand」為單位；
+// 統計量（tier_max / top1%_mean / global_*）以「單條 H/V edge demand」為單位；
 // tier_cell_avg 仍保留供 congestion 推力與 PPM 視覺化（四邊平均，連續場）。
 // ============================================================
 struct BinEdgeCongestionStats {
@@ -95,12 +96,21 @@ struct BinEdgeCongestionStats {
     std::vector<std::vector<double>> tier_cell_avg;
     // 各 tier 所有 H/V edge 的最大 demand
     std::vector<double> tier_max;
-    // 各 tier 前 10% 高 demand edge 的平均值
+    // 各 tier 前 1% 高 demand edge 的平均值
     std::vector<double> tier_top10p_mean;
     // 全域 edge 最大 demand
     double global_max        = 0.0;
-    // 全域前 10% 高 demand edge 的平均值
+    // 全域前 1% 高 demand edge 的平均值
     double global_top10p_mean = 0.0;
+    // 各 tier max edge 所在格線（H-edge: row=hr col=hc；V-edge: row=vr col=vc）
+    struct TierMaxEdgeLoc {
+        bool is_horizontal = true;
+        int  row           = 0;
+        int  col           = 0;
+    };
+    std::vector<TierMaxEdgeLoc> tier_max_edge_loc;
+    int            global_max_tier = -1;
+    TierMaxEdgeLoc global_max_edge_loc;
 };
 
 // 從已建好的 BinEdgeDemands 快速計算統計量（不遍歷 net）
@@ -140,18 +150,20 @@ BinEdgeDemands build_bin_edge_baseline_modules_only(const PlacementEngine& engin
 // 建立含 module + TSV overlay 的 BinEdgeDemands（供 analytical TSV phase 快取用）
 BinEdgeDemands build_bin_edge_demands_with_tsv(const PlacementEngine& engine);
 
-// 印每層 max / top-10% mean 以及全域摘要（不 dump 完整格子）
+// 印每層 max / top-1% mean 以及全域摘要（不 dump 完整格子）
 void print_bin_edge_congestion_summary(const BinEdgeCongestionStats& s,
     std::ostream& os = std::cout);
 
-// 將各 tier 的 cell 壅塞度畫成 PPM（RGB）；淺色＝壅塞低、深色＝壅塞高
-// 著色用 tier_cell_avg（四邊平均）；正規化上限用 stats.tier_max（edge max）
+// 將各 tier 的 cell 壅塞度畫成 JPG；左側 n×n bin grid（彩虹色），右側 colorbar
+// 著色：u = cell_avg / value_max，藍=低、紅=高；> value_max 顯示白色
 // upscale：每個 bin 在影像中佔 upscale×upscale 像素（預設 8）
+// value_max：色標上限（預設 60）
 // y 軸對齊：影像上方 = die y 較大一側（row index 較大的 bin）
 void write_bin_edge_congestion_maps(const PlacementEngine&        engine,
                                     const BinEdgeCongestionStats& stats,
                                     const std::string&            base_filename,
-                                    int                           upscale = 8);
+                                    int                           upscale = 8,
+                                    double                        value_max = 50.0);
 
 // ============================================================
 // Legalize 過程視覺化

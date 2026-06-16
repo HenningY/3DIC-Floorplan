@@ -498,6 +498,7 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
             if (cfg_.routing_congestion_max > 0.0) {
                 BinEdgeCongestionStats cstats =
                     bin_edge_stats_from_demands(rc_edge_demands_, dies_);
+                const double alpha_init = cfg_.routing_congestion_alpha;
                 std::cout << "[RC-alpha] iter=" << nag_iter_;
                 for (int t = 0; t < nd; ++t) {
                     const size_t ti = static_cast<size_t>(t);
@@ -508,15 +509,16 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                     if (tmax > cfg_.routing_congestion_max) {
                         const double prev = tier_rc_alpha_mult_[ti];
                         tier_rc_alpha_mult_[ti] = std::min(
-                            (prev < 1.0 ? 1.0 : prev * cfg_.routing_congestion_alpha_boost_rate),
+                            (prev < alpha_init ? alpha_init
+                                               : prev * cfg_.routing_congestion_alpha_boost_rate),
                             cfg_.routing_congestion_alpha_max_mult);
                     } else {
                         const double prev = tier_rc_alpha_mult_[ti];
                         tier_rc_alpha_mult_[ti] = std::max(
-                            1.0, prev / cfg_.routing_congestion_alpha_boost_rate);
+                            alpha_init, prev / cfg_.routing_congestion_alpha_boost_rate);
                     }
                     std::cout << " t" << t << "=max " << std::fixed << std::setprecision(3)
-                              << tmax << "/top10% " << std::setprecision(3) << ttop
+                              << tmax << "/top1% " << std::setprecision(3) << ttop
                               << (tmax > cfg_.routing_congestion_max ? "!(a=" : " (a=")
                               << std::setprecision(2) << tier_rc_alpha_mult_[ti] << ")";
                 }

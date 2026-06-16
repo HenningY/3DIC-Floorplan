@@ -177,7 +177,7 @@ struct PlacementConfig {
     // routing_congestion_max > 0 時啟用：每隔 routing_congestion_refresh_interval 次
     // 從快取 map 算各層 edge max（所有 H/V edge demand 的最大值）：
     //   tier_max >  routing_congestion_max → 該層 alpha 倍率 × boost_rate
-    //   tier_max <= routing_congestion_max → 該層 alpha 倍率 ÷ boost_rate（最小 1.0）
+    //   tier_max <= routing_congestion_max → 該層 alpha 倍率 ÷ boost_rate（最小 routing_congestion_alpha）
     // 設 0 關閉自適應（tier_rc_alpha_mult_ 全程維持 1.0）。
     double routing_congestion_max            = 15.0;   // 每層 edge max 的目標上限（0=停用）
     double routing_congestion_alpha_boost_rate = 5; // 每次調整的倍率幅度

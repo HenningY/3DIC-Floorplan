@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -264,14 +265,6 @@ void bin_edge_accumulate_pair(const Die& die,
     const double ylo = std::max(0.0, std::min(y1, y2));
     const double yhi = std::min(die.height, std::max(y1, y2));
 
-    const double dx = std::fabs(x1 - x2);
-    const double dy = std::fabs(y1 - y2);
-
-    const int    col_span = std::max(1, static_cast<int>(std::ceil(dx / bw)));
-    const int    row_span = std::max(1, static_cast<int>(std::ceil(dy / bh)));
-    const double h_delta  = 1.0 / col_span;
-    const double v_delta  = 1.0 / row_span;
-
     const int hc_lo = static_cast<int>(std::floor(xlo / bw));
     const int hc_hi = static_cast<int>(std::ceil(xhi / bw)) - 1;
     const int hr_lo = static_cast<int>(std::ceil(ylo / bh));
@@ -281,6 +274,13 @@ void bin_edge_accumulate_pair(const Die& die,
     const int vc_lo = static_cast<int>(std::ceil(xlo / bw));
     const int vc_hi = static_cast<int>(std::floor(xhi / bw));
 
+    const int    col_span = std::max(1, hc_hi - hc_lo + 1);
+    const int    row_span = std::max(1, vr_hi - vr_lo + 1);
+    const double h_delta  = 1.0 / col_span;
+    const double v_delta  = 1.0 / row_span;
+    const double h_pair_delta = h_delta * 0.5;
+    const double v_pair_delta = v_delta * 0.5;
+
     // 若兩 pin 在同一 bin row（hr_lo > hr_hi），累加該 bin 的上下兩條邊
     if (hr_lo > hr_hi) {
         const int bin_row = static_cast<int>(std::floor(0.5 * (ylo + yhi) / bh));
@@ -289,9 +289,9 @@ void bin_edge_accumulate_pair(const Die& die,
         const int hc0 = std::clamp(hc_lo, 0, C - 1);
         const int hc1 = std::clamp(hc_hi, 0, C - 1);
         for (int hc = hc0; hc <= hc1; ++hc) {
-            H[static_cast<size_t>(hr_bot * C + hc)] += h_delta;
+            H[static_cast<size_t>(hr_bot * C + hc)] += h_pair_delta;
             if (hr_top != hr_bot)
-                H[static_cast<size_t>(hr_top * C + hc)] += h_delta;
+                H[static_cast<size_t>(hr_top * C + hc)] += h_pair_delta;
         }
     } else {
         const int hr0 = std::clamp(hr_lo, 0, R);
@@ -311,9 +311,9 @@ void bin_edge_accumulate_pair(const Die& die,
         const int vr0 = std::clamp(vr_lo, 0, R - 1);
         const int vr1 = std::clamp(vr_hi, 0, R - 1);
         for (int vr = vr0; vr <= vr1; ++vr) {
-            V[static_cast<size_t>(vc_left  * R + vr)] += v_delta;
+            V[static_cast<size_t>(vc_left  * R + vr)] += v_pair_delta;
             if (vc_right != vc_left)
-                V[static_cast<size_t>(vc_right * R + vr)] += v_delta;
+                V[static_cast<size_t>(vc_right * R + vr)] += v_pair_delta;
         }
     } else {
         const int vc0 = std::clamp(vc_lo, 0, C);
@@ -389,7 +389,7 @@ BinEdgeDemands build_bin_edge_baseline_modules_only(const PlacementEngine& engin
 // ============================================================
 // bin_edge_stats_from_demands：從已建好的 BinEdgeDemands 計算統計量
 // 避免重複遍歷 net；供 solve() 的 RC-alpha 判斷使用
-// tier_max / top10%_mean 以單條 H/V edge 為單位；tier_cell_avg 供推力與 PPM
+// tier_max / top1%_mean 以單條 H/V edge 為單位；tier_cell_avg 供推力與 PPM
 // ============================================================
 static void edge_demand_stats(const std::vector<double>& H,
                               const std::vector<double>& V,
@@ -412,11 +412,46 @@ static void edge_demand_stats(const std::vector<double>& H,
     std::sort(edges.begin(), edges.end());
     const int total = static_cast<int>(edges.size());
     const int top_k = std::max(1, static_cast<int>(
-        std::ceil(0.1 * static_cast<double>(total))));
+        std::ceil(0.01 * static_cast<double>(total))));
     double top_sum = 0.0;
     for (int i = total - top_k; i < total; ++i)
         top_sum += edges[static_cast<size_t>(i)];
     out_top10p_mean = top_sum / static_cast<double>(top_k);
+}
+
+static BinEdgeCongestionStats::TierMaxEdgeLoc edge_demand_max_loc(
+    const Die& die,
+    const std::vector<double>& H,
+    const std::vector<double>& V)
+{
+    BinEdgeCongestionStats::TierMaxEdgeLoc loc;
+    const int R = die.bin_rows;
+    const int C = die.bin_cols;
+    double mx = -1.0;
+
+    for (int hr = 0; hr <= R; ++hr) {
+        for (int hc = 0; hc < C; ++hc) {
+            const double v = H[static_cast<size_t>(hr * C + hc)];
+            if (v > mx) {
+                mx = v;
+                loc.is_horizontal = true;
+                loc.row = hr;
+                loc.col = hc;
+            }
+        }
+    }
+    for (int vc = 0; vc <= C; ++vc) {
+        for (int vr = 0; vr < R; ++vr) {
+            const double v = V[static_cast<size_t>(vc * R + vr)];
+            if (v > mx) {
+                mx = v;
+                loc.is_horizontal = false;
+                loc.row = vr;
+                loc.col = vc;
+            }
+        }
+    }
+    return loc;
 }
 
 BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
@@ -427,6 +462,7 @@ BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
     result.tier_cell_avg.resize(static_cast<size_t>(nd));
     result.tier_max.resize(static_cast<size_t>(nd), 0.0);
     result.tier_top10p_mean.resize(static_cast<size_t>(nd), 0.0);
+    result.tier_max_edge_loc.resize(static_cast<size_t>(nd));
 
     std::vector<double> all_edges;
 
@@ -440,8 +476,14 @@ BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
         edge_demand_stats(H, V,
                           result.tier_max[static_cast<size_t>(t)],
                           result.tier_top10p_mean[static_cast<size_t>(t)]);
-        if (result.tier_max[static_cast<size_t>(t)] > result.global_max)
+        result.tier_max_edge_loc[static_cast<size_t>(t)] =
+            edge_demand_max_loc(die, H, V);
+
+        if (result.tier_max[static_cast<size_t>(t)] > result.global_max) {
             result.global_max = result.tier_max[static_cast<size_t>(t)];
+            result.global_max_tier = t;
+            result.global_max_edge_loc = result.tier_max_edge_loc[static_cast<size_t>(t)];
+        }
 
         all_edges.insert(all_edges.end(), H.begin(), H.end());
         all_edges.insert(all_edges.end(), V.begin(), V.end());
@@ -451,7 +493,7 @@ BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
         std::sort(all_edges.begin(), all_edges.end());
         const int total = static_cast<int>(all_edges.size());
         const int top_k = std::max(1, static_cast<int>(
-            std::ceil(0.1 * static_cast<double>(total))));
+            std::ceil(0.01 * static_cast<double>(total))));
         double top_sum = 0.0;
         for (int i = total - top_k; i < total; ++i)
             top_sum += all_edges[static_cast<size_t>(i)];
@@ -585,81 +627,196 @@ BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine
 
 void print_bin_edge_congestion_summary(const BinEdgeCongestionStats& s, std::ostream& os)
 {
+    auto fmt_edge_loc = [](const BinEdgeCongestionStats::TierMaxEdgeLoc& loc) -> std::string {
+        if (loc.is_horizontal)
+            return "H-edge row=" + std::to_string(loc.row)
+                 + " col=" + std::to_string(loc.col);
+        return "V-edge row=" + std::to_string(loc.row)
+             + " col=" + std::to_string(loc.col);
+    };
+
     os << "  [Congestion edge] Global max=" << s.global_max
-       << "  top10%_mean=" << s.global_top10p_mean << "\n";
+       << "  top1%_mean=" << s.global_top10p_mean;
+    if (s.global_max_tier >= 0
+        && static_cast<size_t>(s.global_max_tier) < s.tier_max_edge_loc.size())
+        os << "  at tier " << s.global_max_tier << " "
+           << fmt_edge_loc(s.global_max_edge_loc);
+    os << "\n";
+
     for (int t = 0; t < static_cast<int>(s.tier_cell_avg.size()); ++t) {
         os << "    Die " << t
            << "  edge_max=" << s.tier_max[t]
-           << "  edge_top10%_mean=" << s.tier_top10p_mean[t] << "\n";
+           << "  edge_top1%_mean=" << s.tier_top10p_mean[t];
+        if (static_cast<size_t>(t) < s.tier_max_edge_loc.size())
+            os << "  max_at=" << fmt_edge_loc(s.tier_max_edge_loc[static_cast<size_t>(t)]);
+        os << "\n";
     }
 }
 
-// 將 u∈[0,1] 映射為 RGB：淺青白→深藍黑（壅塞由小到大）
-static void congestion_to_rgb(double u, unsigned char out[3])
+// Seaborn "rocket" colormap：u∈[0,1] → 深黑紫→紫紅→橙→亮黃
+// u > 1.0 輸出白色（飽和），u < 0 夾為 0
+// 控制點來自 seaborn/matplotlib rocket palette（8 stops 線性插值）
+static void congestion_rainbow_rgb(double u, unsigned char out[3])
 {
-    u = std::clamp(u, 0.0, 1.0);
-    // Light: ~(245, 250, 255)  Deep: ~(8, 18, 45)
-    const double r0 = 245.0, g0 = 250.0, b0 = 255.0;
-    const double r1 = 8.0,   g1 = 18.0,  b1 = 45.0;
-    out[0] = static_cast<unsigned char>(r0 + (r1 - r0) * u + 0.5);
-    out[1] = static_cast<unsigned char>(g0 + (g1 - g0) * u + 0.5);
-    out[2] = static_cast<unsigned char>(b0 + (b1 - b0) * u + 0.5);
+    if (u > 1.0) { out[0] = out[1] = out[2] = 255; return; }
+    u = std::max(u, 0.0);
+
+    struct Stop { float u, r, g, b; };
+    static constexpr Stop stops[] = {
+        {0.000f,   3,   2,  22},   // 近黑/深藍紫
+        {0.125f,  38,  14,  65},   // 深紫
+        {0.250f,  85,  14,  92},   // 深品紅紫
+        {0.375f, 145,  18,  98},   // 深品紅
+        {0.500f, 198,  35,  80},   // 緋紅/品紅
+        {0.625f, 228,  72,  58},   // 橙紅
+        {0.750f, 242, 128,  85},   // 淺橙紅/鮭魚
+        {0.875f, 250, 188, 148},   // 淺鮭魚桃色
+        {1.000f, 254, 232, 213},   // 接近白色奶油
+    };
+    constexpr int N = static_cast<int>(sizeof(stops) / sizeof(stops[0]));
+
+    int i = 0;
+    while (i < N - 2 && u > stops[i + 1].u) ++i;
+    const Stop& lo = stops[i];
+    const Stop& hi = stops[i + 1];
+    const float t = (static_cast<float>(u) - lo.u) / (hi.u - lo.u);
+    out[0] = static_cast<unsigned char>(lo.r + t * (hi.r - lo.r) + 0.5f);
+    out[1] = static_cast<unsigned char>(lo.g + t * (hi.g - lo.g) + 0.5f);
+    out[2] = static_cast<unsigned char>(lo.b + t * (hi.b - lo.b) + 0.5f);
+}
+
+// 3×5 bitmap font，字符 '0'–'9' 和 '%'（索引 10）
+static const uint8_t kDigitFont[11][5] = {
+    {0b111,0b101,0b101,0b101,0b111}, // 0
+    {0b010,0b110,0b010,0b010,0b111}, // 1
+    {0b111,0b001,0b111,0b100,0b111}, // 2
+    {0b111,0b001,0b111,0b001,0b111}, // 3
+    {0b101,0b101,0b111,0b001,0b001}, // 4
+    {0b111,0b100,0b111,0b001,0b111}, // 5
+    {0b111,0b100,0b111,0b101,0b111}, // 6
+    {0b111,0b001,0b001,0b001,0b001}, // 7
+    {0b111,0b101,0b111,0b101,0b111}, // 8
+    {0b111,0b101,0b111,0b001,0b111}, // 9
+    {0b101,0b101,0b010,0b101,0b101}, // %
+};
+
+static void draw_char(std::vector<uint8_t>& img, int W, int H,
+                      int x0, int y0, int ci,
+                      uint8_t r, uint8_t g, uint8_t b)
+{
+    if (ci < 0 || ci > 10) return;
+    for (int row = 0; row < 5; ++row) {
+        const uint8_t bits = kDigitFont[ci][row];
+        for (int col = 0; col < 3; ++col) {
+            const int px = x0 + col;
+            const int py = y0 + row;
+            if (px < 0 || px >= W || py < 0 || py >= H) continue;
+            if (bits & (1u << (2 - static_cast<unsigned>(col)))) {
+                const size_t idx = (static_cast<size_t>(py) * static_cast<size_t>(W) + static_cast<size_t>(px)) * 3u;
+                img[idx+0] = r; img[idx+1] = g; img[idx+2] = b;
+            }
+        }
+    }
+}
+
+static void draw_label(std::vector<uint8_t>& img, int W, int H,
+                       int x0, int y0, const char* text)
+{
+    for (int i = 0; text[i] != '\0'; ++i) {
+        const char c = text[i];
+        if (c >= '0' && c <= '9')
+            draw_char(img, W, H, x0 + i * 4, y0, c - '0', 30, 30, 30);
+    }
 }
 
 void write_bin_edge_congestion_maps(const PlacementEngine&        engine,
                                     const BinEdgeCongestionStats& stats,
                                     const std::string&            base_filename,
-                                    int                           upscale)
+                                    int                           upscale,
+                                    double                        value_max)
 {
     if (upscale < 1) upscale = 1;
 
     const auto& dies = engine.dies();
-    const int nd   = engine.num_dies();
+    const int nd = engine.num_dies();
 
     if (static_cast<int>(stats.tier_cell_avg.size()) != nd) return;
 
+    const int bar_w   = 28;
+    const int label_w = 36;
+    const int gap     = 6;
+    const int pad     = 20;
+
     for (int t = 0; t < nd; ++t) {
-        const Die&   die       = dies[t];
-        const int    R         = die.bin_rows;
-        const int    C         = die.bin_cols;
-        const auto& cell       = stats.tier_cell_avg[static_cast<size_t>(t)];
-        const double vmax      = stats.tier_max[t];
-        const int    PixW      = C * upscale;
-        const int    PixH      = R * upscale;
+        const Die&   die  = dies[static_cast<size_t>(t)];
+        const int    R    = die.bin_rows;
+        const int    C    = die.bin_cols;
+        const auto&  cell = stats.tier_cell_avg[static_cast<size_t>(t)];
+
+        const int grid_w  = C * upscale;
+        const int grid_h  = R * upscale;
+        const int inner_w = grid_w + gap + bar_w + label_w;
+        const int inner_h = grid_h;
+        const int total_w = inner_w + 2 * pad;
+        const int total_h = inner_h + 2 * pad;
+
+        std::vector<uint8_t> img(static_cast<size_t>(total_w * total_h) * 3u, 255u);
+
+        auto set_px = [&](int px, int py, uint8_t r, uint8_t g, uint8_t b) {
+            px += pad;
+            py += pad;
+            if (px < pad || px >= pad + inner_w || py < pad || py >= pad + inner_h) return;
+            const size_t idx = (static_cast<size_t>(py) * static_cast<size_t>(total_w) + static_cast<size_t>(px)) * 3u;
+            img[idx+0] = r; img[idx+1] = g; img[idx+2] = b;
+        };
+
+        // 左側 grid
+        for (int py = 0; py < grid_h; ++py) {
+            const int r_chip = (R - 1) - (py / upscale);
+            for (int px = 0; px < grid_w; ++px) {
+                const int    c_chip = px / upscale;
+                const double raw    = cell[static_cast<size_t>(r_chip * C + c_chip)];
+                const double u      = raw / value_max;
+                uint8_t rgb[3];
+                congestion_rainbow_rgb(u, rgb);
+                set_px(px, py, rgb[0], rgb[1], rgb[2]);
+            }
+        }
+
+        // 右側 colorbar（top = high value = red）
+        const int bar_x = grid_w + gap;
+        for (int py = 0; py < grid_h; ++py) {
+            const double u = 1.0 - static_cast<double>(py) / static_cast<double>(grid_h - 1);
+            uint8_t rgb[3];
+            congestion_rainbow_rgb(u, rgb);
+            for (int bx = 0; bx < bar_w; ++bx)
+                set_px(bar_x + bx, py, rgb[0], rgb[1], rgb[2]);
+        }
+
+        // tick 刻度線 + 數字標籤（0 ~ value_max）
+        const int label_x = bar_x + bar_w + 3;
+        for (int i = 0; i < 5; ++i) {
+            const int tick_val = static_cast<int>(value_max * (4 - i) / 4.0 + 0.5);
+            const double frac = static_cast<double>(i) / 4.0;
+            const int    py   = static_cast<int>(frac * (grid_h - 1) + 0.5);
+            for (int bx = 0; bx < bar_w; ++bx)
+                set_px(bar_x + bx, py, 30, 30, 30);
+            char label[8];
+            std::snprintf(label, sizeof(label), "%d", tick_val);
+            draw_label(img, total_w, total_h, label_x + pad, py - 2 + pad, label);
+        }
 
         const std::string path = base_filename + "_congestion_tier"
-                                 + std::to_string(t) + ".ppm";
-
-        std::ofstream ofs(path, std::ios::binary);
-        if (!ofs) {
-            std::cerr << "[Congestion map] Cannot open " << path << "\n";
+                                 + std::to_string(t) + ".jpg";
+        if (!stbi_write_jpg(path.c_str(), total_w, total_h, 3, img.data(), 90)) {
+            std::cerr << "[Congestion map] Cannot write " << path << "\n";
             continue;
         }
 
-        ofs << "P6\n" << PixW << " " << PixH << "\n255\n";
-
-        std::vector<unsigned char> scanline(static_cast<size_t>(PixW) * 3u);
-
-        for (int py = 0; py < PixH; ++py) {
-            // Die：row 較小者對應較小的 y（近 die 底部）；影像上方對應較大的 row（近 die 頂）
-            const int r_chip = (R - 1) - (py / upscale);
-            for (int px = 0; px < PixW; ++px) {
-                const int           c_chip = px / upscale;
-                const double        raw    = cell[static_cast<size_t>(r_chip * C + c_chip)];
-                const double        norm   =
-                    (vmax > 1e-18) ? std::clamp(raw / vmax, 0.0, 1.0) : 0.0;
-                unsigned char       rgb[3];
-                congestion_to_rgb(norm, rgb);
-                scanline[static_cast<size_t>(px) * 3u + 0u] = rgb[0];
-                scanline[static_cast<size_t>(px) * 3u + 1u] = rgb[1];
-                scanline[static_cast<size_t>(px) * 3u + 2u] = rgb[2];
-            }
-            ofs.write(reinterpret_cast<const char*>(scanline.data()),
-                      static_cast<std::streamsize>(scanline.size()));
-        }
-
-        std::cout << "[Congestion map] " << path << "  (" << PixW << "x" << PixH
-                  << "  edge_max=" << vmax << ")\n";
+        std::cout << "[Congestion map] " << path
+                  << "  (" << total_w << "x" << total_h
+                  << "  scale=0-" << static_cast<int>(value_max)
+                  << "  edge_max=" << stats.tier_max[static_cast<size_t>(t)] << ")\n";
     }
 }
 

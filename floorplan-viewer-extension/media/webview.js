@@ -465,6 +465,28 @@ function appendDieWithGridAxes(parts, tx, ty, W, H, scale) {
   }
 }
 
+function binGridResolution() {
+  var n = parseInt(document.getElementById('binGridN').value, 10);
+  if (!n || n < 2) { return 64; }
+  return Math.min(512, Math.max(2, n));
+}
+
+function appendBinGrid(parts, tx, ty, W, H) {
+  if (!chk('chkBinGrid')) { return; }
+  var n = binGridResolution();
+  var stepX = W / n;
+  var stepY = H / n;
+  var attrs = ' stroke="#e8c840" stroke-width="0.35" opacity="0.6" style="pointer-events:none"';
+  for (var i = 1; i < n; i++) {
+    var x = i * stepX;
+    parts.push('<line x1="' + tx(x) + '" y1="' + ty(0) + '" x2="' + tx(x) + '" y2="' + ty(H) + '"' + attrs + '/>');
+  }
+  for (var j = 1; j < n; j++) {
+    var y = j * stepY;
+    parts.push('<line x1="' + tx(0) + '" y1="' + ty(y) + '" x2="' + tx(W) + '" y2="' + ty(y) + '"' + attrs + '/>');
+  }
+}
+
 // ── 共用繪製工具：計算置中的座標轉換（預留四周給座標軸標示）──
 function resetViewTransform() {
   viewZoom = 1;
@@ -579,6 +601,8 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
       }
     }
   }
+
+  appendBinGrid(parts, tx, ty, tr.W, tr.H);
 }
 
 // ── Overview 渲染：所有 tier 疊合在同一張圖 ──
@@ -683,6 +707,8 @@ function renderOverlaid(parts, cw, ch) {
     parts.push('<rect x="' + (lx-52) + '" y="' + (ly-9) + '" width="11" height="11" fill="' + TIER_FILLS[lt%TIER_FILLS.length] + '" fill-opacity="0.6" rx="2"/>');
     parts.push('<text x="' + (lx-37) + '" y="' + ly + '" font-size="11" fill="' + TIER_FILLS[lt%TIER_FILLS.length] + '">Tier ' + lt + '</text>');
   }
+
+  appendBinGrid(parts, tx, ty, maxW, maxH);
 }
 
 // ── 主渲染函數 ──
@@ -1303,12 +1329,13 @@ document.getElementById('clearConstraint').onclick = function() {
 };
 
 // View 面板 checkbox / input 變更 → 重新渲染
-['chkModules','chkTsvs','chkTerminals',
+['chkModules','chkTsvs','chkTerminals','chkBinGrid',
  'chkNetsIntra','chkNetsInter',
  'chkModuleLabels','chkTsvLabels','chkTerminalLabels'].forEach(function(id) {
   document.getElementById(id).onchange = render;
 });
 document.getElementById('tsvSize').oninput = render;
+document.getElementById('binGridN').oninput = render;
 
 // ── Canvas resize → 重新渲染 ──
 new ResizeObserver(function() { render(); }).observe(document.getElementById('canvas-container'));

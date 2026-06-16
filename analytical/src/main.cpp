@@ -97,20 +97,20 @@ int main(int argc, char* argv[])
     cfg.convergence_total_overflow_delta_tol = 1.5;
 
     // ---- routing congestion（density-style 局部場模型）----
-    cfg.routing_congestion_alpha = 1;
+    cfg.routing_congestion_alpha = 5;
     cfg.routing_capacity_C = 1.0;
     cfg.routing_congestion_start_iter = 100;
     cfg.routing_congestion_refresh_interval = 10;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 50.0; //(0 = 關閉)
-    cfg.routing_congestion_alpha_boost_rate = 1.2;
-    cfg.routing_congestion_alpha_max_mult = 100;
+    cfg.routing_congestion_max = 0.0; //(0 = 關閉)
+    cfg.routing_congestion_alpha_boost_rate = 1.15;
+    cfg.routing_congestion_alpha_max_mult = 12;
     // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
     // 比例 <= gate_min_ratio（預設 20%）時停用 routing_congestion_max
     // gate_divisor <= 0 停用此門檻
-    cfg.routing_congestion_gate_divisor   = 100.0;
-    cfg.routing_congestion_gate_min_ratio = 0.20;
+    cfg.routing_congestion_gate_divisor   = 10.0;
+    cfg.routing_congestion_gate_min_ratio = 0.30;
 
     // phase 2 analytical tsv
     cfg.analytical_tsv_max_iterations = 1000;
@@ -329,7 +329,7 @@ int main(int argc, char* argv[])
     // 還原後使用物理 TSV 尺寸
     print_overlap_report(engine, base_tsv_w, base_tsv_h);
 
-    // ---- Bin-edge Congestion 指標 + 視覺化（每個 die 一張 PPM）----
+    // ---- Bin-edge Congestion 指標 + 視覺化（每個 die 一張 JPG，彩虹色 0-100）----
     {
         BinEdgeCongestionStats cstats = compute_bin_edge_congestion(engine);
         print_bin_edge_congestion_summary(cstats);

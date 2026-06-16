@@ -615,12 +615,13 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
     for (const auto& [dist2, mid] : order) {
         Module& m = modules[static_cast<size_t>(mid)];
         const double f_x = fx[static_cast<size_t>(mid)];
+        const double max_move = std::max(m.width, m.height);
 
         // ---- X 軸 ----
         bool x_moved = false;
         double old_x = m.x;
         if (f_x > kWlForceEps) {
-            const double gap = max_shift_x_pos(modules, die, m);
+            const double gap = std::min(max_shift_x_pos(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
                 m.x += gap;
@@ -640,7 +641,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 ++n_no_gap;
             }
         } else if (f_x < -kWlForceEps) {
-            const double gap = max_shift_x_neg(modules, die, m);
+            const double gap = std::min(max_shift_x_neg(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
                 m.x -= gap;
@@ -667,7 +668,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
         const double f_y2 = fy[static_cast<size_t>(mid)];
         double old_y = m.y;
         if (f_y2 > kWlForceEps) {
-            const double gap = max_shift_y_pos(modules, die, m);
+            const double gap = std::min(max_shift_y_pos(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
                 m.y += gap;
@@ -687,7 +688,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
                 ++n_no_gap;
             }
         } else if (f_y2 < -kWlForceEps) {
-            const double gap = max_shift_y_neg(modules, die, m);
+            const double gap = std::min(max_shift_y_neg(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
                 m.y -= gap;
