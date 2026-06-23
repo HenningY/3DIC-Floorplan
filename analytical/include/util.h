@@ -50,11 +50,28 @@ void squarify_modules(PlacementEngine& engine);
 // ============================================================
 // Tier 面積使用率
 // ============================================================
-// 回傳每 tier 的 module 面積佔比（非 terminal，含 fixed），索引對應 tier 編號
-std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine);
+// 回傳每 tier 的 (module + TSV) 面積佔比（非 terminal module，含 fixed）
+// TSV 計入 tier_below（layer_index）；tsv_width/tsv_height <= 0 時不計 TSV
+std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine,
+                                                    double tsv_width  = 0.0,
+                                                    double tsv_height = 0.0,
+                                                    const std::vector<int>* estimated_tsv_count_per_tier = nullptr);
 
 // 回傳是否任一 tier 的佔比嚴格大於 threshold
-bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold);
+bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold,
+                                  double tsv_width  = 0.0,
+                                  double tsv_height = 0.0);
+
+// 依 net tier 分佈估算各 tier 所需 TSV 數（規則同 build_tsvs，不需先 build_tsvs）
+std::vector<int> estimate_tsv_count_per_tier(const PlacementEngine& engine);
+
+// floorplan 前檢查：各 tier (module+TSV) 面積佔比是否 <= max_ratio（1.0=100%）
+// 超過時印出詳情並回傳 false
+bool check_tier_module_tsv_area_limit(const PlacementEngine& engine,
+                                      double tsv_width,
+                                      double tsv_height,
+                                      double max_ratio = 1.0,
+                                      std::ostream& err = std::cerr);
 
 // ============================================================
 // Overlap 檢查：module 與 TSV 的重疊對數統計

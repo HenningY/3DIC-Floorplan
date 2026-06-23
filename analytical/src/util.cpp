@@ -9,6 +9,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 // stb_image_write 實作在 floorplanner.cpp 中已 define；
@@ -1003,17 +1004,38 @@ void LegalizeFrameWriter::end_tier()
 // ============================================================
 // Tier 面積使用率
 // ============================================================
-std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine)
+std::vector<double> compute_tier_module_utilization(const PlacementEngine& engine,
+                                                    double tsv_width,
+                                                    double tsv_height,
+                                                    const std::vector<int>* estimated_tsv_count_per_tier)
 {
     const int nd = engine.num_dies();
     const auto& modules = engine.modules();
     const auto& dies    = engine.dies();
+    const double tsv_area = (tsv_width > 0.0 && tsv_height > 0.0)
+                            ? tsv_width * tsv_height : 0.0;
+
     std::vector<double> util(static_cast<size_t>(nd), 0.0);
     for (const Module& m : modules) {
         if (m.is_terminal) continue;
         const int t = m.tier_id;
         if (t < 0 || t >= nd) continue;
         util[static_cast<size_t>(t)] += m.area();
+    }
+    if (tsv_area > 0.0) {
+        if (estimated_tsv_count_per_tier
+            && static_cast<int>(estimated_tsv_count_per_tier->size()) == nd) {
+            for (int t = 0; t < nd; ++t)
+                util[static_cast<size_t>(t)]
+                    += static_cast<double>((*estimated_tsv_count_per_tier)[static_cast<size_t>(t)])
+                       * tsv_area;
+        } else {
+            for (const TSV& tsv : engine.tsvs()) {
+                const int t = tsv.tier_below();
+                if (t < 0 || t >= nd) continue;
+                util[static_cast<size_t>(t)] += tsv_area;
+            }
+        }
     }
     for (int t = 0; t < nd; ++t) {
         const Die& die = dies[static_cast<size_t>(t)];
@@ -1023,10 +1045,60 @@ std::vector<double> compute_tier_module_utilization(const PlacementEngine& engin
     return util;
 }
 
-bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold)
+bool any_tier_exceeds_module_util(const PlacementEngine& engine, double threshold,
+                                    double tsv_width, double tsv_height)
 {
-    const auto util = compute_tier_module_utilization(engine);
+    const auto util = compute_tier_module_utilization(engine, tsv_width, tsv_height, nullptr);
     for (double u : util)
         if (u > threshold) return true;
     return false;
+}
+
+std::vector<int> estimate_tsv_count_per_tier(const PlacementEngine& engine)
+{
+    const int nd = engine.num_dies();
+    const auto& nets    = engine.nets();
+    const auto& modules = engine.modules();
+    std::vector<int> cnt(static_cast<size_t>(nd), 0);
+
+    for (const Net& net : nets) {
+        if (net.pins.size() < 2) continue;
+
+        int min_t = std::numeric_limits<int>::max();
+        int max_t = std::numeric_limits<int>::min();
+        for (int pid : net.pins) {
+            const Module& m = modules[static_cast<size_t>(pid)];
+            const int t = m.is_terminal ? 0 : m.tier_id;
+            min_t = std::min(min_t, t);
+            max_t = std::max(max_t, t);
+        }
+        if (min_t < 0 || max_t - min_t < 1) continue;
+
+        for (int layer = min_t; layer < max_t; ++layer)
+            ++cnt[static_cast<size_t>(layer)];
+    }
+    return cnt;
+}
+
+bool check_tier_module_tsv_area_limit(const PlacementEngine& engine,
+                                      double tsv_width,
+                                      double tsv_height,
+                                      double max_ratio,
+                                      std::ostream& err)
+{
+    const auto tsv_cnt = estimate_tsv_count_per_tier(engine);
+    const auto util    = compute_tier_module_utilization(
+        engine, tsv_width, tsv_height, &tsv_cnt);
+
+    bool ok = true;
+    for (int t = 0; t < static_cast<int>(util.size()); ++t) {
+        if (util[static_cast<size_t>(t)] <= max_ratio + 1e-12) continue;
+        ok = false;
+        err << "[Error] Tier " << t << " module+TSV area "
+            << std::fixed << std::setprecision(1)
+            << util[static_cast<size_t>(t)] * 100.0
+            << "% exceeds " << max_ratio * 100.0 << "% limit"
+            << " (tsv_count=" << tsv_cnt[static_cast<size_t>(t)] << ")\n";
+    }
+    return ok;
 }

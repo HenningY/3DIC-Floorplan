@@ -192,7 +192,7 @@ struct PlacementConfig {
 
 
     // ---- Phase 2 Analytical TSV ----
-    // 面積使用率門檻：build_tsvs() 後若任一 tier 的 module 面積佔比 > 此值，跳過 Phase 2
+    // 面積使用率門檻：build_tsvs() 後若任一 tier 的 (module+TSV) 面積佔比 > 此值，跳過 Phase 2
     // （改走 solve_tsvs + reflow_tsvs_after_legalize）；<=0 停用檢查，一律走 Phase 2。
     double tier_area_util_phase2_max      = 0.70;
     // true：solve() 後 build_tsvs() 然後再跑一輪 joint analytical（module + TSV 一起移動）

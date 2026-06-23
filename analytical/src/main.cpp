@@ -65,8 +65,8 @@ int main(int argc, char* argv[])
     cfg.wirelength_model = wl_model;              // 線長平滑模型：LSE 或 WA（由 --wl 指定）
     cfg.gamma_lse       = 5.0;      // LSE 平滑參數 γ（越小越接近真實 HPWL）
     cfg.gamma_wa        = 10.0;     // WA 平滑參數 γ（ePlace；通常與 gamma_lse 獨立調整）
-    cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, n100: 1.0
-    cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, 0.999
+    cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, < 1.0 >
+    cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, < 0.999 >
     cfg.momentum        = 0.9;      // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
     cfg.bin_resolution  = 64;       // Bin 格數（每層 16x16） n100: 64
@@ -103,9 +103,9 @@ int main(int argc, char* argv[])
     cfg.routing_congestion_refresh_interval = 10;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 0.0; //(0 = 關閉)
+    cfg.routing_congestion_max = 30.0; //(0 = 關閉)
     cfg.routing_congestion_alpha_boost_rate = 1.15;
-    cfg.routing_congestion_alpha_max_mult = 12;
+    cfg.routing_congestion_alpha_max_mult = 50;
     // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
     // 比例 <= gate_min_ratio（預設 20%）時停用 routing_congestion_max
     // gate_divisor <= 0 停用此門檻
@@ -115,7 +115,7 @@ int main(int argc, char* argv[])
     // phase 2 analytical tsv
     cfg.analytical_tsv_max_iterations = 1000;
     // 任一 tier module 面積使用率超過此值則跳過 Phase 2（走 solve_tsvs + reflow）；<=0 停用，一律 Phase 2
-    cfg.tier_area_util_phase2_max = 0.70;
+    cfg.tier_area_util_phase2_max = 0.80;
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -173,6 +173,27 @@ int main(int argc, char* argv[])
     // 必須在 constraint 之後：FIXED 座標需與 block 同一座標系一起縮放
     engine.maybe_normalize_geometry();
 
+    constexpr double base_tsv_w = 3;
+    constexpr double base_tsv_h = 3;
+    const double gs = engine.geometry_scale();
+
+    // ---- 面積可行性檢查（module + 估算 TSV）----
+    {
+        if (!check_tier_module_tsv_area_limit(
+                engine, base_tsv_w * gs, base_tsv_h * gs, 1.0)) {
+            std::cerr << "[Error] Aborting: tier area exceeds 100% before placement.\n";
+            return 1;
+        }
+        const auto tsv_cnt = estimate_tsv_count_per_tier(engine);
+        const auto util    = compute_tier_module_utilization(
+            engine, base_tsv_w * gs, base_tsv_h * gs, &tsv_cnt);
+        std::cout << "[Check] tier module+tsv util (pre-placement):";
+        for (int t = 0; t < static_cast<int>(util.size()); ++t)
+            std::cout << " t" << t << "=" << std::fixed << std::setprecision(1)
+                      << util[static_cast<size_t>(t)] * 100.0 << "%";
+        std::cout << "\n";
+    }
+
     // engine.set_hpwl_die_weight_override({1, 1, 1});
 
     if (!leg_only) {
@@ -197,10 +218,6 @@ int main(int argc, char* argv[])
 
     // ---- TSV Placement / Phase 2 ----
     // 物理 TSV 尺寸（die 座標單位），在 normalize 縮放空間中等比放大
-    const double base_tsv_w = 0.4;
-    const double base_tsv_h = 0.4;
-    const double gs = engine.geometry_scale();  // 1.0 若未觸發 normalize
-
     TsvPlacementConfig tcfg;
     tcfg.tsv_width      = base_tsv_w * gs;
     tcfg.tsv_height     = base_tsv_h * gs;
@@ -208,9 +225,9 @@ int main(int argc, char* argv[])
 
     // ---- Phase 2 決策：依各 tier 面積使用率自動選流程 ----
     {
-        const auto util = compute_tier_module_utilization(engine);
+        const auto util = compute_tier_module_utilization(engine, tcfg.tsv_width, tcfg.tsv_height);
         const double thr = cfg.tier_area_util_phase2_max;
-        std::cout << "[Config] tier module util:";
+        std::cout << "[Config] tier module+tsv util:";
         for (int t = 0; t < static_cast<int>(util.size()); ++t)
             std::cout << " t" << t << "=" << std::fixed << std::setprecision(1)
                       << util[static_cast<size_t>(t)] * 100.0 << "%";
@@ -333,24 +350,20 @@ int main(int argc, char* argv[])
     {
         BinEdgeCongestionStats cstats = compute_bin_edge_congestion(engine);
         print_bin_edge_congestion_summary(cstats);
-        write_bin_edge_congestion_maps(engine, cstats, output_file, /*upscale=*/8);
+        // write_bin_edge_congestion_maps(engine, cstats, output_file, /*upscale=*/8);
     }
 
-    // Die 使用率統計
+    // Die 使用率統計（module + TSV，還原後物理座標）
     {
-        const auto utils = compute_tier_module_utilization(engine);
+        const auto utils = compute_tier_module_utilization(engine, base_tsv_w, base_tsv_h);
         const auto& dies = engine.dies();
-        const auto& mods = engine.modules();
         for (int t = 0; t < engine.num_dies(); ++t) {
-            double total_area = 0.0;
-            for (const Module& m : mods) {
-                if (!m.is_terminal && m.tier_id == t)
-                    total_area += m.area();
-            }
             const Die& die = dies[static_cast<size_t>(t)];
-            std::cout << "  Die " << t << " utilization: "
+            const double die_area = die.width * die.height;
+            const double total_area = utils[static_cast<size_t>(t)] * die_area;
+            std::cout << "  Die " << t << " utilization (module+tsv): "
                       << total_area << " / "
-                      << (die.width * die.height) << " = "
+                      << die_area << " = "
                       << std::fixed << std::setprecision(1)
                       << utils[static_cast<size_t>(t)] * 100.0 << "%\n";
         }

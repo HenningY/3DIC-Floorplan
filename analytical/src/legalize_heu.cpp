@@ -342,48 +342,145 @@ double optimize_one_axis(const std::vector<Neighbor1D>& nbs,
     return best_d;
 }
 
-// ── 鄰居收集 ─────────────────────────────────────────────────
+// ── 空間 Hash Grid ────────────────────────────────────────────
+//
+// 每個 tier 建立一個 grid，cell_size = max_search_dist。
+// 查詢時只掃 query rectangle 覆蓋的 cells，再套用精確幾何 filter，
+// 將 collect / overlap 從 O(n) 全掃降至 O(候選 module 數)。
 
-std::vector<Neighbor1D> collect_x_neighbors(const std::vector<Module>& modules,
-                                            const Module& target,
-                                            double max_search)
+struct ModuleSpatialGrid {
+    double cell_size_ = 1.0;
+    int    cols_      = 0;
+    int    rows_      = 0;
+
+    std::vector<std::vector<int>> cells_;         // flat [r*cols+c] → module vector indices
+    std::vector<std::vector<int>> module_cells_;  // module vector index → cell indices（供增量更新）
+    mutable std::vector<int>      stamp_;
+    mutable int                   cur_stamp_ = 0;
+
+    void build(int tier, const std::vector<Module>& modules,
+               const Die& die, double cell_size)
+    {
+        cell_size_ = cell_size > kEps ? cell_size : 1.0;
+        cols_      = std::max(1, static_cast<int>(std::ceil(die.width  / cell_size_)));
+        rows_      = std::max(1, static_cast<int>(std::ceil(die.height / cell_size_)));
+        cells_.assign(static_cast<size_t>(rows_ * cols_), {});
+        module_cells_.assign(modules.size(), {});
+        stamp_.assign(modules.size(), 0);
+        cur_stamp_ = 0;
+
+        for (size_t i = 0; i < modules.size(); ++i) {
+            const Module& m = modules[i];
+            if (m.is_terminal || m.tier_id != tier) continue;
+            insert_(static_cast<int>(i), m);
+        }
+    }
+
+    void update(int mod_idx, const std::vector<Module>& modules)
+    {
+        for (int ci : module_cells_[static_cast<size_t>(mod_idx)]) {
+            auto& cell = cells_[static_cast<size_t>(ci)];
+            cell.erase(std::remove(cell.begin(), cell.end(), mod_idx), cell.end());
+        }
+        module_cells_[static_cast<size_t>(mod_idx)].clear();
+        insert_(mod_idx, modules[static_cast<size_t>(mod_idx)]);
+    }
+
+    template<typename Fn>
+    void for_each_candidate(double xmin, double ymin,
+                            double xmax, double ymax, Fn fn) const
+    {
+        ++cur_stamp_;
+        const int c0 = col_idx(xmin), c1 = col_idx(xmax);
+        const int r0 = row_idx(ymin), r1 = row_idx(ymax);
+        for (int r = r0; r <= r1; ++r) {
+            for (int c = c0; c <= c1; ++c) {
+                for (int mi : cells_[static_cast<size_t>(r * cols_ + c)]) {
+                    if (stamp_[static_cast<size_t>(mi)] == cur_stamp_) continue;
+                    stamp_[static_cast<size_t>(mi)] = cur_stamp_;
+                    fn(mi);
+                }
+            }
+        }
+    }
+
+private:
+    int col_idx(double x) const {
+        return std::clamp(static_cast<int>(std::floor(x / cell_size_)), 0, cols_ - 1);
+    }
+    int row_idx(double y) const {
+        return std::clamp(static_cast<int>(std::floor(y / cell_size_)), 0, rows_ - 1);
+    }
+    void insert_(int mod_idx, const Module& m) {
+        const int c0 = col_idx(m.lx()), c1 = col_idx(m.rx());
+        const int r0 = row_idx(m.ly()), r1 = row_idx(m.ry());
+        for (int r = r0; r <= r1; ++r) {
+            for (int c = c0; c <= c1; ++c) {
+                const int ci = r * cols_ + c;
+                cells_[static_cast<size_t>(ci)].push_back(mod_idx);
+                module_cells_[static_cast<size_t>(mod_idx)].push_back(ci);
+            }
+        }
+    }
+};
+
+// ── 鄰居收集（grid 加速版）────────────────────────────────────
+
+std::vector<Neighbor1D> collect_x_neighbors(const ModuleSpatialGrid&   grid,
+                                            const std::vector<Module>& modules,
+                                            const Module&              target,
+                                            double                     max_search)
 {
     std::vector<Neighbor1D> nbs;
-    for (const Module& m : modules) {
-        if (m.id == target.id || m.is_terminal || m.tier_id != target.tier_id) continue;
-        const double y_ov = overlap_1d(target.ly(), target.ry(), m.ly(), m.ry());
-        if (y_ov <= kEps) continue;
-        if (m.rx() < target.lx() - max_search || m.lx() > target.rx() + max_search) continue;
-        nbs.push_back({ y_ov, m.lx(), m.rx(), target.move_weight * m.move_weight });
-    }
+    grid.for_each_candidate(
+        target.lx() - max_search, target.ly(),
+        target.rx() + max_search, target.ry(),
+        [&](int mi) {
+            const Module& m = modules[static_cast<size_t>(mi)];
+            if (m.id == target.id || m.is_terminal) return;
+            const double y_ov = overlap_1d(target.ly(), target.ry(), m.ly(), m.ry());
+            if (y_ov <= kEps) return;
+            if (m.rx() < target.lx() - max_search || m.lx() > target.rx() + max_search) return;
+            nbs.push_back({ y_ov, m.lx(), m.rx(), target.move_weight * m.move_weight });
+        });
     return nbs;
 }
 
-std::vector<Neighbor1D> collect_y_neighbors(const std::vector<Module>& modules,
-                                            const Module& target,
-                                            double max_search, double dx_applied)
+std::vector<Neighbor1D> collect_y_neighbors(const ModuleSpatialGrid&   grid,
+                                            const std::vector<Module>& modules,
+                                            const Module&              target,
+                                            double                     max_search,
+                                            double                     dx_applied)
 {
     std::vector<Neighbor1D> nbs;
-    const double shifted_lx = target.lx() + dx_applied;
-    const double shifted_rx = target.rx() + dx_applied;
-    for (const Module& m : modules) {
-        if (m.id == target.id || m.is_terminal || m.tier_id != target.tier_id) continue;
-        const double x_ov = overlap_1d(shifted_lx, shifted_rx, m.lx(), m.rx());
-        if (x_ov <= kEps) continue;
-        if (m.ry() < target.ly() - max_search || m.ly() > target.ry() + max_search) continue;
-        nbs.push_back({ x_ov, m.ly(), m.ry(), target.move_weight * m.move_weight });
-    }
+    const double slx = target.lx() + dx_applied;
+    const double srx = target.rx() + dx_applied;
+    grid.for_each_candidate(
+        slx, target.ly() - max_search,
+        srx, target.ry() + max_search,
+        [&](int mi) {
+            const Module& m = modules[static_cast<size_t>(mi)];
+            if (m.id == target.id || m.is_terminal) return;
+            const double x_ov = overlap_1d(slx, srx, m.lx(), m.rx());
+            if (x_ov <= kEps) return;
+            if (m.ry() < target.ly() - max_search || m.ly() > target.ry() + max_search) return;
+            nbs.push_back({ x_ov, m.ly(), m.ry(), target.move_weight * m.move_weight });
+        });
     return nbs;
 }
 
-// 加權重疊面積（target.move_weight * neighbor.move_weight * 面積）
-double total_weighted_overlap(const std::vector<Module>& modules, const Module& target)
+double total_weighted_overlap(const ModuleSpatialGrid&   grid,
+                              const std::vector<Module>& modules,
+                              const Module&              target)
 {
     double total = 0.0;
-    for (const Module& m : modules) {
-        if (m.id == target.id || m.is_terminal || m.tier_id != target.tier_id) continue;
-        total += (target.move_weight * m.move_weight) * overlap_area(target, m);
-    }
+    grid.for_each_candidate(
+        target.lx(), target.ly(), target.rx(), target.ry(),
+        [&](int mi) {
+            const Module& m = modules[static_cast<size_t>(mi)];
+            if (m.id == target.id || m.is_terminal) return;
+            total += (target.move_weight * m.move_weight) * overlap_area(target, m);
+        });
     return total;
 }
 
@@ -720,20 +817,17 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
               << " skipped_no_gap=" << n_no_gap << "\n";
 }
 
-} // namespace
+// ── grid-aware optimize（匿名 namespace，供 sweep 直接呼叫）──────
 
-// ============================================================
-// Public API
-// ============================================================
-
-LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
-                                           const std::vector<Die>& dies,
-                                           int                     target_module_id,
-                                           const LocalMoveConfig&  cfg,
-                                           std::ostream*           move_log,
-                                           double                  log_phys_scale)
+LocalMoveResult optimize_module_local_move_impl(
+    std::vector<Module>&    modules,
+    const std::vector<Die>& dies,
+    int                     target_module_id,
+    const LocalMoveConfig&  cfg,
+    ModuleSpatialGrid&      grid,
+    std::ostream*           move_log,
+    double                  log_phys_scale)
 {
-    // 找目標 module
     int target_idx = -1;
     for (size_t i = 0; i < modules.size(); ++i) {
         if (modules[i].id == target_module_id) {
@@ -742,11 +836,9 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         }
     }
     if (target_idx < 0 || modules[target_idx].is_terminal) return {};
-    if (modules[target_idx].is_fixed) return {}; // constraint 固定，不移動
+    if (modules[target_idx].is_fixed) return {};
     const Module& target = modules[target_idx];
 
-    // 評估一種 orientation（0° 或 90°），回傳最佳位移結果
-    // 分別嘗試 x→y 與 y→x 順序，取 objective 較小者
     auto eval_orientation = [&](const Module& base, bool rotate_90) -> LocalMoveResult {
         const int tier = base.tier_id;
         if (tier < 0 || tier >= static_cast<int>(dies.size())) return {};
@@ -757,52 +849,42 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         const double min_dy = std::max(-cfg.max_move_dist, -base.ly());
         const double max_dy = std::min( cfg.max_move_dist, die.height - base.ry());
 
-        const double overlap_before = total_weighted_overlap(modules, base);
+        const double overlap_before = total_weighted_overlap(grid, modules, base);
 
-        // 給定 x_first：true = x→y，false = y→x
         auto eval_order = [&](bool x_first) -> LocalMoveResult {
             LocalMoveResult r;
-            r.rotate_90     = rotate_90;
+            r.rotate_90      = rotate_90;
             r.overlap_before = overlap_before;
 
             if (x_first) {
-                // 1) x 軸
-                const auto x_nbs = collect_x_neighbors(modules, base, cfg.max_search_dist);
-                r.dx = optimize_one_axis(x_nbs, base.lx(), base.rx(), min_dx, max_dx, cfg,
-                                         /*axis=*/1, base.x);
+                const auto x_nbs = collect_x_neighbors(grid, modules, base, cfg.max_search_dist);
+                r.dx = optimize_one_axis(x_nbs, base.lx(), base.rx(), min_dx, max_dx, cfg, 1, base.x);
                 Module after_x = base;
                 after_x.x += r.dx;
-                r.overlap_after_x = total_weighted_overlap(modules, after_x);
+                r.overlap_after_x = total_weighted_overlap(grid, modules, after_x);
 
-                // 2) y 軸（以 x 移動後為基礎）
-                const auto y_nbs = collect_y_neighbors(modules, base, cfg.max_search_dist, r.dx);
-                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg,
-                                         /*axis=*/2, base.y);
+                const auto y_nbs = collect_y_neighbors(grid, modules, base, cfg.max_search_dist, r.dx);
+                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg, 2, base.y);
                 Module after_xy = after_x;
                 after_xy.y += r.dy;
-                r.overlap_after_y = total_weighted_overlap(modules, after_xy);
+                r.overlap_after_y = total_weighted_overlap(grid, modules, after_xy);
             } else {
-                // 1) y 軸
-                const auto y_nbs = collect_y_neighbors(modules, base, cfg.max_search_dist, 0.0);
-                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg,
-                                         /*axis=*/2, base.y);
+                const auto y_nbs = collect_y_neighbors(grid, modules, base, cfg.max_search_dist, 0.0);
+                r.dy = optimize_one_axis(y_nbs, base.ly(), base.ry(), min_dy, max_dy, cfg, 2, base.y);
                 Module after_y = base;
                 after_y.y += r.dy;
-                r.overlap_after_x = total_weighted_overlap(modules, after_y); // 中間狀態
+                r.overlap_after_x = total_weighted_overlap(grid, modules, after_y);
 
-                // 2) x 軸（以 y 移動後為基礎）
-                // 收集 x 鄰居時用 y 移動後的新 y 區間
                 Module base_shifted_y = base;
                 base_shifted_y.y += r.dy;
-                const auto x_nbs = collect_x_neighbors(modules, base_shifted_y, cfg.max_search_dist);
+                const auto x_nbs = collect_x_neighbors(grid, modules, base_shifted_y, cfg.max_search_dist);
                 r.dx = optimize_one_axis(x_nbs, base_shifted_y.lx(), base_shifted_y.rx(),
-                                         min_dx, max_dx, cfg, /*axis=*/1, base_shifted_y.x);
+                                         min_dx, max_dx, cfg, 1, base_shifted_y.x);
                 Module after_yx = after_y;
                 after_yx.x += r.dx;
-                r.overlap_after_y = total_weighted_overlap(modules, after_yx);
+                r.overlap_after_y = total_weighted_overlap(grid, modules, after_yx);
             }
 
-            // 最終 objective：加入 side bias（僅偏好軸方向；以移動後中心計算）
             Module final_m = base;
             final_m.x += r.dx;
             final_m.y += r.dy;
@@ -820,42 +902,34 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
         return (yx.objective < xy.objective - kEps) ? yx : xy;
     };
 
-    // 建立候選形狀列表：hard module 僅 (w0,h0)；soft module 使用等面積 shape curve
     const double w0 = target.width;
     const double h0 = target.height;
     const std::vector<std::pair<double,double>> shapes =
         target.is_soft ? build_soft_shape_curve(w0, h0, cfg)
                        : std::vector<std::pair<double,double>>{{w0, h0}};
 
-    // 對每個形狀評估 0° 與 90° 兩種 orientation，從全部候選中選 objective 最小者
     LocalMoveResult best;
     best.objective = std::numeric_limits<double>::infinity();
 
     for (const auto& [sw, sh] : shapes) {
-        // 0°：直接以 (sw, sh) 為基礎評估
         Module base0 = target;
         base0.width  = sw;
         base0.height = sh;
         LocalMoveResult r0 = eval_orientation(base0, false);
         r0.final_width  = sw;
         r0.final_height = sh;
-
         if (r0.objective < best.objective - kEps) best = r0;
 
-        // TSV proxy 不允許旋轉，只評估 0°
         if (target.is_tsv_proxy) continue;
 
-        // 90°：交換後評估（eval_orientation 內部以交換後的 w/h 計算邊界）
         Module base90 = base0;
         std::swap(base90.width, base90.height);
         LocalMoveResult r90 = eval_orientation(base90, true);
-        r90.final_width  = sw;  // 記錄旋轉前的原始形狀
+        r90.final_width  = sw;
         r90.final_height = sh;
-
         if (r90.objective < best.objective - kEps) best = r90;
     }
 
-    // 套用最佳解：先設實際 w/h，再 rotate，最後位移
     Module& tm = modules[target_idx];
     if (best.final_width > kEps) {
         tm.width  = best.final_width;
@@ -864,8 +938,9 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
     if (best.rotate_90) std::swap(tm.width, tm.height);
     tm.x += best.dx;
     tm.y += best.dy;
-    tm.move_weight = std::min(cfg.max_module_weight,
-                              tm.move_weight * cfg.moved_weight_mul);
+    tm.move_weight = std::min(cfg.max_module_weight, tm.move_weight * cfg.moved_weight_mul);
+
+    grid.update(target_idx, modules);
 
     if (move_log) {
         *move_log << "    [move_apply]"
@@ -882,6 +957,38 @@ LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
     }
 
     return best;
+}
+
+} // namespace
+
+// ============================================================
+// Public API
+// ============================================================
+
+LocalMoveResult optimize_module_local_move(std::vector<Module>&    modules,
+                                           const std::vector<Die>& dies,
+                                           int                     target_module_id,
+                                           const LocalMoveConfig&  cfg,
+                                           std::ostream*           move_log,
+                                           double                  log_phys_scale)
+{
+    int target_idx = -1;
+    for (size_t i = 0; i < modules.size(); ++i) {
+        if (modules[i].id == target_module_id) {
+            target_idx = static_cast<int>(i);
+            break;
+        }
+    }
+    if (target_idx < 0 || modules[target_idx].is_terminal) return {};
+    if (modules[target_idx].is_fixed) return {};
+
+    const int tier = modules[target_idx].tier_id;
+    if (tier < 0 || tier >= static_cast<int>(dies.size())) return {};
+
+    ModuleSpatialGrid grid;
+    grid.build(tier, modules, dies[static_cast<size_t>(tier)], cfg.max_search_dist);
+    return optimize_module_local_move_impl(modules, dies, target_module_id,
+                                           cfg, grid, move_log, log_phys_scale);
 }
 
 // ============================================================
@@ -1023,10 +1130,9 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                      std::function<double(const Module&)> key_fn,
                      bool ascending,
                      double init_weight,
-                     double moved_weight_mul)
+                     double moved_weight_mul,
+                     ModuleSpatialGrid& grid)
     {
-        // 重設該層 module 的初始 move_weight
-        // is_fixed module 視為「已移動過的障礙物」：weight 乘上 moved_weight_mul（不受 init_weight 覆寫）
         for (Module& m : modules) {
             if (m.is_terminal || m.tier_id != tier) continue;
             if (m.is_fixed)
@@ -1036,7 +1142,6 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                 m.move_weight = init_weight;
         }
 
-        // 以當下位置建立排序（is_fixed module 不加入待處理清單）
         std::vector<std::pair<double, int>> key_id;
         for (const Module& m : modules) {
             if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
@@ -1047,7 +1152,6 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
         else
             std::sort(key_id.begin(), key_id.end(), std::greater<>());
 
-        // 用此 sweep 指定的 moved_weight_mul 與方向偏好
         LocalMoveConfig sweep_cfg = lcfg;
         sweep_cfg.moved_weight_mul = moved_weight_mul;
         apply_side_bias_from_label(sweep_cfg, label, kSideBiasWeight);
@@ -1058,9 +1162,8 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   << " side_bias=" << sweep_cfg.side_bias_weight * sweep_cfg.side_bias_sign
                   << "(axis=" << sweep_cfg.side_bias_axis << ")\n";
         for (const auto& [key, mid] : key_id)
-            optimize_module_local_move(modules, dies, mid, sweep_cfg, &log_file, inv_gs);
+            optimize_module_local_move_impl(modules, dies, mid, sweep_cfg, grid, &log_file, inv_gs);
 
-        // 視覺化：每次 sweep 結束後擷取一幀
         if (vis_fw) vis_fw->capture(modules, dies, tier, label);
     };
 
@@ -1121,47 +1224,49 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
             // const double mw2 = use_strong ? (9.0  + iter * 6.0) : (9.0  + iter * 6.0);
             // const double mw3 = use_strong ? (20.0 + iter * 8.0) : (20.0  + iter * 8.0);
 
+            ModuleSpatialGrid grid;
+            grid.build(t, modules, dies[static_cast<size_t>(t)], lcfg.max_search_dist);
+
             sweep(t, "near->far",
                   [cx, cy](const Module& m) {
                       const double dx = m.x - cx, dy = m.y - cy;
                       return dx * dx + dy * dy;
-                  }, /*ascending=*/true, iw, mw1);
+                  }, /*ascending=*/true, iw, mw1, grid);
 
             if (!use_alt) {
                 sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 3,  mw1);
+                      [](const Module& m) { return m.lx(); }, true,  iw * 3,  mw1, grid);
                 sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 3,  mw1);
+                      [](const Module& m) { return m.rx(); }, false, iw * 3,  mw1, grid);
                 sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 9,  mw2);
+                      [](const Module& m) { return m.ly(); }, true,  iw * 9,  mw2, grid);
                 sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 9,  mw2);
+                      [](const Module& m) { return m.ry(); }, false, iw * 9,  mw2, grid);
                 sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 27, mw3);
+                      [](const Module& m) { return m.lx(); }, true,  iw * 27, mw3, grid);
                 sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 27, mw3);
+                      [](const Module& m) { return m.rx(); }, false, iw * 27, mw3, grid);
                 sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 81, mw3);
+                      [](const Module& m) { return m.ly(); }, true,  iw * 81, mw3, grid);
                 sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 81, mw3);
+                      [](const Module& m) { return m.ry(); }, false, iw * 81, mw3, grid);
             } else {
-                // 上下（垂直）優先，再左右（水平）
                 sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 3,  mw1);
+                      [](const Module& m) { return m.ly(); }, true,  iw * 3,  mw1, grid);
                 sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 3,  mw1);
+                      [](const Module& m) { return m.ry(); }, false, iw * 3,  mw1, grid);
                 sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 9,  mw2);
+                      [](const Module& m) { return m.lx(); }, true,  iw * 9,  mw2, grid);
                 sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 9,  mw2);
+                      [](const Module& m) { return m.rx(); }, false, iw * 9,  mw2, grid);
                 sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 27, mw3);
+                      [](const Module& m) { return m.ly(); }, true,  iw * 27, mw3, grid);
                 sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 27, mw3);
+                      [](const Module& m) { return m.ry(); }, false, iw * 27, mw3, grid);
                 sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 81, mw3);
+                      [](const Module& m) { return m.lx(); }, true,  iw * 81, mw3, grid);
                 sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 81, mw3);
+                      [](const Module& m) { return m.rx(); }, false, iw * 81, mw3, grid);
             }
         };
 
