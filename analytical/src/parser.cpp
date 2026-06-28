@@ -248,7 +248,8 @@ bool PlacementEngine::parse_blocks(const std::string& filename, bool placed_form
 //
 // 格式（每行一條約束，# 開頭為註解）：
 //   FIXED <module_name> <x_ll> <y_ll> <x_ur> <y_ur>
-//   REPULSE <k> <name1> <name2> [<name3> ...]
+//   REPULSE <min_dist> <name1> <name2> [<name3> ...]
+//   BOUNDARY <module_name> <side>
 //
 // FIXED 效果：
 //   - 找到對應 Module（必須是非 terminal 的 block）
@@ -256,11 +257,18 @@ bool PlacementEngine::parse_blocks(const std::string& filename, bool placed_form
 //   - 設定 is_fixed = true；x/y 設為中心；width/height 設為 ur-ll
 //
 // REPULSE 效果：
-//   - 以斥力強度 k 建立斥力群組，群組內所有成員在 analytical 階段
-//     互相排斥（pairwise inverse-square 梯度），支援跨 tier
-//   - terminal 可加入：自身不移動，但會推開群組內其他可動 module（行為同 FIXED module）
+//   - min_dist：群組內所有成員兩兩之間的最小中心距離（die 座標，與 FIXED 座標同單位）
+//   - analytical 階段每 iter 位置更新後以軟彈簧投影推開 violating pair
+//   - terminal / fixed 可加入：自身不移動，只將可動端推開（作為錨點）
 //   - 不存在的名稱會印 warning 並跳過
 //   - 有效成員數 < 2 時忽略此行
+//
+// BOUNDARY 效果：
+//   - 指定 module 至少有一邊必須貼著所屬 die 的指定邊界
+//   - side 為整數：1=LEFT 2=RIGHT 3=TOP 4=BOTTOM
+//                  5=TOP-LEFT 6=TOP-RIGHT 7=BOTTOM-LEFT 8=BOTTOM-RIGHT
+//   - 角落（5-8）表示同時貼兩邊（同時滿足對應兩單邊）
+//   - 設定 Module::boundary_side 並加入 boundary_constraints_ 清單
 // ============================================================
 bool PlacementEngine::parse_constraints(const std::string& filename)
 {
@@ -270,8 +278,9 @@ bool PlacementEngine::parse_constraints(const std::string& filename)
         return false;
     }
 
-    int fixed_count   = 0;
-    int repulse_count = 0;
+    int fixed_count    = 0;
+    int repulse_count  = 0;
+    int boundary_count = 0;
     std::string line;
     while (std::getline(fin, line)) {
         if (line.empty() || line[0] == '#') continue;
@@ -319,14 +328,15 @@ bool PlacementEngine::parse_constraints(const std::string& filename)
 
         // ---- REPULSE ----
         if (keyword == "REPULSE") {
-            double k = 0.0;
-            if (!(ss >> k)) {
-                std::cerr << "[Constraint] Malformed REPULSE line (missing k): " << line << "\n";
+            double min_dist = 0.0;
+            if (!(ss >> min_dist) || min_dist <= 0.0) {
+                std::cerr << "[Constraint] Malformed REPULSE line (missing or non-positive min_dist): "
+                          << line << "\n";
                 continue;
             }
 
             RepulsionGroup grp;
-            grp.strength = k;
+            grp.min_dist = min_dist;
 
             std::string name;
             while (ss >> name) {
@@ -345,7 +355,7 @@ bool PlacementEngine::parse_constraints(const std::string& filename)
             }
 
             ++repulse_count;
-            std::cout << "[Constraint] REPULSE k=" << k
+            std::cout << "[Constraint] REPULSE min_dist=" << min_dist
                       << "  members=[ ";
             for (int id : grp.module_ids)
                 std::cout << modules_[id].name
@@ -356,11 +366,57 @@ bool PlacementEngine::parse_constraints(const std::string& filename)
             continue;
         }
 
+        // ---- BOUNDARY ----
+        if (keyword == "BOUNDARY") {
+            std::string name;
+            int side_int = 0;
+            if (!(ss >> name >> side_int)) {
+                std::cerr << "[Constraint] Malformed BOUNDARY line: " << line << "\n";
+                continue;
+            }
+
+            if (side_int < 1 || side_int > 8) {
+                std::cerr << "[Constraint] BOUNDARY: invalid side value " << side_int
+                          << " (must be 1-8): " << line << "\n";
+                continue;
+            }
+
+            auto it = name_to_id_.find(name);
+            if (it == name_to_id_.end()) {
+                std::cerr << "[Constraint] BOUNDARY: unknown module name: " << name << "\n";
+                continue;
+            }
+
+            Module& m = modules_[it->second];
+            if (m.is_terminal) {
+                std::cerr << "[Constraint] BOUNDARY: cannot apply to terminal: " << name << "\n";
+                continue;
+            }
+
+            m.boundary_side = side_int;
+
+            BoundaryConstraint bc;
+            bc.module_id = it->second;
+            bc.side      = static_cast<BoundaryConstraintSide>(side_int);
+            boundary_constraints_.push_back(bc);
+
+            static constexpr const char* kSideNames[] = {
+                "", "LEFT", "RIGHT", "TOP", "BOTTOM",
+                "TOP-LEFT", "TOP-RIGHT", "BOTTOM-LEFT", "BOTTOM-RIGHT"
+            };
+            ++boundary_count;
+            std::cout << "[Constraint] BOUNDARY " << name
+                      << "  tier=" << m.tier_id
+                      << "  side=" << kSideNames[side_int] << "\n";
+            continue;
+        }
+
         // 未知 keyword：靜默略過（保持向後相容）
     }
 
-    std::cout << "[Constraint] Applied " << fixed_count   << " FIXED constraint(s).\n";
-    std::cout << "[Constraint] Applied " << repulse_count << " REPULSE constraint(s).\n";
+    std::cout << "[Constraint] Applied " << fixed_count    << " FIXED constraint(s).\n";
+    std::cout << "[Constraint] Applied " << repulse_count  << " REPULSE constraint(s).\n";
+    std::cout << "[Constraint] Applied " << boundary_count << " BOUNDARY constraint(s).\n";
     return true;
 }
 

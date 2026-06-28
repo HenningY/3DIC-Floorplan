@@ -26,6 +26,9 @@ var viewPanX = 0;
 var viewPanY = 0;
 var constraintData = [];      // 已解析的 constraint 陣列
 var constraintFileLoaded = false; // 是否已載入 constraint 檔
+var processFrames = [];       // analytical iter frames
+var processFrameIndex = 0;
+var processActive = false;
 
 var TIER_FILLS   = ['#4a90d9','#5cb85c','#f0ad4e','#d9534f','#9b59b6','#1abc9c'];
 var TIER_STROKES = ['#2c6fa8','#3d8b3d','#c8892a','#b33030','#7d3f9c','#148a74'];
@@ -100,16 +103,108 @@ function escXml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
-// 取得 module 的有效位置（若有 override 則用 override）
+// 取得 module 的有效位置（process replay / override / 原始）
+function getProcessPos(name) {
+  if (!processActive || !processFrames.length) { return null; }
+  var frame = processFrames[processFrameIndex];
+  if (!frame.posByName) {
+    frame.posByName = {};
+    for (var fi = 0; fi < frame.modules.length; fi++) {
+      var pm = frame.modules[fi];
+      frame.posByName[pm.name] = pm;
+    }
+  }
+  return frame.posByName[name] || null;
+}
+
 function getEffMod(m) {
+  var pos = getProcessPos(m.name);
+  var base = pos
+    ? { name: m.name, tier: m.tier, xll: pos.xll, yll: pos.yll, xur: pos.xur, yur: pos.yur, isSoft: m.isSoft }
+    : m;
   var ov = moduleOverrides[m.name];
-  if (!ov) return m;
-  return { name: m.name, tier: m.tier, xll: ov.xll, yll: ov.yll, xur: ov.xur, yur: ov.yur };
+  if (!ov) { return base; }
+  return { name: base.name, tier: base.tier, xll: ov.xll, yll: ov.yll, xur: ov.xur, yur: ov.yur, isSoft: base.isSoft };
+}
+
+function clearProcessMode() {
+  processActive = false;
+  processFrames = [];
+  processFrameIndex = 0;
+  updateProcessUI();
+}
+
+function updateProcessUI() {
+  var label = document.getElementById('processFrameLabel');
+  var prevBtn = document.getElementById('processPrev');
+  var nextBtn = document.getElementById('processNext');
+  var showBtn = document.getElementById('showProcess');
+  if (!label || !prevBtn || !nextBtn || !showBtn) { return; }
+
+  if (!processActive || processFrames.length === 0) {
+    label.textContent = processFrames.length > 0
+      ? processFrames.length + ' frames'
+      : '—';
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    showBtn.textContent = 'Show Process';
+    showBtn.classList.remove('active');
+    return;
+  }
+
+  showBtn.textContent = 'Hide Process';
+  showBtn.classList.add('active');
+  var frame = processFrames[processFrameIndex];
+  label.textContent = 'Iter ' + frame.iterNum + ' (' + (processFrameIndex + 1) + '/' + processFrames.length + ')';
+  prevBtn.disabled = processFrameIndex <= 0;
+  nextBtn.disabled = processFrameIndex >= processFrames.length - 1;
+}
+
+function applyProcessFrame(idx) {
+  if (!processActive || !processFrames.length) { return; }
+  processFrameIndex = Math.max(0, Math.min(processFrames.length - 1, idx));
+  render();
+  updateProcessUI();
+}
+
+function enterProcessMode(frames) {
+  processFrames = frames;
+  processFrameIndex = 0;
+  processActive = true;
+  moduleOverrides = {};
+  render();
+  updateProcessUI();
+  log('[Process] Replay mode: ' + frames.length + ' frames');
 }
 
 // Constraint 查詢
 function isFixed(name) {
   return constraintData.some(function(c) { return c.type === 'FIXED' && c.name === name; });
+}
+function isBoundary(name) {
+  return constraintData.some(function(c) { return c.type === 'BOUNDARY' && c.name === name; });
+}
+
+function moduleStrokeColor(isSel, fixed, boundary, defaultStroke) {
+  if (isSel) { return '#ffffff'; }
+  if (fixed) { return '#e08020'; }
+  if (boundary) { return '#b070d0'; }
+  return defaultStroke;
+}
+
+function moduleStrokeWidth(isSel, fixed, boundary, normalWidth) {
+  if (isSel) { return '2'; }
+  if (fixed || boundary) { return '1.5'; }
+  return normalWidth;
+}
+
+function appendModuleConstraintOverlay(parts, rx, ry, rw, rh, fixed, boundary) {
+  if (fixed) {
+    parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-fixed)" style="pointer-events:none"/>');
+  }
+  if (boundary) {
+    parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-boundary)" style="pointer-events:none"/>');
+  }
 }
 // 回傳 module 所屬的 REPULSE 群組編號（1-based），0 表示不屬於任何群組
 function repulseGroupIdx(name) {
@@ -175,7 +270,7 @@ function populatePresets(presets) {
   }
   (presets || []).forEach(function(p) {
     var o = document.createElement('option');
-    o.value = JSON.stringify({ b: p.block, n: p.nets, o: p.output, c: p.constraint || '' });
+    o.value = JSON.stringify({ b: p.block, n: p.nets, o: p.output, c: p.constraint || '', p: p.process || '' });
     o.textContent = p.label;
     sel.appendChild(o);
   });
@@ -208,6 +303,7 @@ document.getElementById('presetSelect').onchange = function() {
     document.getElementById('netsPath').value       = j.n;
     document.getElementById('outPath').value        = j.o;
     document.getElementById('constraintPath').value = j.c || '';
+    document.getElementById('processPath').value    = j.p || (j.o ? j.o + '_analytical_iter.txt' : '');
     updateClearConstraintBtn();
     // 立即同步 constraint 清單
     if (j.c) {
@@ -541,14 +637,13 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
       var rh = Math.max((em.yur - em.yll) * scale, 0.8);
       var isSel = selectedMod === m.name;
       var fixed = isFixed(m.name);
+      var boundary = isBoundary(m.name);
       var rgi = repulseGroupIdx(m.name);
       parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
         ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
         ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.42' : '0.35')) + '"' +
-        ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : ms.stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.8')) + '"/>');
-      if (fixed) {
-        parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-fixed)" style="pointer-events:none"/>');
-      }
+        ' stroke="' + moduleStrokeColor(isSel, fixed, boundary, ms.stroke) + '" stroke-width="' + moduleStrokeWidth(isSel, fixed, boundary, '0.8') + '"/>');
+      appendModuleConstraintOverlay(parts, rx, ry, rw, rh, fixed, boundary);
       appendRepulseBadge(parts, rx, ry, Math.min(14, rw * 0.4, rh * 0.4), rgi);
       if (showML && rw > 14 && rh > 8) {
         var cx = rx + rw/2, cy = ry + rh/2;
@@ -631,14 +726,13 @@ function renderOverlaid(parts, cw, ch) {
         var rh = Math.max((em.yur - em.yll) * scale, 0.8);
         var isSel = selectedMod === m.name;
         var fixed = isFixed(m.name);
+        var boundary = isBoundary(m.name);
         var rgi = repulseGroupIdx(m.name);
         parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
           ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
           ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.38' : '0.28')) + '"' +
-          ' stroke="' + (isSel ? '#ffffff' : (fixed ? '#e08020' : ms.stroke)) + '" stroke-width="' + (isSel ? '2' : (fixed ? '1.5' : '0.7')) + '"/>');
-        if (fixed) {
-          parts.push('<rect x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '" fill="url(#hatch-fixed)" style="pointer-events:none"/>');
-        }
+          ' stroke="' + moduleStrokeColor(isSel, fixed, boundary, ms.stroke) + '" stroke-width="' + moduleStrokeWidth(isSel, fixed, boundary, '0.7') + '"/>');
+        appendModuleConstraintOverlay(parts, rx, ry, rw, rh, fixed, boundary);
         appendRepulseBadge(parts, rx, ry, Math.min(14, rw * 0.4, rh * 0.4), rgi);
         if (showML && rw > 14 && rh > 8) {
           var cx = rx + rw/2, cy = ry + rh/2;
@@ -721,7 +815,13 @@ function render() {
   var cw = Math.max(container.clientWidth  - 2, 200);
   var ch = Math.max(container.clientHeight - 2, 200);
   var parts = [];
-  parts.push('<defs><pattern id="hatch-fixed" patternUnits="userSpaceOnUse" width="7" height="7"><line x1="0" y1="7" x2="7" y2="0" stroke="#ffffff" stroke-width="0.8" opacity="0.28"/></pattern></defs>');
+  parts.push('<defs>' +
+    '<pattern id="hatch-fixed" patternUnits="userSpaceOnUse" width="7" height="7">' +
+    '<line x1="0" y1="7" x2="7" y2="0" stroke="#ffffff" stroke-width="0.8" opacity="0.28"/>' +
+    '</pattern>' +
+    '<pattern id="hatch-boundary" patternUnits="userSpaceOnUse" width="7" height="7">' +
+    '<line x1="0" y1="0" x2="7" y2="7" stroke="#c080e0" stroke-width="0.8" opacity="0.45"/>' +
+    '</pattern></defs>');
   parts.push('<rect x="0" y="0" width="' + cw + '" height="' + ch + '" fill="var(--vscode-editor-background)"/>');
 
   if (currentMode === 'overview') {
@@ -744,6 +844,8 @@ function currentInputPaths() {
     blockPath:      document.getElementById('blockPath').value.trim(),
     netsPath:       document.getElementById('netsPath').value.trim(),
     constraintPath: document.getElementById('constraintPath').value.trim(),
+    outputPath:     document.getElementById('outPath').value.trim(),
+    processPath:    document.getElementById('processPath').value.trim(),
   };
 }
 
@@ -783,6 +885,7 @@ document.getElementById('runFloorplan').onclick = function() {
   });
 };
 document.getElementById('reload2d').onclick = function() {
+  clearProcessMode();
   vscode.postMessage({
     type: 'reload2d',
     blockPath:      document.getElementById('blockPath').value,
@@ -791,6 +894,52 @@ document.getElementById('reload2d').onclick = function() {
     constraintPath: document.getElementById('constraintPath').value.trim(),
   });
 };
+
+document.getElementById('pickProcess').onclick = function() {
+  vscode.postMessage(Object.assign({ type: 'pickProcess' }, currentInputPaths()));
+};
+
+document.getElementById('showProcess').onclick = function() {
+  if (processActive) {
+    processActive = false;
+    render();
+    updateProcessUI();
+    return;
+  }
+  if (!sceneData) {
+    log('[WARN] Load floorplan first (Reload 2D)');
+    return;
+  }
+  vscode.postMessage(Object.assign({ type: 'loadProcess' }, currentInputPaths()));
+};
+
+document.getElementById('processPrev').onclick = function() {
+  applyProcessFrame(processFrameIndex - 1);
+};
+
+document.getElementById('processNext').onclick = function() {
+  applyProcessFrame(processFrameIndex + 1);
+};
+
+document.getElementById('outPath').addEventListener('change', function() {
+  var out = this.value.trim();
+  if (out) {
+    document.getElementById('processPath').value = out + '_analytical_iter.txt';
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (!processActive || !processFrames.length) { return; }
+  var tag = e.target && e.target.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
+  if (e.key === 'ArrowLeft') {
+    e.preventDefault();
+    applyProcessFrame(processFrameIndex - 1);
+  } else if (e.key === 'ArrowRight') {
+    e.preventDefault();
+    applyProcessFrame(processFrameIndex + 1);
+  }
+});
 
 document.getElementById('btnZoomIn').onclick = function() {
   viewZoom = Math.min(20, viewZoom * 1.25);
@@ -1000,6 +1149,113 @@ document.getElementById('btnApplyFixed').onclick = function() {
 };
 
 // ── Constraint 驗證：回傳 warning 字串陣列，無問題則空陣列 ──
+var BOUNDARY_SIDES = [
+  { value: 1, label: 'LEFT' },
+  { value: 2, label: 'RIGHT' },
+  { value: 3, label: 'TOP' },
+  { value: 4, label: 'BOTTOM' },
+  { value: 5, label: 'TOP-LEFT' },
+  { value: 6, label: 'TOP-RIGHT' },
+  { value: 7, label: 'BOTTOM-LEFT' },
+  { value: 8, label: 'BOTTOM-RIGHT' },
+];
+
+function constraintBadgeLabel(type) {
+  if (type === 'FIXED') { return 'F'; }
+  if (type === 'REPULSE') { return 'R'; }
+  return 'B';
+}
+
+function createBoundarySideSelect(selectedValue) {
+  var sel = document.createElement('select');
+  sel.className = 'cst-inp-side';
+  sel.dataset.key = 'side';
+  sel.title = 'boundary side';
+  BOUNDARY_SIDES.forEach(function(s) {
+    var opt = document.createElement('option');
+    opt.value = String(s.value);
+    opt.textContent = s.label;
+    if (Number(selectedValue) === s.value) { opt.selected = true; }
+    sel.appendChild(opt);
+  });
+  return sel;
+}
+
+function appendConstraintFields(type, fields, data) {
+  data = data || {};
+  if (type === 'FIXED') {
+    ['name', 'llx', 'lly', 'urx', 'ury'].forEach(function(key) {
+      var inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = data[key] != null ? String(data[key]) : '';
+      inp.placeholder = key;
+      inp.title = key;
+      inp.className = 'cst-inp ' + (key === 'name' ? 'cst-inp-name' : 'cst-inp-coord');
+      inp.dataset.key = key;
+      fields.appendChild(inp);
+    });
+    return;
+  }
+  if (type === 'REPULSE') {
+    var dInp = document.createElement('input');
+    dInp.type = 'text';
+    dInp.value = data.minDist != null ? String(data.minDist) : '10';
+    dInp.placeholder = 'min dist';
+    dInp.title = 'minimum center-to-center distance';
+    dInp.dataset.key = 'minDist';
+    dInp.className = 'cst-inp cst-inp-min-dist';
+
+    var nInp = document.createElement('input');
+    nInp.type = 'text';
+    nInp.value = data.names ? (Array.isArray(data.names) ? data.names.join(' ') : data.names) : '';
+    nInp.placeholder = 'name1 name2 …';
+    nInp.title = 'module or terminal names (space-separated)';
+    nInp.dataset.key = 'names';
+    nInp.className = 'cst-inp cst-inp-names';
+
+    fields.appendChild(dInp);
+    fields.appendChild(nInp);
+    return;
+  }
+  if (type === 'BOUNDARY') {
+    var nameInp = document.createElement('input');
+    nameInp.type = 'text';
+    nameInp.value = data.name || '';
+    nameInp.placeholder = 'name';
+    nameInp.title = 'module name';
+    nameInp.dataset.key = 'name';
+    nameInp.className = 'cst-inp cst-inp-name';
+
+    fields.appendChild(nameInp);
+    fields.appendChild(createBoundarySideSelect(data.side || 1));
+  }
+}
+
+function validateAndFormatConstraintLine(type, v, excludeIdx) {
+  if (type === 'FIXED') {
+    var name = v('name');
+    var llx = parseFloat(v('llx')), lly = parseFloat(v('lly'));
+    var urx = parseFloat(v('urx')), ury = parseFloat(v('ury'));
+    var warns = validateFixedConstraint(name, llx, lly, urx, ury, excludeIdx);
+    if (warns.length > 0) { return { ok: false, warns: warns }; }
+    return {
+      ok: true,
+      line: 'FIXED ' + name + ' ' + v('llx') + ' ' + v('lly') + ' ' + v('urx') + ' ' + v('ury'),
+    };
+  }
+  if (type === 'REPULSE') {
+    var rWarns = validateRepulseConstraint(v('minDist'), v('names'));
+    if (rWarns.length > 0) { return { ok: false, warns: rWarns }; }
+    return { ok: true, line: 'REPULSE ' + v('minDist') + ' ' + v('names') };
+  }
+  if (type === 'BOUNDARY') {
+    var bWarns = validateBoundaryConstraint(v('name'), v('side'), excludeIdx);
+    if (bWarns.length > 0) { return { ok: false, warns: bWarns }; }
+    return { ok: true, line: 'BOUNDARY ' + v('name') + ' ' + v('side') };
+  }
+  return { ok: false, warns: ['unknown constraint type.'] };
+}
+
 // excludeIdx: 當更新既有行時，排除自身 index 避免誤判重複
 function validateFixedConstraint(name, llx, lly, urx, ury, excludeIdx) {
   var warnings = [];
@@ -1051,19 +1307,18 @@ function validateFixedConstraint(name, llx, lly, urx, ury, excludeIdx) {
 }
 
 // REPULSE constraint 驗證
-function validateRepulseConstraint(strengthStr, namesStr) {
+function validateRepulseConstraint(minDistStr, namesStr) {
   var warnings = [];
-  if (!strengthStr) {
-    warnings.push('strength is empty.');
-  } else if (isNaN(parseFloat(strengthStr))) {
-    warnings.push('strength "' + strengthStr + '" is not a number.');
+  if (!minDistStr) {
+    warnings.push('min distance is empty.');
+  } else if (isNaN(parseFloat(minDistStr)) || parseFloat(minDistStr) <= 0) {
+    warnings.push('min distance "' + minDistStr + '" must be a positive number.');
   }
   var names = namesStr.trim().split(/\s+/).filter(function(n) { return n.length > 0; });
   if (names.length < 2) {
     warnings.push('at least 2 names (module or terminal) are required (got ' + names.length + ').');
     return warnings;
   }
-  // 確認每個 name 對應 module 或 terminal
   if (sceneData) {
     names.forEach(function(n) {
       var isMod = sceneData.modules.some(function(m) { return m.name === n; });
@@ -1072,6 +1327,33 @@ function validateRepulseConstraint(strengthStr, namesStr) {
         warnings.push('"' + n + '" not found as module or terminal in current floorplan data.');
       }
     });
+  }
+  return warnings;
+}
+
+function validateBoundaryConstraint(name, sideStr, excludeIdx) {
+  var warnings = [];
+  if (!name) {
+    warnings.push('module name is empty.');
+    return warnings;
+  }
+  var side = parseInt(sideStr, 10);
+  if (!sideStr || isNaN(side) || side < 1 || side > 8) {
+    warnings.push('side must be an integer from 1 to 8.');
+    return warnings;
+  }
+  if (sceneData) {
+    var mod = sceneData.modules.find(function(m) { return m.name === name; });
+    if (!mod) {
+      warnings.push('module "' + name + '" not found in current floorplan data.');
+    }
+  }
+  var dup = constraintData.some(function(c, ci) {
+    return c.type === 'BOUNDARY' && c.name === name &&
+           (excludeIdx === undefined || ci !== excludeIdx);
+  });
+  if (dup) {
+    warnings.push('module "' + name + '" already has a BOUNDARY constraint.');
   }
   return warnings;
 }
@@ -1111,36 +1393,11 @@ function appendPendingRow(type, list) {
 
   var badge = document.createElement('span');
   badge.className = 'cst-badge cst-badge-' + type.toLowerCase();
-  badge.textContent = type === 'FIXED' ? 'F' : 'R';
+  badge.textContent = constraintBadgeLabel(type);
 
   var fields = document.createElement('div');
   fields.className = 'cst-fields';
-
-  if (type === 'FIXED') {
-    ['name','llx','lly','urx','ury'].forEach(function(key) {
-      var inp = document.createElement('input');
-      inp.type = 'text';
-      inp.value = '';
-      inp.placeholder = key;
-      inp.title = key;
-      inp.className = 'cst-inp ' + (key === 'name' ? 'cst-inp-name' : 'cst-inp-coord');
-      inp.dataset.key = key;
-      fields.appendChild(inp);
-    });
-  } else {
-    var sInp = document.createElement('input');
-    sInp.type = 'text'; sInp.value = '1.0'; sInp.placeholder = 'strength';
-    sInp.title = 'strength'; sInp.dataset.key = 'strength';
-    sInp.className = 'cst-inp cst-inp-strength';
-
-    var nInp = document.createElement('input');
-    nInp.type = 'text'; nInp.value = ''; nInp.placeholder = 'name1 name2 …';
-    nInp.title = 'module or terminal names (space-separated)'; nInp.dataset.key = 'names';
-    nInp.className = 'cst-inp cst-inp-names';
-
-    fields.appendChild(sInp);
-    fields.appendChild(nInp);
-  }
+  appendConstraintFields(type, fields);
 
   var confirmBtn = document.createElement('button');
   confirmBtn.className = 'cst-confirm'; confirmBtn.textContent = '＋';
@@ -1150,26 +1407,12 @@ function appendPendingRow(type, list) {
       var el = fields.querySelector('[data-key="' + key + '"]');
       return el ? el.value.trim() : '';
     }
-      var line;
-    if (type === 'FIXED') {
-      var name = v('name');
-      var llx = parseFloat(v('llx')), lly = parseFloat(v('lly'));
-      var urx = parseFloat(v('urx')), ury = parseFloat(v('ury'));
-      var warns = validateFixedConstraint(name, llx, lly, urx, ury, undefined);
-      if (warns.length > 0) {
-        warns.forEach(function(w) { log('[WARN] FIXED "' + name + '": ' + w); });
-        return;
-      }
-      line = 'FIXED ' + name + ' ' + v('llx') + ' ' + v('lly') + ' ' + v('urx') + ' ' + v('ury');
-    } else {
-      var rWarns = validateRepulseConstraint(v('strength'), v('names'));
-      if (rWarns.length > 0) {
-        rWarns.forEach(function(w) { log('[WARN] REPULSE: ' + w); });
-        return;
-      }
-      line = 'REPULSE ' + v('strength') + ' ' + v('names');
+    var result = validateAndFormatConstraintLine(type, v, undefined);
+    if (!result.ok) {
+      result.warns.forEach(function(w) { log('[WARN] ' + type + ': ' + w); });
+      return;
     }
-    vscode.postMessage({ type: 'addConstraint', line: line });
+    vscode.postMessage({ type: 'addConstraint', line: result.line });
     row.remove();
     updatePendingLabelVisibility(list);
   };
@@ -1207,7 +1450,7 @@ function buildConstraintList() {
 
   var typeSel = document.createElement('select');
   typeSel.className = 'cst-add-type';
-  ['FIXED', 'REPULSE'].forEach(function(t) {
+  ['FIXED', 'REPULSE', 'BOUNDARY'].forEach(function(t) {
     var opt = document.createElement('option');
     opt.value = t; opt.textContent = t;
     typeSel.appendChild(opt);
@@ -1238,37 +1481,17 @@ function buildConstraintList() {
 
     var badge = document.createElement('span');
     badge.className = 'cst-badge cst-badge-' + c.type.toLowerCase();
-    badge.textContent = c.type === 'FIXED' ? 'F' : 'R';
+    badge.textContent = constraintBadgeLabel(c.type);
 
     var fields = document.createElement('div');
     fields.className = 'cst-fields';
 
     if (c.type === 'FIXED') {
-      ['name','llx','lly','urx','ury'].forEach(function(key) {
-        var inp = document.createElement('input');
-        inp.type = 'text';
-        inp.value = c[key];
-        inp.placeholder = key;
-        inp.title = key;
-        inp.className = 'cst-inp ' + (key === 'name' ? 'cst-inp-name' : 'cst-inp-coord');
-        inp.dataset.key = key;
-        fields.appendChild(inp);
-      });
-    } else {
-      var strengthInp = document.createElement('input');
-      strengthInp.type = 'text';
-      strengthInp.value = c.strength; strengthInp.placeholder = 'strength';
-      strengthInp.title = 'strength'; strengthInp.dataset.key = 'strength';
-      strengthInp.className = 'cst-inp cst-inp-strength';
-
-      var namesInp = document.createElement('input');
-      namesInp.type = 'text';
-      namesInp.value = c.names.join(' '); namesInp.placeholder = 'name1 name2 …';
-      namesInp.title = 'module or terminal names (space-separated)'; namesInp.dataset.key = 'names';
-      namesInp.className = 'cst-inp cst-inp-names';
-
-      fields.appendChild(strengthInp);
-      fields.appendChild(namesInp);
+      appendConstraintFields('FIXED', fields, c);
+    } else if (c.type === 'REPULSE') {
+      appendConstraintFields('REPULSE', fields, c);
+    } else if (c.type === 'BOUNDARY') {
+      appendConstraintFields('BOUNDARY', fields, c);
     }
 
     var confirm = document.createElement('button');
@@ -1276,31 +1499,16 @@ function buildConstraintList() {
     confirm.title = 'Save (writes file)';
     confirm.onclick = (function(idx, type, fieldsEl) {
       return function() {
-        var line;
         function v(key) {
           var el = fieldsEl.querySelector('[data-key="' + key + '"]');
           return el ? el.value.trim() : '';
         }
-        if (type === 'FIXED') {
-          var name = v('name');
-          var llx = parseFloat(v('llx')), lly = parseFloat(v('lly'));
-          var urx = parseFloat(v('urx')), ury = parseFloat(v('ury'));
-          // 驗證：排除自身 index（避免誤判自己與自己重複）
-          var warns = validateFixedConstraint(name, llx, lly, urx, ury, idx);
-          if (warns.length > 0) {
-            warns.forEach(function(w) { log('[WARN] FIXED "' + name + '": ' + w); });
-            return;
-          }
-          line = 'FIXED ' + name + ' ' + v('llx') + ' ' + v('lly') + ' ' + v('urx') + ' ' + v('ury');
-        } else {
-          var rWarns = validateRepulseConstraint(v('strength'), v('names'));
-          if (rWarns.length > 0) {
-            rWarns.forEach(function(w) { log('[WARN] REPULSE: ' + w); });
-            return;
-          }
-          line = 'REPULSE ' + v('strength') + ' ' + v('names');
+        var result = validateAndFormatConstraintLine(type, v, idx);
+        if (!result.ok) {
+          result.warns.forEach(function(w) { log('[WARN] ' + type + ': ' + w); });
+          return;
         }
-        vscode.postMessage({ type: 'updateConstraint', index: idx, line: line });
+        vscode.postMessage({ type: 'updateConstraint', index: idx, line: result.line });
       };
     })(i, c.type, fields);
 
@@ -1379,6 +1587,11 @@ window.addEventListener('message', function(e) {
     if (msg.nets)       document.getElementById('netsPath').value       = msg.nets;
     if (msg.output)     document.getElementById('outPath').value        = msg.output;
     if (msg.constraint !== undefined) document.getElementById('constraintPath').value = msg.constraint;
+    if (msg.process !== undefined) {
+      document.getElementById('processPath').value = msg.process;
+    } else if (msg.output) {
+      document.getElementById('processPath').value = msg.output + '_analytical_iter.txt';
+    }
     updateClearConstraintBtn();
     syncPresetSelectFromPaths();
   }
@@ -1394,11 +1607,20 @@ window.addEventListener('message', function(e) {
     syncPresetSelectFromPaths();
   }
   if (msg.type === 'log') { log(msg.message); }
+  if (msg.type === 'processData') {
+    enterProcessMode(msg.frames || []);
+  }
   if (msg.type === 'sceneData') {
     sceneData = msg.payload;
-    currentMode = 'overview';
-    resetViewTransform();
+    clearProcessMode();
+    var prevMode = currentMode;
     buildTierPanel(sceneData.outlines.length);
+    if (prevMode === 'overview' || typeof prevMode !== 'number' || prevMode >= sceneData.outlines.length) {
+      currentMode = 'overview';
+    } else {
+      currentMode = prevMode;
+    }
+    resetViewTransform();
     updateTierBtn();
     render(); // render() 內已呼叫 updateInfoSection()
     log('[OK] ' + sceneData.modules.length + ' modules, ' +

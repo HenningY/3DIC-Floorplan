@@ -56,6 +56,19 @@ select.preset-select {
 .run-toggle.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-focusBorder, transparent); }
 .btn-row { display: flex; flex-direction: row; gap: 4px; padding: 4px 8px 8px; }
 .btn-row button { flex: 1; }
+.process-nav-row { align-items: center; padding-top: 0; }
+.process-nav-row #showProcess { flex: 1.2; }
+.process-nav-btn { flex: 0 0 32px; padding: 4px 0; }
+.process-frame-label {
+  flex: 1.4; font-size: 11px; text-align: center;
+  color: var(--vscode-descriptionForeground);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+#showProcess.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
 button {
   padding: 4px 10px; cursor: pointer;
   background: var(--vscode-button-background);
@@ -261,8 +274,9 @@ button.browse-btn { padding: 3px 7px; font-size: 11px; flex-shrink: 0; }
   display: flex; align-items: center; justify-content: center;
   margin-top: 2px;
 }
-.cst-badge-fixed   { background: #a06010; color: #fff; }
-.cst-badge-repulse { background: #226688; color: #fff; }
+.cst-badge-fixed    { background: #a06010; color: #fff; }
+.cst-badge-repulse  { background: #226688; color: #fff; }
+.cst-badge-boundary { background: #6a4080; color: #fff; }
 /* 可編輯欄位 */
 .cst-fields { flex: 1; display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
 .cst-inp {
@@ -274,7 +288,15 @@ button.browse-btn { padding: 3px 7px; font-size: 11px; flex-shrink: 0; }
 }
 .cst-inp-name     { width: 50px; }
 .cst-inp-coord    { width: 46px; }
-.cst-inp-strength { width: 40px; }
+.cst-inp-strength,
+.cst-inp-min-dist { width: 40px; }
+.cst-inp-side {
+  width: 108px; padding: 2px 2px; font-size: 11px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, #444);
+  border-radius: 3px;
+}
 .cst-inp-names    { flex: 1; min-width: 70px; }
 .cst-confirm {
   flex-shrink: 0; padding: 2px 4px; font-size: 11px; cursor: pointer;

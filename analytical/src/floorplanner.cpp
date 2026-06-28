@@ -301,6 +301,12 @@ void PlacementEngine::initialize_positions()
         if (m.is_fixed)    continue;   // 被 constraint 固定的 module 保持原位
 
         const Die& die = dies_[m.tier_id];
+
+        if (m.boundary_side != 0) {
+            init_module_on_boundary(m, die, m.boundary_side);
+            continue;
+        }
+
         double cx      = die.width  * 0.5;
         double cy      = die.height * 0.5;
         double jitter  = die.width  * 0.01;  // 1% Die 寬度的擾動幅度
@@ -373,7 +379,6 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
     // Module 梯度向量
     std::vector<double> gx_wl(n), gy_wl(n);
     std::vector<double> gx_d(n),  gy_d(n);
-    std::vector<double> gx_rep(n), gy_rep(n);
     std::vector<double> gx_rc(n),  gy_rc(n);
     std::vector<double> gx(n),    gy(n);
     std::vector<double> look_x(n), look_y(n);
@@ -392,6 +397,7 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
     double prev_total_overflow = 0.0;
     bool   have_prev_overflow  = false;
     int    overflow_stable_streak = 0;
+    int    rc_overflow_stable_streak = 0;
 
     // Phase 2：所有非 terminal / 非 fixed 的 module 都可移動
     std::vector<bool> phase2_movable(static_cast<size_t>(n), false);
@@ -485,13 +491,14 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
             calculate_wirelength_gradient(gx_wl, gy_wl);
             calculate_density_gradient(gx_d, gy_d);
         }
-        calculate_repulsion_gradient(gx_rep, gy_rep);
-
         // Routing congestion 梯度
-        if ((cfg_.routing_congestion_alpha > 0.0 || cfg_.routing_congestion_max > 0.0)
-            && nag_iter_ >= cfg_.routing_congestion_start_iter
-            && ((nag_iter_ - cfg_.routing_congestion_start_iter)
-                    % cfg_.routing_congestion_refresh_interval == 0))
+        {
+            const int rc_start = effective_routing_congestion_start_iter();
+            if ((cfg_.routing_congestion_alpha > 0.0 || cfg_.routing_congestion_max > 0.0)
+                && rc_start >= 0
+                && nag_iter_ >= rc_start
+                && ((nag_iter_ - rc_start)
+                        % cfg_.routing_congestion_refresh_interval == 0))
         {
             update_routing_congestion_map();
 
@@ -553,6 +560,7 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                 std::fill(gy_tsv_rc.begin(), gy_tsv_rc.end(), 0.0);
             }
         }
+        }
 
         // ---- Step 4: RMS 正規化 ----
         double wl_sq = 0.0, d_sq = 0.0, rc_sq = 0.0;
@@ -588,19 +596,31 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                     ? rc_mult
                     : cfg_.routing_congestion_alpha * rc_mult;
 
-                gx[i] = gx_wl[i] + gx_rep[i]
+                gx[i] = gx_wl[i]
                         + rc_alpha * scale_rc * gx_rc[i]
                         + lam * scale_d * gx_d[i];
-                gy[i] = gy_wl[i] + gy_rep[i]
+                gy[i] = gy_wl[i]
                         + rc_alpha * scale_rc * gy_rc[i]
                         + lam * scale_d * gy_d[i];
+
+                if (modules_[i].boundary_side != 0)
+                    apply_boundary_move_mask(modules_[i].boundary_side, gx[i], gy[i]);
 
                 modules_[i].x = look_x[i] - step * gx[i];
                 modules_[i].y = look_y[i] - step * gy[i];
 
-                clamp_to_die(modules_[i], dies_[static_cast<size_t>(modules_[i].tier_id)]);
+                {
+                    const Die& die_i = dies_[static_cast<size_t>(modules_[i].tier_id)];
+                    clamp_to_die(modules_[i], die_i);
+                    if (modules_[i].boundary_side != 0)
+                        snap_module_to_boundary(modules_[i], die_i, modules_[i].boundary_side);
+                }
             }
         }
+
+        // ---- Step 5a-post: REPULSE 軟彈簧距離投影 ----
+        if (!repulsion_groups_.empty())
+            apply_repulsion_distance_projection();
 
         // ---- Step 5b: 更新 TSV 位置（Phase 2）----
         if (include_tsv) {
@@ -663,20 +683,57 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                 const Die& die = dies_[static_cast<size_t>(m.tier_id)];
                 const double hw_after = m.height * 0.5;
                 const double hh_after = m.width  * 0.5;
-                if (m.x < hw_after || m.x > die.width  - hw_after
-                 || m.y < hh_after || m.y > die.height - hh_after)
-                    continue;
+                if (m.boundary_side == 0) {
+                    // non-boundary: skip if rotated bbox would exceed die
+                    if (m.x < hw_after || m.x > die.width  - hw_after
+                     || m.y < hh_after || m.y > die.height - hh_after)
+                        continue;
+                }
                 const double ov_before = pairwise_overlap(m);
                 std::swap(m.width, m.height);
                 const double ov_after  = pairwise_overlap(m);
-                if (ov_after >= ov_before) std::swap(m.width, m.height);
-                else ++rotated_count;
+                if (ov_after >= ov_before) {
+                    std::swap(m.width, m.height);
+                } else {
+                    ++rotated_count;
+                }
+                if (m.boundary_side != 0)
+                    snap_module_to_boundary(m, die, m.boundary_side);
             }
             std::cout << "[Rotation] iter=" << nag_iter_
                       << " rotated_modules=" << rotated_count << "\n";
         }
 
         ++nag_iter_;
+
+        if (!include_tsv
+            && cfg_.dump_analytical_iter_trace
+            && cfg_.analytical_iter_trace_interval > 0
+            && !cfg_.analytical_iter_trace_path.empty()
+            && nag_iter_ % cfg_.analytical_iter_trace_interval == 0) {
+            const bool first_dump = (nag_iter_ == cfg_.analytical_iter_trace_interval);
+            std::ofstream ofs(cfg_.analytical_iter_trace_path,
+                              first_dump ? (std::ios::out | std::ios::trunc)
+                                         : (std::ios::out | std::ios::app));
+            if (ofs) {
+                const double inv_geom = 1.0 / geometry_scale_;
+                ofs << std::fixed << std::setprecision(6);
+                ofs << "[Iter " << nag_iter_ << "]";
+                if (std::fabs(inv_geom - 1.0) > 1e-15)
+                    ofs << " geometry_scale=" << geometry_scale_;
+                ofs << '\n';
+                for (const Module& m : modules_) {
+                    if (m.is_terminal) continue;
+                    ofs << m.name << ' '
+                        << m.lx() * inv_geom << ' ' << m.ly() * inv_geom << ' '
+                        << m.rx() * inv_geom << ' ' << m.ry() * inv_geom << '\n';
+                }
+                ofs << '\n';
+            } else if (first_dump) {
+                std::cerr << "[Solve] WARNING: cannot open analytical trace file: "
+                          << cfg_.analytical_iter_trace_path << "\n";
+            }
+        }
 
         // ---- Step 6: 收斂監控（每 50 次）----
         if (nag_iter_ % 50 == 0) {
@@ -702,10 +759,32 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                     ++overflow_stable_streak;
                 else
                     overflow_stable_streak = 0;
+
+                if (cfg_.routing_congestion_start_on_overflow_stable
+                    && routing_congestion_start_iter_runtime_ < 0
+                    && cfg_.convergence_overflow_stable_steps > 0) {
+                    if (d_max < cfg_.routing_congestion_overflow_stable_tol)
+                        ++rc_overflow_stable_streak;
+                    else
+                        rc_overflow_stable_streak = 0;
+                }
             }
             prev_max_overflow   = max_overflow;
             prev_total_overflow = total_overflow;
             have_prev_overflow    = true;
+
+            if (cfg_.routing_congestion_start_on_overflow_stable
+                && routing_congestion_start_iter_runtime_ < 0
+                && cfg_.convergence_overflow_stable_steps > 0
+                && rc_overflow_stable_streak >= cfg_.convergence_overflow_stable_steps) {
+                routing_congestion_start_iter_runtime_ = nag_iter_;
+                std::cout << "[RC] max_overflow stable (|Δ|<"
+                          << cfg_.routing_congestion_overflow_stable_tol
+                          << ") for " << cfg_.convergence_overflow_stable_steps
+                          << " checks; start congestion at iter=" << nag_iter_
+                          << " Overflow=" << std::fixed << std::setprecision(3)
+                          << max_overflow << "\n";
+            }
 
             std::cout << "[Iter " << std::setw(5) << nag_iter_ << "]"
                       << " HPWL="          << std::fixed      << std::setprecision(1) << hpwl
@@ -717,27 +796,6 @@ void PlacementEngine::run_nag_loop(int max_iter, bool include_tsv)
                       << " Drms="          << d_rms
                       << " step="          << step
                       << "\n";
-
-            if (!include_tsv
-                && cfg_.dump_analytical_iter_trace
-                && !cfg_.analytical_iter_trace_path.empty()) {
-                std::ofstream ofs(cfg_.analytical_iter_trace_path,
-                                  (nag_iter_ == 50) ? (std::ios::out | std::ios::trunc)
-                                                    : (std::ios::out | std::ios::app));
-                if (ofs) {
-                    ofs << std::fixed << std::setprecision(6);
-                    ofs << "[Iter " << nag_iter_ << "]\n";
-                    for (const Module& m : modules_) {
-                        if (m.is_terminal) continue;
-                        ofs << m.name << ' ' << m.lx() << ' ' << m.ly() << ' '
-                            << m.rx() << ' ' << m.ry() << '\n';
-                    }
-                    ofs << '\n';
-                } else if (nag_iter_ == 50) {
-                    std::cerr << "[Solve] WARNING: cannot open analytical trace file: "
-                              << cfg_.analytical_iter_trace_path << "\n";
-                }
-            }
 
             const bool overflow_stable =
                 (cfg_.convergence_overflow_stable_steps > 0
@@ -773,6 +831,7 @@ void PlacementEngine::solve()
     lambda_mult_ = cfg_.lambda_init_mult;
     nag_iter_    = 0;
     nag_step_    = 0.0;
+    routing_congestion_start_iter_runtime_ = -1;
     const int nd = static_cast<int>(dies_.size());
     tier_rc_alpha_mult_.assign(static_cast<size_t>(nd), 0.0);
 
@@ -1388,60 +1447,91 @@ void PlacementEngine::calculate_density_gradient(
 }
 
 // ============================================================
-// calculate_repulsion_gradient:
-//   對每個 RepulsionGroup 掃所有無序 pair (a, b)：
+// apply_repulsion_distance_projection:
+//   對每個 RepulsionGroup 的所有無序 pair (a, b)，若中心點距離 < min_dist 則以軟彈簧投影修正：
 //
-//     E_rep = k / (dx^2 + dy^2 + ε)
-//     ∂E/∂xa = -k * 2*dx / (dx^2 + dy^2 + ε)^2  → 推離 b（取正讓梯度下降時往斥力方向走）
+//   deficit = min_dist - r
+//   兩端皆可動：各移 alpha * deficit / 2（對稱推開）
+//   僅一端可動：該端移 alpha * deficit（固定端為錨點）
 //
-//   跨 tier 僅用 2D 平面座標（x, y）計算，不考慮 Z 距離。
-//   is_terminal 與 is_fixed 的 module 不施加梯度（不可動）。
-//   epsilon = 1.0（與 die 座標同量綱，防止距離為 0 時梯度爆炸）。
+//   r ≈ 0 時使用 deterministic fallback 方向（依 module id 差決定 ±x）。
+//   每 pair 更新後立即 clamp_to_die + boundary snap（Gauss-Seidel 風格，收斂較快）。
+//   總共跑 cfg_.repulse_projection_passes 輪，處理多 pair 競爭造成的衝突。
 // ============================================================
-void PlacementEngine::calculate_repulsion_gradient(
-    std::vector<double>& gx, std::vector<double>& gy) const
+void PlacementEngine::apply_repulsion_distance_projection()
 {
-    constexpr double eps = 1.0;
+    if (repulsion_groups_.empty()) return;
 
-    std::fill(gx.begin(), gx.end(), 0.0);
-    std::fill(gy.begin(), gy.end(), 0.0);
+    const double alpha = cfg_.repulse_projection_alpha;
+    const int passes   = cfg_.repulse_projection_passes;
 
-    for (const RepulsionGroup& grp : repulsion_groups_) {
-        const auto& ids = grp.module_ids;
-        const double k  = grp.strength * 10000.0;
+    for (int pass = 0; pass < passes; ++pass) {
+        for (const RepulsionGroup& grp : repulsion_groups_) {
+            const auto& ids = grp.module_ids;
+            const double min_d = grp.min_dist;
 
-        for (int a = 0; a < static_cast<int>(ids.size()); ++a) {
-            for (int b = a + 1; b < static_cast<int>(ids.size()); ++b) {
-                const int ia = ids[a];
-                const int ib = ids[b];
+            for (int a = 0; a < static_cast<int>(ids.size()); ++a) {
+                for (int b = a + 1; b < static_cast<int>(ids.size()); ++b) {
+                    Module& ma = modules_[static_cast<size_t>(ids[a])];
+                    Module& mb = modules_[static_cast<size_t>(ids[b])];
 
-                // 不可動的 module：仍貢獻斥力給對方（作為障礙），自身梯度不更新
-                const Module& ma = modules_[ia];
-                const Module& mb = modules_[ib];
+                    const double dx = ma.x - mb.x;
+                    const double dy = ma.y - mb.y;
+                    const double r  = std::hypot(dx, dy);
 
-                const double dx = ma.x - mb.x;
-                const double dy = ma.y - mb.y;
-                const double d2 = dx * dx + dy * dy + eps;
-                const double coeff = k * 2.0 / (d2 * d2);
+                    if (r >= min_d) continue;
 
-                // 可動 module 才累加梯度（梯度方向 = 推離對方）
-                if (!ma.is_terminal && !ma.is_fixed) {
-                    gx[ia] += coeff * dx;
-                    gy[ia] += coeff * dy;
-                }
-                if (!mb.is_terminal && !mb.is_fixed) {
-                    gx[ib] -= coeff * dx;
-                    gy[ib] -= coeff * dy;
+                    const double deficit = min_d - r;
+
+                    double ux, uy;
+                    if (r > 1e-12) {
+                        ux = dx / r;
+                        uy = dy / r;
+                    } else {
+                        ux = (ids[a] >= ids[b]) ? 1.0 : -1.0;
+                        uy = 0.0;
+                    }
+
+                    const bool movable_a = !ma.is_terminal && !ma.is_fixed;
+                    const bool movable_b = !mb.is_terminal && !mb.is_fixed;
+
+                    if (movable_a && movable_b) {
+                        const double shift = alpha * deficit * 0.5;
+                        ma.x += shift * ux;
+                        ma.y += shift * uy;
+                        mb.x -= shift * ux;
+                        mb.y -= shift * uy;
+                    } else if (movable_a) {
+                        ma.x += alpha * deficit * ux;
+                        ma.y += alpha * deficit * uy;
+                    } else if (movable_b) {
+                        mb.x -= alpha * deficit * ux;
+                        mb.y -= alpha * deficit * uy;
+                    }
+
+                    if (movable_a) {
+                        clamp_to_die(ma, dies_[static_cast<size_t>(ma.tier_id)]);
+                        if (ma.boundary_side != 0)
+                            snap_module_to_boundary(ma, dies_[static_cast<size_t>(ma.tier_id)], ma.boundary_side);
+                    }
+                    if (movable_b) {
+                        clamp_to_die(mb, dies_[static_cast<size_t>(mb.tier_id)]);
+                        if (mb.boundary_side != 0)
+                            snap_module_to_boundary(mb, dies_[static_cast<size_t>(mb.tier_id)], mb.boundary_side);
+                    }
                 }
             }
         }
     }
 }
 
-// ============================================================
-// hpwl_die_weight: 僅供 compute_hpwl 的每層乘數
-//   cfg_.hpwl_die_weights 長度 == num_dies 時優先；否則用 .block 的 tier_net_weights_
-// ============================================================
+int PlacementEngine::effective_routing_congestion_start_iter() const
+{
+    if (cfg_.routing_congestion_start_on_overflow_stable)
+        return routing_congestion_start_iter_runtime_;
+    return cfg_.routing_congestion_start_iter;
+}
+
 double PlacementEngine::hpwl_die_weight(int tier) const
 {
     const int n = static_cast<int>(dies_.size());

@@ -714,10 +714,13 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
         const double f_x = fx[static_cast<size_t>(mid)];
         const double max_move = std::max(m.width, m.height);
 
+        const bool allow_x = (m.boundary_side == 0) || boundary_allows_x_move(m.boundary_side);
+        const bool allow_y = (m.boundary_side == 0) || boundary_allows_y_move(m.boundary_side);
+
         // ---- X 軸 ----
         bool x_moved = false;
         double old_x = m.x;
-        if (f_x > kWlForceEps) {
+        if (allow_x && f_x > kWlForceEps) {
             const double gap = std::min(max_shift_x_pos(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
@@ -737,7 +740,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
             } else {
                 ++n_no_gap;
             }
-        } else if (f_x < -kWlForceEps) {
+        } else if (allow_x && f_x < -kWlForceEps) {
             const double gap = std::min(max_shift_x_neg(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
@@ -764,7 +767,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
         bool y_moved = false;
         const double f_y2 = fy[static_cast<size_t>(mid)];
         double old_y = m.y;
-        if (f_y2 > kWlForceEps) {
+        if (allow_y && f_y2 > kWlForceEps) {
             const double gap = std::min(max_shift_y_pos(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
@@ -784,7 +787,7 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
             } else {
                 ++n_no_gap;
             }
-        } else if (f_y2 < -kWlForceEps) {
+        } else if (allow_y && f_y2 < -kWlForceEps) {
             const double gap = std::min(max_shift_y_neg(modules, die, m), max_move);
             if (gap > kGapMin) {
                 const double hpwl_before = hpwl_incident_sum(modules, nets, module_to_nets, die_w, mid);
@@ -807,9 +810,12 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
         }
         if (y_moved) ++n_moved;
 
-        // clamp 到 die 邊界
-        m.x = std::max(m.width  * 0.5, std::min(die.width  - m.width  * 0.5, m.x));
-        m.y = std::max(m.height * 0.5, std::min(die.height - m.height * 0.5, m.y));
+        if (m.boundary_side != 0) {
+            snap_module_to_boundary(m, die, m.boundary_side);
+        } else {
+            m.x = std::max(m.width  * 0.5, std::min(die.width  - m.width  * 0.5, m.x));
+            m.y = std::max(m.height * 0.5, std::min(die.height - m.height * 0.5, m.y));
+        }
     }
 
     std::cout << "  Tier " << tier << " [wl-refine] moved=" << n_moved
@@ -844,10 +850,21 @@ LocalMoveResult optimize_module_local_move_impl(
         if (tier < 0 || tier >= static_cast<int>(dies.size())) return {};
 
         const Die& die = dies[static_cast<size_t>(tier)];
-        const double min_dx = std::max(-cfg.max_move_dist, -base.lx());
-        const double max_dx = std::min( cfg.max_move_dist, die.width  - base.rx());
-        const double min_dy = std::max(-cfg.max_move_dist, -base.ly());
-        const double max_dy = std::min( cfg.max_move_dist, die.height - base.ry());
+        double min_dx = std::max(-cfg.max_move_dist, -base.lx());
+        double max_dx = std::min( cfg.max_move_dist, die.width  - base.rx());
+        double min_dy = std::max(-cfg.max_move_dist, -base.ly());
+        double max_dy = std::min( cfg.max_move_dist, die.height - base.ry());
+
+        if (base.boundary_side != 0) {
+            if (boundary_is_corner(base.boundary_side)) {
+                min_dx = max_dx = 0.0;
+                min_dy = max_dy = 0.0;
+            } else if (!boundary_allows_x_move(base.boundary_side)) {
+                min_dx = max_dx = 0.0;
+            } else if (!boundary_allows_y_move(base.boundary_side)) {
+                min_dy = max_dy = 0.0;
+            }
+        }
 
         const double overlap_before = total_weighted_overlap(grid, modules, base);
 
@@ -939,6 +956,12 @@ LocalMoveResult optimize_module_local_move_impl(
     tm.x += best.dx;
     tm.y += best.dy;
     tm.move_weight = std::min(cfg.max_module_weight, tm.move_weight * cfg.moved_weight_mul);
+
+    if (tm.boundary_side != 0) {
+        const int tier_snap = tm.tier_id;
+        if (tier_snap >= 0 && tier_snap < static_cast<int>(dies.size()))
+            snap_module_to_boundary(tm, dies[static_cast<size_t>(tier_snap)], tm.boundary_side);
+    }
 
     grid.update(target_idx, modules);
 
@@ -1044,11 +1067,14 @@ int shake_nearby_rotations(std::vector<Module>&    modules,
         // 執行旋轉
         std::swap(m.width, m.height);
 
-        // 旋轉後超出 die 邊界時，clamp 中心點使其回到邊界內
-        const double half_w = m.width  * 0.5;
-        const double half_h = m.height * 0.5;
-        m.x = std::clamp(m.x, half_w,             die.width  - half_w);
-        m.y = std::clamp(m.y, half_h,             die.height - half_h);
+        if (m.boundary_side != 0) {
+            snap_module_to_boundary(m, die, m.boundary_side);
+        } else {
+            const double half_w = m.width  * 0.5;
+            const double half_h = m.height * 0.5;
+            m.x = std::clamp(m.x, half_w,         die.width  - half_w);
+            m.y = std::clamp(m.y, half_h,         die.height - half_h);
+        }
 
         if (log) {
             *log << "    [shake_rot] module_id=" << m.id
@@ -1118,6 +1144,20 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
 
     auto& modules = engine.modules_mutable();
     const auto& dies = engine.dies();
+
+    // snap 所有 boundary module 到對應邊/角（含 leg_only 路徑）
+    {
+        int snapped = 0;
+        for (Module& m : modules) {
+            if (m.is_terminal || m.boundary_side == 0) continue;
+            if (m.tier_id < 0 || m.tier_id >= static_cast<int>(dies.size())) continue;
+            snap_module_to_boundary(m, dies[static_cast<size_t>(m.tier_id)], m.boundary_side);
+            ++snapped;
+        }
+        if (snapped > 0)
+            std::cout << "[legalize_heu] snapped " << snapped << " boundary module(s) to die edge\n";
+    }
+
     std::cout << "\n[legalize_heu] multi-pass local move\n";
 
     // per-tier 視覺化記錄器（enable_legalize_vis=false 時始終為空）

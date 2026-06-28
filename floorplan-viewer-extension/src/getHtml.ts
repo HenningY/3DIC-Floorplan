@@ -68,6 +68,13 @@ export function getHtml(
           <button class="browse-btn secondary" id="pickConstraint">…</button>
         </div>
       </div>
+      <div class="field-row">
+        <label>Process file (.txt)</label>
+        <div class="input-group">
+          <input type="text" id="processPath" placeholder="output.txt_analytical_iter.txt" />
+          <button class="browse-btn secondary" id="pickProcess">…</button>
+        </div>
+      </div>
     </div>
     <div class="run-opts-row">
       <div class="run-opt-group">
@@ -82,6 +89,12 @@ export function getHtml(
     <div class="btn-row">
       <button id="runFloorplan">Run Floorplan</button>
       <button class="secondary" id="reload2d">Reload 2D</button>
+    </div>
+    <div class="btn-row process-nav-row">
+      <button class="secondary" id="showProcess">Show Process</button>
+      <button class="secondary process-nav-btn" id="processPrev" title="Previous frame" disabled>◀</button>
+      <span id="processFrameLabel" class="process-frame-label">—</span>
+      <button class="secondary process-nav-btn" id="processNext" title="Next frame" disabled>▶</button>
     </div>
     <hr class="divider" />
     <div class="log-section">

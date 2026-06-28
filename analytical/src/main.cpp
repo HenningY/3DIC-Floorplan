@@ -73,6 +73,8 @@ int main(int argc, char* argv[])
     cfg.convergence_tol = 1e-3;     // 收斂容忍度 default 1e-5
     cfg.rotation_start_iter = 0;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
     cfg.rotation_interval   = 0;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
+    cfg.repulse_projection_alpha = 0.5;     // 每次修正 violation 量的比例（0~1）；0.5 為軟修正
+    cfg.repulse_projection_passes = 5;      // 每 iter 做幾輪 Gauss-Seidel pass
 
     // ---- λ increasing schedule ----
     cfg.lambda_init_mult       = 200.0;     // 初始倍率（從極小值出發，讓 WL 先主導）default 0.001, n100: 200.0
@@ -99,11 +101,12 @@ int main(int argc, char* argv[])
     // ---- routing congestion（density-style 局部場模型）----
     cfg.routing_congestion_alpha = 5;
     cfg.routing_capacity_C = 1.0;
-    cfg.routing_congestion_start_iter = 100;
+    cfg.routing_congestion_start_on_overflow_stable = true;
+    cfg.routing_congestion_overflow_stable_tol = 0.005;
     cfg.routing_congestion_refresh_interval = 10;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 30.0; //(0 = 關閉)
+    cfg.routing_congestion_max = 0.0; //(0 = 關閉)
     cfg.routing_congestion_alpha_boost_rate = 1.15;
     cfg.routing_congestion_alpha_max_mult = 50;
     // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
@@ -124,11 +127,13 @@ int main(int argc, char* argv[])
     cfg.die_normalize_min_extent  = 200.0;  // min_edge < 此值時放大
     cfg.die_normalize_max_extent  = 400.0;  // min_edge > 此值時縮小
 
-    // ---- analytical iter 追蹤寫檔：true 時與 [Iter ...] 同頻率寫入非 terminal module 外框 ----
-    const bool dump_analytical_iter_trace = false;
+    // ---- analytical iter 追蹤寫檔：每 N iter 記錄非 terminal module 外框至獨立檔案 ----
+    const bool   dump_analytical_iter_trace = true;
+    const int    analytical_iter_trace_interval = 1000;
     if (dump_analytical_iter_trace) {
         cfg.dump_analytical_iter_trace = true;
-        cfg.analytical_iter_trace_path = output_file + "_analytical_iter.txt";
+        cfg.analytical_iter_trace_interval = analytical_iter_trace_interval;
+        cfg.analytical_iter_trace_path = output_file + "_module_positions.txt";
     }
 
     // ---- initialize engine ----

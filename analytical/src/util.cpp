@@ -838,6 +838,98 @@ void squarify_modules(PlacementEngine& engine)
 }
 
 // ============================================================
+// BOUNDARY constraint geometry helpers
+// ============================================================
+
+bool boundary_is_corner(int side)
+{
+    return side >= 5 && side <= 8;
+}
+
+bool boundary_allows_x_move(int side)
+{
+    return side == 3 || side == 4; // TOP or BOTTOM
+}
+
+bool boundary_allows_y_move(int side)
+{
+    return side == 1 || side == 2; // LEFT or RIGHT
+}
+
+void init_module_on_boundary(Module& m, const Die& die, int side)
+{
+    const double hw = m.width  * 0.5;
+    const double hh = m.height * 0.5;
+
+    switch (side) {
+    case 1: // LEFT
+        m.x = hw;
+        m.y = die.height * 0.5;
+        break;
+    case 2: // RIGHT
+        m.x = die.width - hw;
+        m.y = die.height * 0.5;
+        break;
+    case 3: // TOP
+        m.x = die.width  * 0.5;
+        m.y = die.height - hh;
+        break;
+    case 4: // BOTTOM
+        m.x = die.width  * 0.5;
+        m.y = hh;
+        break;
+    case 5: // TOP-LEFT
+        m.x = hw;
+        m.y = die.height - hh;
+        break;
+    case 6: // TOP-RIGHT
+        m.x = die.width - hw;
+        m.y = die.height - hh;
+        break;
+    case 7: // BOTTOM-LEFT
+        m.x = hw;
+        m.y = hh;
+        break;
+    case 8: // BOTTOM-RIGHT
+        m.x = die.width - hw;
+        m.y = hh;
+        break;
+    default:
+        break;
+    }
+    // clamp free axis inside die (in case module is very large)
+    m.x = std::max(hw, std::min(die.width  - hw, m.x));
+    m.y = std::max(hh, std::min(die.height - hh, m.y));
+}
+
+void snap_module_to_boundary(Module& m, const Die& die, int side)
+{
+    const double hw = m.width  * 0.5;
+    const double hh = m.height * 0.5;
+
+    // constrain axis: snap tightly to required die edge(s)
+    if (side == 1 || side == 5 || side == 7) // left edge
+        m.x = hw;
+    if (side == 2 || side == 6 || side == 8) // right edge
+        m.x = die.width - hw;
+    if (side == 3 || side == 5 || side == 6) // top edge
+        m.y = die.height - hh;
+    if (side == 4 || side == 7 || side == 8) // bottom edge
+        m.y = hh;
+
+    // free axis: just clamp to die
+    m.x = std::max(hw, std::min(die.width  - hw, m.x));
+    m.y = std::max(hh, std::min(die.height - hh, m.y));
+}
+
+void apply_boundary_move_mask(int side, double& gx, double& gy)
+{
+    // zero the gradient on the frozen axis
+    if (!boundary_allows_x_move(side)) gx = 0.0;
+    if (!boundary_allows_y_move(side)) gy = 0.0;
+}
+
+// ============================================================
 // LegalizeFrameWriter 實作
 // ============================================================
 namespace {

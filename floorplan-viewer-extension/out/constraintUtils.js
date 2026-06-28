@@ -33,11 +33,23 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.BOUNDARY_SIDE_LABELS = void 0;
 exports.parseConstraintFile = parseConstraintFile;
 exports.deleteConstraintByIndex = deleteConstraintByIndex;
 exports.updateConstraintByIndex = updateConstraintByIndex;
 exports.appendConstraint = appendConstraint;
 const fs = __importStar(require("fs"));
+exports.BOUNDARY_SIDE_LABELS = [
+    "",
+    "LEFT",
+    "RIGHT",
+    "TOP",
+    "BOTTOM",
+    "TOP-LEFT",
+    "TOP-RIGHT",
+    "BOTTOM-LEFT",
+    "BOTTOM-RIGHT",
+];
 function parseConstraintFile(cPath) {
     if (!cPath || !fs.existsSync(cPath)) {
         return [];
@@ -45,10 +57,11 @@ function parseConstraintFile(cPath) {
     const text = fs.readFileSync(cPath, "utf8");
     const result = [];
     for (const l of text.split(/\r?\n/)) {
-        if (!l.trim()) {
+        const trimmed = l.trim();
+        if (!trimmed || trimmed.startsWith("#")) {
             continue;
         }
-        const parts = l.trim().split(/\s+/);
+        const parts = trimmed.split(/\s+/);
         if (parts[0] === "FIXED") {
             result.push({
                 type: "FIXED",
@@ -62,8 +75,15 @@ function parseConstraintFile(cPath) {
         else if (parts[0] === "REPULSE") {
             result.push({
                 type: "REPULSE",
-                strength: +parts[1],
+                minDist: +parts[1],
                 names: parts.slice(2),
+            });
+        }
+        else if (parts[0] === "BOUNDARY") {
+            result.push({
+                type: "BOUNDARY",
+                name: parts[1],
+                side: +parts[2],
             });
         }
     }

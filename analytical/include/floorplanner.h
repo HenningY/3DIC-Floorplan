@@ -28,6 +28,7 @@ struct Module {
     double      move_weight = 1.0; // heuristic legalize 權重（越大越不希望與其重疊）
     bool        is_tsv_proxy = false; // true = 由 TSV 暫時注入的 proxy，legalize 後移除
     int         tsv_proxy_id = -1;   // 對應 tsvs_[tsv_proxy_id]
+    int         boundary_side = 0;   // 0 = 無 BOUNDARY constraint；否則為 BoundaryConstraintSide 的整數值
 
     double area() const { return width * height; }
     double lx()   const { return x - width  * 0.5; }   // 左邊界
@@ -148,10 +149,11 @@ struct PlacementConfig {
     int rotation_start_iter = 4000;
     int rotation_interval   = 500;
 
-    // ---- analytical 進度追蹤寫檔（與 [Iter ...] 同頻率，每 50 iter）----
-    // dump_analytical_iter_trace = true 時，每次印 [Iter N] 同時把該輪所有**非 terminal**
-    // module 的 name llx lly urx ury 附加寫入 analytical_iter_trace_path（同一檔案累加）。
+    // ---- analytical 進度追蹤寫檔 ----
+    // dump_analytical_iter_trace = true 時，每 analytical_iter_trace_interval iter
+    // 把該輪所有非 terminal module 的 name llx lly urx ury 附加寫入 analytical_iter_trace_path。
     bool        dump_analytical_iter_trace = false;
+    int         analytical_iter_trace_interval = 50;  // <=0 停用寫檔
     std::string analytical_iter_trace_path;
 
     // 僅影響 compute_hpwl() 報告／評估用乘數（長度須等於 num_dies 才會生效）：
@@ -167,10 +169,15 @@ struct PlacementConfig {
     double routing_capacity_C            = 1.0;  // 每條邊的 routing capacity（全域常數）
 
     // 週期性計算：
-    //   iter >= routing_congestion_start_iter
-    //   且 (iter - routing_congestion_start_iter) % routing_congestion_refresh_interval == 0
+    //   iter >= effective start iter
+    //   且 (iter - start) % routing_congestion_refresh_interval == 0
     // 時刷新 map 並重算梯度；其餘 iter 直接將 gx_rc/gy_rc 清零。
-    int routing_congestion_start_iter       = 1000;   // 從第幾個 iter 開始啟用（n）
+    // routing_congestion_start_on_overflow_stable=true 時，start iter 改由
+    // 每 50 iter 的 max_overflow 連續穩定（見 convergence_overflow_stable_steps
+    // 與 routing_congestion_overflow_stable_tol）動態決定。
+    int  routing_congestion_start_iter       = 1000;   // 固定起始 iter（auto 模式時忽略）
+    bool routing_congestion_start_on_overflow_stable = false;
+    double routing_congestion_overflow_stable_tol = 0.005; // auto 模式：|Δ max_overflow| 門檻
     int routing_congestion_refresh_interval = 100;   // 每幾個 iter 重算一次（m）
 
     // ---- Per-tier 自適應壅塞強度 ----
@@ -190,6 +197,12 @@ struct PlacementConfig {
     double routing_congestion_gate_divisor   = 0.0;   // <=0 停用門檻
     double routing_congestion_gate_min_ratio = 0.20;  // 預設 20%
 
+    // ---- REPULSE 軟彈簧距離投影 ----
+    // 每個 NAG iter 位置更新後，對所有 violating pair (dist < min_dist) 執行投影修正。
+    // repulse_projection_alpha : 每次修正 violation 量的比例（0~1）；0.5 為軟修正
+    // repulse_projection_passes: 每 iter 做幾輪 Gauss-Seidel pass（更多 pass 收斂更快但每 iter 成本高）
+    double repulse_projection_alpha = 0.5;
+    int    repulse_projection_passes = 5;
 
     // ---- Phase 2 Analytical TSV ----
     // 面積使用率門檻：build_tsvs() 後若任一 tier 的 (module+TSV) 面積佔比 > 此值，跳過 Phase 2
@@ -288,14 +301,40 @@ struct PartitionNode {
 };
 
 // ============================================================
-// RepulsionGroup: 斥力群組（來自 constraint 檔的 REPULSE 行）
-// 群組內所有成員兩兩互斥，analytical 階段施加反平方斥力梯度
-// 支援跨 tier（以 2D 平面座標計算，不考慮層間 Z 距離）
-// terminal 可加入群組：自身不移動（不累加梯度），但會推開群組內其他可動 module
+// RepulsionGroup: 距離約束群組（來自 constraint 檔的 REPULSE 行）
+// 群組內所有成員兩兩之間的中心距離必須 >= min_dist（die 座標單位）。
+// analytical 階段每 iter 以軟彈簧投影推開 violating pair。
+// 支援跨 tier（以 2D 平面座標計算，不考慮層間 Z 距離）。
+// terminal / fixed 可加入群組：自身不移動，但會把可動端推開。
 // ============================================================
 struct RepulsionGroup {
     std::vector<int> module_ids; // 參與的 module 索引（含 terminal，解析時不過濾）
-    double           strength;   // 斥力強度係數 k（由 constraint 檔指定）
+    double           min_dist;   // 最小中心點距離（die 座標，與 FIXED 同單位）
+};
+
+// ============================================================
+// BoundaryConstraintSide: BOUNDARY constraint 的靠邊方向
+//   1=LEFT  2=RIGHT  3=TOP  4=BOTTOM
+//   5=TOP-LEFT  6=TOP-RIGHT  7=BOTTOM-LEFT  8=BOTTOM-RIGHT
+// ============================================================
+enum class BoundaryConstraintSide : int {
+    LEFT         = 1,
+    RIGHT        = 2,
+    TOP          = 3,
+    BOTTOM       = 4,
+    TOP_LEFT     = 5,
+    TOP_RIGHT    = 6,
+    BOTTOM_LEFT  = 7,
+    BOTTOM_RIGHT = 8,
+};
+
+// ============================================================
+// BoundaryConstraint: 單條 BOUNDARY 約束（來自 constraint 檔）
+// module 至少要有一邊貼著 die 指定的邊界
+// ============================================================
+struct BoundaryConstraint {
+    int                   module_id;
+    BoundaryConstraintSide side;
 };
 
 // ============================================================
@@ -323,6 +362,8 @@ public:
     // 讀取 .constraint 檔，格式：FIXED <name> <x_ll> <y_ll> <x_ur> <y_ur>
     // 會設定對應 Module 的 is_fixed=true，並更新 x/y/width/height（以 ll/ur 決定）
     bool parse_constraints(const std::string& filename);
+
+    const std::vector<BoundaryConstraint>& boundary_constraints() const { return boundary_constraints_; }
 
     // ---- TSV ----
     // 依 cross-tier nets 建立 TSV 清單（需在 parse + module 位置固定後呼叫）
@@ -444,7 +485,8 @@ private:
     std::vector<Net>    nets_;
     std::vector<Die>    dies_;
     std::vector<TSV>    tsvs_;  // 跨層 net 產生的 TSV，供後續 TSV placement 使用
-    std::vector<RepulsionGroup> repulsion_groups_; // REPULSE constraint 群組
+    std::vector<RepulsionGroup>     repulsion_groups_;     // REPULSE constraint 群組
+    std::vector<BoundaryConstraint> boundary_constraints_; // BOUNDARY constraint 清單
 
     // 每層 die 的 net 權重（.block 中 Weight: w0 w1 ...；預設全為 1.0）
     std::vector<double> tier_net_weights_;
@@ -479,6 +521,8 @@ private:
     int    nag_iter_     = 0;
     // Per-tier routing congestion alpha 動態倍率（routing_congestion_max > 0 時更新）
     std::vector<double> tier_rc_alpha_mult_;
+    // auto 模式下 overflow 穩定後寫入的 congestion 起始 iter；-1 表示尚未啟動
+    int routing_congestion_start_iter_runtime_ = -1;
 
     // Phase 2 Analytical TSV 啟用旗標（由 solve_tsv_phase() 設定/清除）
     bool analytical_tsv_active_ = false;
@@ -538,8 +582,9 @@ private:
     // TSV cost：tier 乘數（tsv_die_weights 若滿長度則覆寫，否則 tier_net_weights_）
     double tsv_placement_tier_weight(int tier) const;
 
-    // REPULSE constraint：對所有斥力群組計算 pairwise inverse-square 梯度
-    // 跨 tier 以 2D 平面座標計算；is_terminal / is_fixed 的 module 不受力
-    void calculate_repulsion_gradient(std::vector<double>& gx,
-                                      std::vector<double>& gy) const;
+    int effective_routing_congestion_start_iter() const;
+
+    // REPULSE constraint：對所有距離約束群組執行軟彈簧投影（Gauss-Seidel multi-pass）
+    // 跨 tier 以 2D 平面座標計算；is_terminal / is_fixed 的 module 只作錨點，自身不移動
+    void apply_repulsion_distance_projection();
 };

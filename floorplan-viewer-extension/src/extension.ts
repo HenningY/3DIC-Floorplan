@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { parseBlockFile, parseFloorplanOutput } from "./parsers";
+import { parseBlockFile, parseFloorplanOutput, parseAnalyticalIterFile } from "./parsers";
 import { getHtml } from "./getHtml";
 import {
   resolvePa2ProjectRoot,
@@ -67,6 +67,19 @@ export function activate(context: vscode.ExtensionContext): void {
         return path.join(analyticalCwd, trimmed);
       }
 
+      function resolveProcessPath(
+        analyticalCwd: string | undefined,
+        processInput: string,
+        outputPath?: string
+      ): string {
+        const trimmed = processInput.trim();
+        if (!trimmed) { return ""; }
+        if (path.isAbsolute(trimmed)) { return trimmed; }
+        if (analyticalCwd) { return path.join(analyticalCwd, trimmed); }
+        if (outputPath) { return path.join(path.dirname(outputPath), trimmed); }
+        return path.resolve(trimmed);
+      }
+
       async function loadAndSend2D(
         blockPath: string,
         outputPath: string,
@@ -109,15 +122,18 @@ export function activate(context: vscode.ExtensionContext): void {
             let defaultNets       = "";
             let defaultOut        = "";
             let defaultConstraint = "";
+            let defaultProcess    = "";
             if (root) {
               const guessBlock = path.join(root, "PA2_3DIC", "input_pa2", "n100.block");
               const guessNets  = path.join(root, "PA2_3DIC", "input_pa2", "n100.nets");
               const guessOut   = path.join(root, "PA2_3DIC", "analytical", "output", "n100_output.txt");
               const guessCst   = path.join(root, "PA2_3DIC", "input_pa2", "n100.constraint");
+              const guessProc  = guessOut + "_analytical_iter.txt";
               if (fs.existsSync(guessBlock)) { defaultBlock      = guessBlock; }
               if (fs.existsSync(guessNets))  { defaultNets       = guessNets;  }
               if (fs.existsSync(guessOut))   { defaultOut        = guessOut;   }
               if (fs.existsSync(guessCst))   { defaultConstraint = guessCst;   }
+              if (fs.existsSync(guessProc))  { defaultProcess    = guessProc;  }
             }
             constraintFilePath = defaultConstraint;
             panel.webview.postMessage({
@@ -126,6 +142,7 @@ export function activate(context: vscode.ExtensionContext): void {
               nets:       defaultNets,
               output:     defaultOut,
               constraint: defaultConstraint,
+              process:    defaultProcess,
             });
 
             const presets: {
@@ -134,6 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
               nets: string;
               output: string;
               constraint: string;
+              process: string;
             }[] = [];
             if (root) {
               for (const id of ["n100", "n200", "n300"]) {
@@ -141,6 +159,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 const np  = path.join(root, "PA2_3DIC", "input_pa2", `${id}.nets`);
                 const op  = path.join(root, "PA2_3DIC", "analytical", "output", `${id}_output.txt`);
                 const cp  = path.join(root, "PA2_3DIC", "input_pa2", `${id}.constraint`);
+                const pp  = op + "_analytical_iter.txt";
                 if (fs.existsSync(bp) && fs.existsSync(np)) {
                   presets.push({
                     label: `${id} (default paths)`,
@@ -148,6 +167,7 @@ export function activate(context: vscode.ExtensionContext): void {
                     nets:  np,
                     output: op,
                     constraint: fs.existsSync(cp) ? cp : "",
+                    process: fs.existsSync(pp) ? pp : "",
                   });
                 }
               }
@@ -208,6 +228,63 @@ export function activate(context: vscode.ExtensionContext): void {
             if (p) {
               constraintFilePath = p;
               loadAndSendConstraint(constraintFilePath);
+            }
+            return;
+          }
+
+          // --- pickProcess ---
+          if (msg.type === "pickProcess") {
+            const uris = await vscode.window.showOpenDialog({
+              canSelectMany: false,
+              defaultUri: defaultOpenDirUri(
+                msg.processPath,
+                msg.outputPath,
+                msg.blockPath
+              ),
+              filters: { Text: ["txt"], "All files": ["*"] },
+            });
+            if (uris?.[0]) {
+              panel.webview.postMessage({ type: "setPaths", process: uris[0].fsPath });
+            }
+            return;
+          }
+
+          // --- loadProcess（讀取 analytical iter trace）---
+          if (msg.type === "loadProcess") {
+            const cfg  = vscode.workspace.getConfiguration();
+            const adir = resolveAnalyticalDir(cfg, context.extensionPath);
+            const outRaw: string = msg.outputPath || "";
+            let outputAbs = "";
+            if (outRaw && adir) {
+              outputAbs = resolveOutputPath(adir, outRaw);
+            } else if (outRaw && path.isAbsolute(outRaw)) {
+              outputAbs = outRaw;
+            }
+            const processRaw: string = msg.processPath || "";
+            const processAbs = resolveProcessPath(adir, processRaw, outputAbs);
+            if (!processAbs) {
+              vscode.window.showWarningMessage("請指定 analytical process 檔路徑");
+              return;
+            }
+            if (!fs.existsSync(processAbs)) {
+              vscode.window.showErrorMessage("找不到 process 檔：" + processAbs);
+              return;
+            }
+            try {
+              const text = fs.readFileSync(processAbs, "utf8");
+              const frames = parseAnalyticalIterFile(text);
+              if (frames.length === 0) {
+                vscode.window.showWarningMessage("Process 檔內沒有有效的 [Iter N] frame");
+                return;
+              }
+              panel.webview.postMessage({ type: "processData", frames });
+              appendLog(
+                `[OK] Process loaded: ${frames.length} frames from ${processAbs}`
+              );
+            } catch (e) {
+              const err = e instanceof Error ? e.message : String(e);
+              appendLog(`Process load failed: ${err}`);
+              vscode.window.showErrorMessage(err);
             }
             return;
           }

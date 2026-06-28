@@ -1,7 +1,19 @@
 import * as fs from "fs";
 
+export const BOUNDARY_SIDE_LABELS = [
+  "",
+  "LEFT",
+  "RIGHT",
+  "TOP",
+  "BOTTOM",
+  "TOP-LEFT",
+  "TOP-RIGHT",
+  "BOTTOM-LEFT",
+  "BOTTOM-RIGHT",
+] as const;
+
 export interface ConstraintEntry {
-  type: "FIXED" | "REPULSE";
+  type: "FIXED" | "REPULSE" | "BOUNDARY";
   // FIXED
   name?: string;
   llx?: number;
@@ -9,8 +21,10 @@ export interface ConstraintEntry {
   urx?: number;
   ury?: number;
   // REPULSE
-  strength?: number;
+  minDist?: number;
   names?: string[];
+  // BOUNDARY
+  side?: number;
 }
 
 export function parseConstraintFile(cPath: string): ConstraintEntry[] {
@@ -20,8 +34,9 @@ export function parseConstraintFile(cPath: string): ConstraintEntry[] {
   const text = fs.readFileSync(cPath, "utf8");
   const result: ConstraintEntry[] = [];
   for (const l of text.split(/\r?\n/)) {
-    if (!l.trim()) { continue; }
-    const parts = l.trim().split(/\s+/);
+    const trimmed = l.trim();
+    if (!trimmed || trimmed.startsWith("#")) { continue; }
+    const parts = trimmed.split(/\s+/);
     if (parts[0] === "FIXED") {
       result.push({
         type: "FIXED",
@@ -34,8 +49,14 @@ export function parseConstraintFile(cPath: string): ConstraintEntry[] {
     } else if (parts[0] === "REPULSE") {
       result.push({
         type: "REPULSE",
-        strength: +parts[1],
+        minDist: +parts[1],
         names: parts.slice(2),
+      });
+    } else if (parts[0] === "BOUNDARY") {
+      result.push({
+        type: "BOUNDARY",
+        name: parts[1],
+        side: +parts[2],
       });
     }
   }

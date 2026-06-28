@@ -55,6 +55,51 @@ export interface NetDef {
   pins: string[];
 }
 
+export interface AnalyticalIterModule {
+  name: string;
+  xll: number;
+  yll: number;
+  xur: number;
+  yur: number;
+}
+
+export interface AnalyticalIterFrame {
+  iterNum: number;
+  modules: AnalyticalIterModule[];
+}
+
+/** 解析 analytical_iter trace：每個 [Iter N] 區塊內為 name llx lly urx ury */
+export function parseAnalyticalIterFile(text: string): AnalyticalIterFrame[] {
+  const frames: AnalyticalIterFrame[] = [];
+  let cur: AnalyticalIterFrame | null = null;
+
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) { continue; }
+
+    const im = line.match(/^\[Iter\s+(\d+)\]/i);
+    if (im) {
+      if (cur) { frames.push(cur); }
+      cur = { iterNum: parseInt(im[1], 10), modules: [] };
+      continue;
+    }
+
+    if (!cur) { continue; }
+    const parts = line.split(/\s+/);
+    if (parts.length < 5) { continue; }
+    cur.modules.push({
+      name: parts[0],
+      xll: parseFloat(parts[1]),
+      yll: parseFloat(parts[2]),
+      xur: parseFloat(parts[3]),
+      yur: parseFloat(parts[4]),
+    });
+  }
+
+  if (cur) { frames.push(cur); }
+  return frames;
+}
+
 export function parseNetsFile(text: string): NetDef[] {
   const lines = text.split(/\r?\n/);
   const nets: NetDef[] = [];

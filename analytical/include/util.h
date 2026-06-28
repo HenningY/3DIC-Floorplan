@@ -10,6 +10,31 @@
 // 設為 true 開啟位移分析；false 則所有函式為 no-op
 static constexpr bool ENABLE_DISPLACEMENT_REPORT = true;
 
+// ============================================================
+// BOUNDARY constraint geometry helpers
+// side 整數對應 BoundaryConstraintSide：
+//   1=LEFT  2=RIGHT  3=TOP  4=BOTTOM
+//   5=TOP-LEFT  6=TOP-RIGHT  7=BOTTOM-LEFT  8=BOTTOM-RIGHT
+// ============================================================
+
+// 是否為角落（同時貼兩邊）
+bool boundary_is_corner(int side);
+
+// 是否允許 X 方向平移（TOP/BOTTOM；非角）
+bool boundary_allows_x_move(int side);
+
+// 是否允許 Y 方向平移（LEFT/RIGHT；非角）
+bool boundary_allows_y_move(int side);
+
+// 設定 module 初始位置至對應邊中點或角落
+void init_module_on_boundary(Module& m, const Die& die, int side);
+
+// 套用後精確貼齊約束邊，自由軸 clamp 至 die 內
+void snap_module_to_boundary(Module& m, const Die& die, int side);
+
+// 將凍結軸的 gradient 歸零（供 NAG 更新前呼叫）
+void apply_boundary_move_mask(int side, double& gx, double& gy);
+
 struct ModuleSnapshot {
     int         id;
     std::string name;
