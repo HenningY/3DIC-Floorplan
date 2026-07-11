@@ -14,7 +14,7 @@ int main(int argc, char* argv[])
     if (argc < 3) {
         std::cerr << "Usage: " << argv[0]
                   << " <block_file> <net_file> [output_file] [constraint_file]"
-                  << " [--leg_only] [--wl lse|wa]\n";
+                  << " [--leg_only] [--wl lse|wa] [--rc-max <value>]\n";
         return 1;
     }
 
@@ -22,11 +22,12 @@ int main(int argc, char* argv[])
     const std::string nets_file  = argv[2];
 
     // 從 argv[3] 開始：-- 開頭視為 flag，否則依序填充 output_file / constraint_file
-    bool            leg_only        = false;
-    WirelengthModel wl_model        = WirelengthModel::LSE;
-    std::string     output_file     = "output.txt";
-    std::string     constraint_file = "";
-    int             positional_idx  = 0;  // 0 = output, 1 = constraint
+    bool            leg_only               = false;
+    WirelengthModel wl_model               = WirelengthModel::LSE;
+    double          routing_congestion_max = 0.0;
+    std::string     output_file            = "output.txt";
+    std::string     constraint_file        = "";
+    int             positional_idx         = 0;  // 0 = output, 1 = constraint
 
     for (int i = 3; i < argc; ++i) {
         const std::string opt = argv[i];
@@ -41,6 +42,17 @@ int main(int argc, char* argv[])
             else {
                 std::cerr << "[Error] Unknown wirelength model '" << val
                           << "'. Use 'lse' or 'wa'.\n";
+                return 1;
+            }
+        } else if (opt == "--rc-max" && i + 1 < argc) {
+            try {
+                routing_congestion_max = std::stod(argv[++i]);
+                if (routing_congestion_max < 0.0) {
+                    std::cerr << "[Error] --rc-max must be >= 0\n";
+                    return 1;
+                }
+            } catch (...) {
+                std::cerr << "[Error] Invalid --rc-max value: " << argv[i] << "\n";
                 return 1;
             }
         } else if (opt.size() >= 2 && opt[0] == '-' && opt[1] == '-') {
@@ -58,6 +70,9 @@ int main(int argc, char* argv[])
     if (!leg_only)
         std::cout << "[Config] wirelength_model = "
                   << (wl_model == WirelengthModel::LSE ? "LSE" : "WA") << "\n";
+    if (routing_congestion_max > 0.0)
+        std::cout << "[Config] routing_congestion_max = "
+                  << routing_congestion_max << "\n";
 
     // ---- set hyperparameters ----
     PlacementConfig cfg;
@@ -65,14 +80,15 @@ int main(int argc, char* argv[])
     cfg.wirelength_model = wl_model;              // 線長平滑模型：LSE 或 WA（由 --wl 指定）
     cfg.gamma_lse       = 5.0;      // LSE 平滑參數 γ（越小越接近真實 HPWL）
     cfg.gamma_wa        = 10.0;     // WA 平滑參數 γ（ePlace；通常與 gamma_lse 獨立調整）
+    cfg.wl_normalize_by_net_degree = false;
     cfg.init_step_size  = 1.0;      // 初始步長 default 2.0, < 1.0 >
     cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, < 0.999 >
     cfg.momentum        = 0.9;      // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 64;       // Bin 格數（每層 16x16） n100: 64
+    cfg.bin_resolution  = 192;       // Bin 格數（每層 16x16） n100: 64
     cfg.convergence_tol = 1e-3;     // 收斂容忍度 default 1e-5
-    cfg.rotation_start_iter = 0;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
-    cfg.rotation_interval   = 0;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
+    cfg.rotation_start_iter = 1000;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
+    cfg.rotation_interval   = 500;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
     cfg.repulse_projection_alpha = 0.5;     // 每次修正 violation 量的比例（0~1）；0.5 為軟修正
     cfg.repulse_projection_passes = 5;      // 每 iter 做幾輪 Gauss-Seidel pass
 
@@ -84,8 +100,8 @@ int main(int argc, char* argv[])
     cfg.lambda_max_mult        = 300.0;     // λ 倍率上限, n100: 300.0
 
     // ---- dynamic smoothing radius σ ----
-    cfg.sigma_start_frac = 0.04;     // 初始 = 20% die 寬（=53.6 for 268） n100: 0.04
-    cfg.sigma_end_frac   = 0.04;    // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
+    cfg.sigma_start_frac = 0.013;     // 初始 = 20% die 寬（=53.6 for 268） n100: 0.04
+    cfg.sigma_end_frac   = 0.013;    // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
 
     // base value of density penalty coefficient for each tier (multiplied by lambda_mult)
     // 實際層數在 parse_blocks 後才能確定；這裡設定「模板值」，
@@ -106,7 +122,7 @@ int main(int argc, char* argv[])
     cfg.routing_congestion_refresh_interval = 10;
 
     // ---- per-tier adaptive congestion alpha ----
-    cfg.routing_congestion_max = 0.0; //(0 = 關閉)
+    cfg.routing_congestion_max = routing_congestion_max;
     cfg.routing_congestion_alpha_boost_rate = 1.15;
     cfg.routing_congestion_alpha_max_mult = 50;
     // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
@@ -118,7 +134,7 @@ int main(int argc, char* argv[])
     // phase 2 analytical tsv
     cfg.analytical_tsv_max_iterations = 1000;
     // 任一 tier module 面積使用率超過此值則跳過 Phase 2（走 solve_tsvs + reflow）；<=0 停用，一律 Phase 2
-    cfg.tier_area_util_phase2_max = 0.80;
+    cfg.tier_area_util_phase2_max = 0.8;
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -178,8 +194,8 @@ int main(int argc, char* argv[])
     // 必須在 constraint 之後：FIXED 座標需與 block 同一座標系一起縮放
     engine.maybe_normalize_geometry();
 
-    constexpr double base_tsv_w = 3;
-    constexpr double base_tsv_h = 3;
+    constexpr double base_tsv_w = 0.4;
+    constexpr double base_tsv_h = 0.4;
     const double gs = engine.geometry_scale();
 
     // ---- 面積可行性檢查（module + 估算 TSV）----
@@ -312,6 +328,8 @@ int main(int argc, char* argv[])
                                           pcfg.tsv_reflow_congestion_order,
                                           pcfg.tsv_reflow_bbox_edge_weight);
     }
+    // --------------------------------------
+    
     // engine.reflow_tsvs_after_legalize(pcfg.tsv_width, pcfg.tsv_height,
     //     pcfg.tsv_reflow_congestion_order,
     //     pcfg.tsv_reflow_bbox_edge_weight);
@@ -320,8 +338,10 @@ int main(int argc, char* argv[])
     // engine.partition_all_tiers(pcfg);
 
     // ---- 記錄 legalization 完成後的 module 位置，並輸出位移報告 ----
-    // const auto snap_legal = record_positions(engine);
-    // write_displacement_report(snap_analytical, snap_legal, output_file + "_displacement.txt");
+    const auto snap_legal = record_positions(engine);
+    const double inv_gs = (std::fabs(gs - 1.0) > 1e-12) ? (1.0 / gs) : 1.0;
+    write_displacement_report(snap_analytical, snap_legal,
+                              output_file + "_displacement.txt", inv_gs);
 
     // ---- 還原物理座標（必須在 Summary / HPWL / write_output / congestion 之前）----
     engine.restore_geometry();

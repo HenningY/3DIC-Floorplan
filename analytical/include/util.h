@@ -50,7 +50,8 @@ std::vector<ModuleSnapshot> record_positions(const PlacementEngine& engine);
 void write_displacement_report(
     const std::vector<ModuleSnapshot>& before,
     const std::vector<ModuleSnapshot>& after,
-    const std::string&                 filepath);
+    const std::string&                 filepath,
+    double                             inv_geometry_scale = 1.0);
 
 // ============================================================
 // Intra-die HPWL：只計算所有 pin 都在同一層的 net
@@ -173,11 +174,17 @@ void bin_edge_accumulate_pair(const Die& die,
                                std::vector<double>& H,
                                std::vector<double>& V);
 
-// 對所有無序 pair i<j 呼叫 bin_edge_accumulate_pair
+// 對所有無序 pair i<j 呼叫 bin_edge_accumulate_pair（已棄用，保留供參考）
 void bin_edge_accumulate_clique(const Die& die,
                                  const std::vector<std::pair<double,double>>& pts,
                                  std::vector<double>& H,
                                  std::vector<double>& V);
+
+// 依 x（tie-break y）排序後，相鄰點兩兩連線（x-sorted chain，n-1 條 2-pin）
+void bin_edge_accumulate_x_chain(const Die& die,
+                                  std::vector<std::pair<double,double>> pts,
+                                  std::vector<double>& H,
+                                  std::vector<double>& V);
 
 // 從 H/V 推算每個 cell 的四邊平均 cell_avg（長度 R*C，row-major）
 void bin_edge_cells_from_hv(const Die& die,

@@ -69,9 +69,16 @@ export function getHtml(
         </div>
       </div>
       <div class="field-row">
+        <label>Congestion (--rc-max)</label>
+        <div class="input-group">
+          <input type="number" id="rcMax" disabled placeholder="—" step="any" min="0" />
+          <button class="browse-btn secondary rc-max-toggle" id="toggleRcMax" title="Enable --rc-max">off</button>
+        </div>
+      </div>
+      <div class="field-row">
         <label>Process file (.txt)</label>
         <div class="input-group">
-          <input type="text" id="processPath" placeholder="output.txt_analytical_iter.txt" />
+          <input type="text" id="processPath" placeholder="output.txt_module_positions.txt" />
           <button class="browse-btn secondary" id="pickProcess">…</button>
         </div>
       </div>

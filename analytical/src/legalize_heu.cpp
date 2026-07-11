@@ -823,6 +823,231 @@ void refine_tier_wl_centroid(PlacementEngine&          engine,
               << " skipped_no_gap=" << n_no_gap << "\n";
 }
 
+// ── Sweep Counting Sort helpers ──────────────────────────────
+
+enum class SweepSortMode {
+    LxAsc, RxDesc, LyAsc, RyDesc, Dist2Asc
+};
+
+static SweepSortMode sweep_sort_mode_from_label(const std::string& label)
+{
+    if (label == "left->right")  return SweepSortMode::LxAsc;
+    if (label == "right->left")  return SweepSortMode::RxDesc;
+    if (label == "bottom->top")  return SweepSortMode::LyAsc;
+    if (label == "top->bottom")  return SweepSortMode::RyDesc;
+    return SweepSortMode::Dist2Asc;
+}
+
+static std::vector<int> build_sweep_order_counting(
+    const std::vector<Module>& modules,
+    int tier,
+    SweepSortMode mode,
+    double bbox_cx, double bbox_cy)
+{
+    std::vector<std::pair<long long, int>> keyed;
+    keyed.reserve(modules.size());
+
+    for (const Module& m : modules) {
+        if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
+        long long key;
+        switch (mode) {
+        case SweepSortMode::LxAsc:   key = static_cast<long long>(std::llround(m.lx())); break;
+        case SweepSortMode::RxDesc:  key = static_cast<long long>(std::llround(m.rx())); break;
+        case SweepSortMode::LyAsc:   key = static_cast<long long>(std::llround(m.ly())); break;
+        case SweepSortMode::RyDesc:  key = static_cast<long long>(std::llround(m.ry())); break;
+        default: {
+            const double dx = m.x - bbox_cx, dy = m.y - bbox_cy;
+            key = static_cast<long long>(std::llround(dx * dx + dy * dy));
+            break;
+        }
+        }
+        keyed.push_back({key, m.id});
+    }
+
+    if (keyed.empty()) return {};
+
+    long long min_key = keyed[0].first, max_key = keyed[0].first;
+    for (const auto& [k, id] : keyed) {
+        if (k < min_key) min_key = k;
+        if (k > max_key) max_key = k;
+    }
+
+    const size_t K = static_cast<size_t>(max_key - min_key) + 1;
+    std::vector<std::vector<int>> buckets(K);
+    for (const auto& [k, id] : keyed)
+        buckets[static_cast<size_t>(k - min_key)].push_back(id);
+
+    for (auto& b : buckets)
+        if (b.size() > 1) std::sort(b.begin(), b.end());
+
+    std::vector<int> order;
+    order.reserve(keyed.size());
+
+    const bool ascending = (mode == SweepSortMode::LxAsc
+                         || mode == SweepSortMode::LyAsc
+                         || mode == SweepSortMode::Dist2Asc);
+    if (ascending) {
+        for (auto& b : buckets)
+            for (int id : b) order.push_back(id);
+    } else {
+        for (auto it = buckets.rbegin(); it != buckets.rend(); ++it)
+            for (int id : *it) order.push_back(id);
+    }
+
+    return order;
+}
+
+// ── Container Escape helpers ─────────────────────────────────
+
+static bool is_contained_in(const Module& inner, const Module& outer)
+{
+    if (inner.id == outer.id) return false;
+    if (inner.area() >= outer.area() - kEps) return false;
+    return inner.lx() >= outer.lx() - kEps
+        && inner.rx() <= outer.rx() + kEps
+        && inner.ly() >= outer.ly() - kEps
+        && inner.ry() <= outer.ry() + kEps;
+}
+
+static bool is_overlap_flat_in_move_box(const ModuleSpatialGrid&   grid,
+                                         const std::vector<Module>& modules,
+                                         const Module&              target,
+                                         const Die&                 die,
+                                         const LocalMoveConfig&     cfg)
+{
+    const double ov0 = total_weighted_overlap(grid, modules, target);
+    if (ov0 <= kEps) return false;
+
+    const double max_dx = std::min(cfg.max_move_dist, die.width  - target.rx());
+    const double min_dx = std::max(-cfg.max_move_dist, -target.lx());
+    const double max_dy = std::min(cfg.max_move_dist, die.height - target.ry());
+    const double min_dy = std::max(-cfg.max_move_dist, -target.ly());
+
+    const double tol = kEps * std::max(1.0, ov0);
+
+    auto ov_at = [&](double dx, double dy) {
+        Module t = target;
+        t.x += dx;
+        t.y += dy;
+        return total_weighted_overlap(grid, modules, t);
+    };
+
+    const double probes[] = {
+        ov_at(min_dx, 0.0), ov_at(max_dx, 0.0),
+        ov_at(0.0, min_dy), ov_at(0.0, max_dy),
+        ov_at(min_dx, min_dy), ov_at(max_dx, max_dy),
+        ov_at(min_dx, max_dy), ov_at(max_dx, min_dy),
+    };
+
+    for (double ov : probes)
+        if (std::fabs(ov - ov0) > tol)
+            return false;
+    return true;
+}
+
+static int find_container_module(const ModuleSpatialGrid&   grid,
+                                  const std::vector<Module>& modules,
+                                  const Module&              target)
+{
+    int    best_idx    = -1;
+    double best_margin = std::numeric_limits<double>::infinity();
+
+    grid.for_each_candidate(
+        target.lx(), target.ly(), target.rx(), target.ry(),
+        [&](int mi) {
+            const Module& m = modules[static_cast<size_t>(mi)];
+            if (!is_contained_in(target, m)) return;
+            const double ml = target.lx() - m.lx();
+            const double mr = m.rx()      - target.rx();
+            const double mb = target.ly() - m.ly();
+            const double mt = m.ry()      - target.ry();
+            const double min_m = std::min({ ml, mr, mb, mt });
+            if (min_m < best_margin) {
+                best_margin = min_m;
+                best_idx    = mi;
+            }
+        });
+
+    return best_idx;
+}
+
+static void escape_along_nearest_edge(Module&       tm,
+                                       const Module& container,
+                                       const Die&    die,
+                                       std::ostream* move_log,
+                                       double        log_phys_scale)
+{
+    const double ml = tm.lx() - container.lx();
+    const double mr = container.rx() - tm.rx();
+    const double mb = tm.ly() - container.ly();
+    const double mt = container.ry() - tm.ry();
+
+    const double min_m = std::min({ ml, mr, mb, mt });
+
+    constexpr double kGap = 1e-6;
+    double dx = 0.0, dy = 0.0;
+    const char* dir = "?";
+
+    if (std::fabs(ml - min_m) <= kEps) {
+        dx  = container.lx() - kGap - tm.rx();
+        dir = "left";
+    } else if (std::fabs(mr - min_m) <= kEps) {
+        dx  = container.rx() + kGap - tm.lx();
+        dir = "right";
+    } else if (std::fabs(mb - min_m) <= kEps) {
+        dy  = container.ly() - kGap - tm.ry();
+        dir = "bottom";
+    } else {
+        dy  = container.ry() + kGap - tm.ly();
+        dir = "top";
+    }
+
+    tm.x += dx;
+    tm.y += dy;
+
+    const double hw = tm.width  * 0.5;
+    const double hh = tm.height * 0.5;
+    tm.x = std::clamp(tm.x, hw,            die.width  - hw);
+    tm.y = std::clamp(tm.y, hh,            die.height - hh);
+
+    if (move_log)
+        *move_log << "    [contain_escape] module_id=" << tm.id
+                  << " dir=" << dir
+                  << " dx=" << to_physical_len(dx, log_phys_scale)
+                  << " dy=" << to_physical_len(dy, log_phys_scale)
+                  << "\n";
+}
+
+static void try_container_escape(ModuleSpatialGrid&      grid,
+                                  std::vector<Module>&    modules,
+                                  int                     target_idx,
+                                  const std::vector<Die>& dies,
+                                  const LocalMoveConfig&  cfg,
+                                  std::ostream*           move_log,
+                                  double                  log_phys_scale)
+{
+    if (!cfg.enable_container_escape) return;
+
+    Module& tm = modules[static_cast<size_t>(target_idx)];
+    const int tier = tm.tier_id;
+    if (tier < 0 || tier >= static_cast<int>(dies.size())) return;
+
+    const Die& die = dies[static_cast<size_t>(tier)];
+
+    if (!is_overlap_flat_in_move_box(grid, modules, tm, die, cfg)) return;
+
+    const int container_idx = find_container_module(grid, modules, tm);
+    if (container_idx < 0) return;
+
+    const Module& container = modules[static_cast<size_t>(container_idx)];
+    escape_along_nearest_edge(tm, container, die, move_log, log_phys_scale);
+
+    if (tm.boundary_side != 0)
+        snap_module_to_boundary(tm, die, tm.boundary_side);
+
+    grid.update(target_idx, modules);
+}
+
 // ── grid-aware optimize（匿名 namespace，供 sweep 直接呼叫）──────
 
 LocalMoveResult optimize_module_local_move_impl(
@@ -962,6 +1187,8 @@ LocalMoveResult optimize_module_local_move_impl(
         if (tier_snap >= 0 && tier_snap < static_cast<int>(dies.size()))
             snap_module_to_boundary(tm, dies[static_cast<size_t>(tier_snap)], tm.boundary_side);
     }
+
+    try_container_escape(grid, modules, target_idx, dies, cfg, move_log, log_phys_scale);
 
     grid.update(target_idx, modules);
 
@@ -1130,16 +1357,16 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     static constexpr double kSideBiasWeight = 0.0;
 
     LocalMoveConfig lcfg;
-    lcfg.max_search_dist   = 30.0;
-    lcfg.max_move_dist     = 30.0;
+    lcfg.max_search_dist   = 50.0;
+    lcfg.max_move_dist     = 50.0;
     lcfg.disp_weight       = 3.0;
     lcfg.overlap_weight    = 1.0;
     lcfg.moved_weight_mul  = 3;
     lcfg.max_module_weight = 1e6;
     // soft module 等面積 shape curve
     lcfg.soft_aspect_curve_steps = 15;
-    lcfg.soft_aspect_min         = 0.25;
-    lcfg.soft_aspect_max         = 4.0;
+    lcfg.soft_aspect_min         = 0.33;
+    lcfg.soft_aspect_max         = 3.0;
     // side_bias_* 預設關閉；由 sweep lambda 依 label 填入
 
     auto& modules = engine.modules_mutable();
@@ -1167,11 +1394,10 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     // init_weight    : sweep 開始前將該層所有 movable module 的 move_weight 重設為此值
     // moved_weight_mul : 每個 module 移動後 move_weight 乘上的倍率（覆寫 lcfg）
     auto sweep = [&](int tier, const std::string& label,
-                     std::function<double(const Module&)> key_fn,
-                     bool ascending,
                      double init_weight,
                      double moved_weight_mul,
-                     ModuleSpatialGrid& grid)
+                     ModuleSpatialGrid& grid,
+                     double bbox_cx, double bbox_cy)
     {
         for (Module& m : modules) {
             if (m.is_terminal || m.tier_id != tier) continue;
@@ -1182,15 +1408,10 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                 m.move_weight = init_weight;
         }
 
-        std::vector<std::pair<double, int>> key_id;
-        for (const Module& m : modules) {
-            if (m.is_terminal || m.tier_id != tier || m.is_fixed) continue;
-            key_id.push_back({ key_fn(m), m.id });
-        }
-        if (ascending)
-            std::sort(key_id.begin(), key_id.end());
-        else
-            std::sort(key_id.begin(), key_id.end(), std::greater<>());
+        const auto order = build_sweep_order_counting(
+            modules, tier,
+            sweep_sort_mode_from_label(label),
+            bbox_cx, bbox_cy);
 
         LocalMoveConfig sweep_cfg = lcfg;
         sweep_cfg.moved_weight_mul = moved_weight_mul;
@@ -1201,7 +1422,7 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
                   << " mul=" << moved_weight_mul
                   << " side_bias=" << sweep_cfg.side_bias_weight * sweep_cfg.side_bias_sign
                   << "(axis=" << sweep_cfg.side_bias_axis << ")\n";
-        for (const auto& [key, mid] : key_id)
+        for (int mid : order)
             optimize_module_local_move_impl(modules, dies, mid, sweep_cfg, grid, &log_file, inv_gs);
 
         if (vis_fw) vis_fw->capture(modules, dies, tier, label);
@@ -1267,46 +1488,26 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
             ModuleSpatialGrid grid;
             grid.build(t, modules, dies[static_cast<size_t>(t)], lcfg.max_search_dist);
 
-            sweep(t, "near->far",
-                  [cx, cy](const Module& m) {
-                      const double dx = m.x - cx, dy = m.y - cy;
-                      return dx * dx + dy * dy;
-                  }, /*ascending=*/true, iw, mw1, grid);
+            sweep(t, "near->far",    iw,       mw1, grid, cx, cy);
 
             if (!use_alt) {
-                sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 3,  mw1, grid);
-                sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 3,  mw1, grid);
-                sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 9,  mw2, grid);
-                sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 9,  mw2, grid);
-                sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 27, mw3, grid);
-                sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 27, mw3, grid);
-                sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 81, mw3, grid);
-                sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 81, mw3, grid);
+                sweep(t, "left->right",  iw * 3,  mw1, grid, cx, cy);
+                sweep(t, "right->left",  iw * 3,  mw1, grid, cx, cy);
+                sweep(t, "bottom->top",  iw * 9,  mw2, grid, cx, cy);
+                sweep(t, "top->bottom",  iw * 9,  mw2, grid, cx, cy);
+                sweep(t, "left->right",  iw * 27, mw3, grid, cx, cy);
+                sweep(t, "right->left",  iw * 27, mw3, grid, cx, cy);
+                sweep(t, "bottom->top",  iw * 81, mw3, grid, cx, cy);
+                sweep(t, "top->bottom",  iw * 81, mw3, grid, cx, cy);
             } else {
-                sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 3,  mw1, grid);
-                sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 3,  mw1, grid);
-                sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 9,  mw2, grid);
-                sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 9,  mw2, grid);
-                sweep(t, "bottom->top",
-                      [](const Module& m) { return m.ly(); }, true,  iw * 27, mw3, grid);
-                sweep(t, "top->bottom",
-                      [](const Module& m) { return m.ry(); }, false, iw * 27, mw3, grid);
-                sweep(t, "left->right",
-                      [](const Module& m) { return m.lx(); }, true,  iw * 81, mw3, grid);
-                sweep(t, "right->left",
-                      [](const Module& m) { return m.rx(); }, false, iw * 81, mw3, grid);
+                sweep(t, "bottom->top",  iw * 3,  mw1, grid, cx, cy);
+                sweep(t, "top->bottom",  iw * 3,  mw1, grid, cx, cy);
+                sweep(t, "left->right",  iw * 9,  mw2, grid, cx, cy);
+                sweep(t, "right->left",  iw * 9,  mw2, grid, cx, cy);
+                sweep(t, "bottom->top",  iw * 27, mw3, grid, cx, cy);
+                sweep(t, "top->bottom",  iw * 27, mw3, grid, cx, cy);
+                sweep(t, "left->right",  iw * 81, mw3, grid, cx, cy);
+                sweep(t, "right->left",  iw * 81, mw3, grid, cx, cy);
             }
         };
 

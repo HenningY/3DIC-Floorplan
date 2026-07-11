@@ -39,10 +39,14 @@ std::vector<ModuleSnapshot> record_positions(const PlacementEngine& engine)
 void write_displacement_report(
     const std::vector<ModuleSnapshot>& before,
     const std::vector<ModuleSnapshot>& after,
-    const std::string&                 filepath)
+    const std::string&                 filepath,
+    double                             inv_geometry_scale)
 {
     if constexpr (!ENABLE_DISPLACEMENT_REPORT) return;
     if (before.empty() || after.empty()) return;
+
+    const double s  = inv_geometry_scale;
+    const double s2 = s * s;
 
     struct Entry { std::string name; double disp; double ax, ay, bx, by; double area; int num_nets; };
     std::vector<Entry> entries;
@@ -53,8 +57,11 @@ void write_displacement_report(
             if (a.id != b.id) continue;
             const double dx   = a.x - b.x;
             const double dy   = a.y - b.y;
-            const double dist = std::sqrt(dx * dx + dy * dy);
-            entries.push_back({ b.name, dist, a.x, a.y, b.x, b.y, b.area, b.num_nets });
+            const double dist = std::sqrt(dx * dx + dy * dy) * s;
+            entries.push_back({
+                b.name, dist,
+                a.x * s, a.y * s, b.x * s, b.y * s,
+                b.area * s2, b.num_nets });
             break;
         }
     }
@@ -107,8 +114,14 @@ void write_displacement_report(
         "# [Sort by displacement * num_nets]\n" + col_header,
         [](const Entry& a, const Entry& b){ return (a.disp * a.num_nets) > (b.disp * b.num_nets); });
 
+    double disp_sum = 0.0;
+    for (const auto& e : entries)
+        disp_sum += e.disp;
+    const double avg_disp = entries.empty() ? 0.0 : disp_sum / static_cast<double>(entries.size());
+    ofs << "\n# average_displacement: " << avg_disp << "\n";
+
     std::cout << "[Displacement] Report -> " << filepath
-              << "  (" << entries.size() << " modules)\n";
+              << "  (" << entries.size() << " modules, avg=" << avg_disp << ")\n";
 }
 
 // ============================================================
@@ -341,6 +354,40 @@ void bin_edge_accumulate_clique(const Die& die,
                                      H, V);
 }
 
+void bin_edge_accumulate_x_chain(const Die& die,
+                                  std::vector<std::pair<double,double>> pts,
+                                  std::vector<double>& H,
+                                  std::vector<double>& V)
+{
+    if (pts.size() < 2) return;
+    std::sort(pts.begin(), pts.end());
+    for (size_t i = 0; i + 1 < pts.size(); ++i)
+        bin_edge_accumulate_pair(die,
+                                 pts[i].first,     pts[i].second,
+                                 pts[i+1].first,   pts[i+1].second,
+                                 H, V);
+}
+
+static void collect_net_tier_points(
+    const Net& net, int tier,
+    const std::vector<Module>& modules,
+    const std::vector<TSV>* tsvs_or_null,
+    std::vector<std::pair<double,double>>& out)
+{
+    for (int pid : net.pins) {
+        const Module& m = modules[static_cast<size_t>(pid)];
+        const int mt = m.is_terminal ? 0 : m.tier_id;
+        if (mt == tier) out.push_back({m.x, m.y});
+    }
+    if (tsvs_or_null) {
+        for (const TSV& tsv : *tsvs_or_null) {
+            if (tsv.net_id != net.id) continue;
+            if (tsv.tier_below() == tier) out.push_back({tsv.x, tsv.y});
+            else if (tsv.tier_above() == tier) out.push_back({tsv.x, tsv.y});
+        }
+    }
+}
+
 void bin_edge_cells_from_hv(const Die& die,
                               const std::vector<double>& H,
                               const std::vector<double>& V,
@@ -375,13 +422,9 @@ BinEdgeDemands build_bin_edge_baseline_modules_only(const PlacementEngine& engin
         for (const Net& net : nets) {
             if (net.pins.size() < 2) continue;
             std::vector<std::pair<double,double>> pts;
-            for (int pid : net.pins) {
-                const Module& m   = modules[pid];
-                const int     mt  = m.is_terminal ? 0 : m.tier_id;
-                if (mt == t) pts.push_back({ m.x, m.y });
-            }
+            collect_net_tier_points(net, t, modules, nullptr, pts);
             if (pts.size() >= 2)
-                bin_edge_accumulate_clique(die, pts, dem.H[t], dem.V[t]);
+                bin_edge_accumulate_x_chain(die, std::move(pts), dem.H[t], dem.V[t]);
         }
     }
     return dem;
@@ -505,67 +548,29 @@ BinEdgeCongestionStats bin_edge_stats_from_demands(const BinEdgeDemands& dem,
 }
 
 // ============================================================
-// build_bin_edge_demands_with_tsv：baseline + TSV overlay，回傳 BinEdgeDemands
+// build_bin_edge_demands_with_tsv：module pin + TSV 合併後做 x-chain
+// 從零建 map，不先呼叫 baseline，避免 module-module 段被重複累加。
 // ============================================================
 BinEdgeDemands build_bin_edge_demands_with_tsv(const PlacementEngine& engine)
 {
-    const auto& tsvs          = engine.tsvs();
-    const auto& dies          = engine.dies();
-    const int   nd            = engine.num_dies();
-    const auto& net_to_tsvs   = engine.net_to_tsvs();
+    const auto& nets    = engine.nets();
+    const auto& modules = engine.modules();
+    const auto& tsvs    = engine.tsvs();
+    const auto& dies    = engine.dies();
+    const int   nd      = engine.num_dies();
 
-    BinEdgeDemands dem = build_bin_edge_baseline_modules_only(engine);
+    BinEdgeDemands dem;
+    bin_edge_clear(dem, dies);
 
-    if (!tsvs.empty()) {
-        const auto& nets    = engine.nets();
-        const auto& modules = engine.modules();
-
-        for (int ni = 0; ni < static_cast<int>(nets.size()); ++ni) {
-            const Net& net = nets[static_cast<size_t>(ni)];
+    for (int t = 0; t < nd; ++t) {
+        const Die& die = dies[static_cast<size_t>(t)];
+        for (const Net& net : nets) {
             if (net.pins.size() < 2) continue;
-
-            // 用索引取出此 net 的 TSV；若索引未建立則回退全掃
-            const std::vector<int>* tsv_idx_ptr = nullptr;
-            std::vector<int> fallback;
-            if (!net_to_tsvs.empty()) {
-                tsv_idx_ptr = &net_to_tsvs[static_cast<size_t>(ni)];
-            } else {
-                for (int k = 0; k < static_cast<int>(tsvs.size()); ++k)
-                    if (tsvs[static_cast<size_t>(k)].net_id == net.id)
-                        fallback.push_back(k);
-                tsv_idx_ptr = &fallback;
-            }
-            if (tsv_idx_ptr->empty()) continue;
-
-            // 確定 tier 範圍（只掃 cross-tier net 的相關層）
-            const int t_lo = net.is_cross_tier ? net.min_tier : 0;
-            const int t_hi = net.is_cross_tier ? net.max_tier : (nd - 1);
-
-            for (int t = t_lo; t <= t_hi; ++t) {
-                const Die& die = dies[static_cast<size_t>(t)];
-                std::vector<std::pair<double,double>> tsv_pts;
-                for (int ti : *tsv_idx_ptr) {
-                    const TSV& tsv = tsvs[static_cast<size_t>(ti)];
-                    if (tsv.tier_below() == t) tsv_pts.push_back({ tsv.x, tsv.y });
-                    if (tsv.tier_above() == t) tsv_pts.push_back({ tsv.x, tsv.y });
-                }
-                if (tsv_pts.empty()) continue;
-
-                std::vector<std::pair<double,double>> mod_pts;
-                for (int pid : net.pins) {
-                    const Module& m = modules[static_cast<size_t>(pid)];
-                    const int mt = m.is_terminal ? 0 : m.tier_id;
-                    if (mt == t) mod_pts.push_back({ m.x, m.y });
-                }
-
-                bin_edge_accumulate_clique(die, tsv_pts,
+            std::vector<std::pair<double,double>> pts;
+            collect_net_tier_points(net, t, modules, &tsvs, pts);
+            if (pts.size() >= 2)
+                bin_edge_accumulate_x_chain(die, std::move(pts),
                     dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
-                for (const auto& tp : tsv_pts)
-                    for (const auto& mp : mod_pts)
-                        bin_edge_accumulate_pair(die, tp.first, tp.second,
-                            mp.first, mp.second,
-                            dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
-            }
         }
     }
 
@@ -573,56 +578,14 @@ BinEdgeDemands build_bin_edge_demands_with_tsv(const PlacementEngine& engine)
 }
 
 // ============================================================
-// compute_bin_edge_congestion：複用 baseline + TSV overlay
+// compute_bin_edge_congestion：委派 x-chain 路徑
 // ============================================================
 BinEdgeCongestionStats compute_bin_edge_congestion(const PlacementEngine& engine)
 {
-    const auto& tsvs = engine.tsvs();
     const auto& dies = engine.dies();
-    const int   nd   = engine.num_dies();
-
-    // baseline：只有 module/terminal pin
-    BinEdgeDemands dem = build_bin_edge_baseline_modules_only(engine);
-
-    // TSV overlay（若已 build_tsvs）
-    if (!tsvs.empty()) {
-        const auto& nets = engine.nets();
-        for (int t = 0; t < nd; ++t) {
-            const Die& die = dies[static_cast<size_t>(t)];
-            for (const Net& net : nets) {
-                if (net.pins.size() < 2) continue;
-                std::vector<std::pair<double,double>> tsv_pts;
-                for (const TSV& tsv : tsvs) {
-                    if (tsv.net_id != net.id) continue;
-                    if (tsv.tier_below() == t) tsv_pts.push_back({ tsv.x, tsv.y });
-                    if (tsv.tier_above() == t) tsv_pts.push_back({ tsv.x, tsv.y });
-                }
-                // 只對 tsv_pts 和該 net 在 tier t 的 module pin 的交叉 pair 累加
-                // （若無 TSV 端點，不需處理）
-                if (tsv_pts.empty()) continue;
-
-                // 收集該 net 在 tier t 的 module pin
-                const auto& modules = engine.modules();
-                std::vector<std::pair<double,double>> mod_pts;
-                for (int pid : net.pins) {
-                    const Module& m = modules[pid];
-                    const int mt = m.is_terminal ? 0 : m.tier_id;
-                    if (mt == t) mod_pts.push_back({ m.x, m.y });
-                }
-
-                // TSV-TSV pair
-                bin_edge_accumulate_clique(die, tsv_pts,
-                    dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
-                // TSV-module cross pair
-                for (const auto& tp : tsv_pts)
-                    for (const auto& mp : mod_pts)
-                        bin_edge_accumulate_pair(die, tp.first, tp.second,
-                            mp.first, mp.second,
-                            dem.H[static_cast<size_t>(t)], dem.V[static_cast<size_t>(t)]);
-            }
-        }
-    }
-
+    BinEdgeDemands dem = engine.tsvs().empty()
+        ? build_bin_edge_baseline_modules_only(engine)
+        : build_bin_edge_demands_with_tsv(engine);
     return bin_edge_stats_from_demands(dem, dies);
 }
 
@@ -935,22 +898,19 @@ void apply_boundary_move_mask(int side, double& gx, double& gy)
 namespace {
 
 // 將 die+module 渲染成 RGB 像素緩衝（y 翻轉：影像頂 = die y_max）
-// 背景淺灰、die 黑框 2px、所有 module 米色填充 + 1px 黑框
+// 配色對齊 floorplan-viewer-extension color_mode='alt'
 std::vector<uint8_t> render_legalize_frame_rgb(
     const std::vector<Module>& modules,
     const std::vector<Die>&    dies,
     int tier, int pix_w, int pix_h)
 {
-    // 背景：白色
     constexpr uint8_t BG_R = 255, BG_G = 255, BG_B = 255;
-    // 邊框：黑
     constexpr uint8_t BDR_R = 0, BDR_G = 0, BDR_B = 0;
-    // module 填充：淺藍色
-    constexpr uint8_t MOD_R = 200, MOD_G = 222, MOD_B = 246;
+    constexpr uint8_t MOD_R = 202, MOD_G = 208, MOD_B = 224;
+    constexpr double  MOD_ALPHA = 0.72;
 
     const size_t total = static_cast<size_t>(pix_w * pix_h) * 3u;
     std::vector<uint8_t> img(total);
-    // 填背景
     for (size_t i = 0; i < total; i += 3) {
         img[i]     = BG_R;
         img[i + 1] = BG_G;
@@ -962,6 +922,16 @@ std::vector<uint8_t> render_legalize_frame_rgb(
         const size_t o = (static_cast<size_t>(py) * static_cast<size_t>(pix_w)
                          + static_cast<size_t>(px)) * 3u;
         img[o] = r; img[o+1] = g; img[o+2] = b;
+    };
+
+    auto blend_px = [&](int px, int py, uint8_t r, uint8_t g, uint8_t b, double alpha) {
+        if (px < 0 || px >= pix_w || py < 0 || py >= pix_h) return;
+        const size_t o = (static_cast<size_t>(py) * static_cast<size_t>(pix_w)
+                         + static_cast<size_t>(px)) * 3u;
+        const double inv = 1.0 - alpha;
+        img[o]     = static_cast<uint8_t>(std::lround(img[o]     * inv + r * alpha));
+        img[o + 1] = static_cast<uint8_t>(std::lround(img[o + 1] * inv + g * alpha));
+        img[o + 2] = static_cast<uint8_t>(std::lround(img[o + 2] * inv + b * alpha));
     };
 
     // 找 die
@@ -1006,7 +976,7 @@ std::vector<uint8_t> render_legalize_frame_rgb(
         // 填充
         for (int py = py0; py <= py1; ++py)
             for (int px = px0; px <= px1; ++px)
-                set_px(px, py, MOD_R, MOD_G, MOD_B);
+                blend_px(px, py, MOD_R, MOD_G, MOD_B, MOD_ALPHA);
 
         // 外框 1px
         for (int px = px0; px <= px1; ++px) {

@@ -111,6 +111,7 @@ struct PlacementConfig {
     WirelengthModel wirelength_model = WirelengthModel::LSE; // 線長平滑模型
     double gamma_lse        = 10.0;    // LSE 平滑參數 γ（越大越接近真實 HPWL）
     double gamma_wa         = 10.0;    // WA 平滑參數 γ（ePlace；γ→0 趨近真實 HPWL）
+    bool   wl_normalize_by_net_degree = true;
     double init_step_size   = 1.0;     // 初始步長
     double step_decay       = 0.9999;  // 步長衰減率（每次迭代乘以此值）
     double momentum         = 0.9;     // Nesterov 動量係數
@@ -578,6 +579,8 @@ private:
 
     // LSE：依 net 所跨 tier 對 analytical_tier_net_weight 取算術平均
     double net_wirelength_die_weight(const Net& net) const;
+    double net_wirelength_degree_norm(const Net& net) const;
+    double analytical_net_wirelength_weight(const Net& net) const;
 
     // TSV cost：tier 乘數（tsv_die_weights 若滿長度則覆寫，否則 tier_net_weights_）
     double tsv_placement_tier_weight(int tier) const;

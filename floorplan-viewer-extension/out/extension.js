@@ -135,7 +135,7 @@ function activate(context) {
                     const guessNets = path.join(root, "PA2_3DIC", "input_pa2", "n100.nets");
                     const guessOut = path.join(root, "PA2_3DIC", "analytical", "output", "n100_output.txt");
                     const guessCst = path.join(root, "PA2_3DIC", "input_pa2", "n100.constraint");
-                    const guessProc = guessOut + "_analytical_iter.txt";
+                    const guessProc = guessOut + "_module_positions.txt";
                     if (fs.existsSync(guessBlock)) {
                         defaultBlock = guessBlock;
                     }
@@ -168,7 +168,7 @@ function activate(context) {
                         const np = path.join(root, "PA2_3DIC", "input_pa2", `${id}.nets`);
                         const op = path.join(root, "PA2_3DIC", "analytical", "output", `${id}_output.txt`);
                         const cp = path.join(root, "PA2_3DIC", "input_pa2", `${id}.constraint`);
-                        const pp = op + "_analytical_iter.txt";
+                        const pp = op + "_module_positions.txt";
                         if (fs.existsSync(bp) && fs.existsSync(np)) {
                             presets.push({
                                 label: `${id} (default paths)`,
@@ -378,7 +378,8 @@ function activate(context) {
                 const cstArg = cstFs ? ` ${(0, pathUtils_1.quotePath)(cstFs)}` : "";
                 const wlArg = msg.legOnly ? "" : ` --wl ${msg.wlModel === "wa" ? "wa" : "lse"}`;
                 const legArg = msg.legOnly ? " --leg_only" : "";
-                const cmd = `${(0, pathUtils_1.quotePath)(exeAbs)} ${(0, pathUtils_1.quotePath)(blockFs)} ${(0, pathUtils_1.quotePath)(netsFs)} ${(0, pathUtils_1.quotePath)(outAbs)}${cstArg}${wlArg}${legArg}`;
+                const rcArg = msg.rcMax ? ` --rc-max ${msg.rcMax}` : "";
+                const cmd = `${(0, pathUtils_1.quotePath)(exeAbs)} ${(0, pathUtils_1.quotePath)(blockFs)} ${(0, pathUtils_1.quotePath)(netsFs)} ${(0, pathUtils_1.quotePath)(outAbs)}${cstArg}${wlArg}${legArg}${rcArg}`;
                 appendLog(`[EXEC] $ ${cmd}`);
                 const term = vscode.window.createTerminal({
                     name: "analytical floorplan",

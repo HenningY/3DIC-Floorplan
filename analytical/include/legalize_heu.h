@@ -26,6 +26,8 @@ struct LocalMoveConfig {
     double side_bias_weight = 0.0;  // 0 = 關閉
     int    side_bias_axis   = 0;    // 0=none, 1=x, 2=y
     double side_bias_sign   = 0.0;  // +1 偏好大座標, -1 偏好小座標
+
+    bool   enable_container_escape = true;
 };
 
 struct LocalMoveResult {

@@ -33,6 +33,66 @@ var processActive = false;
 var TIER_FILLS   = ['#4a90d9','#5cb85c','#f0ad4e','#d9534f','#9b59b6','#1abc9c'];
 var TIER_STROKES = ['#2c6fa8','#3d8b3d','#c8892a','#b33030','#7d3f9c','#148a74'];
 
+var color_mode = 'alt';
+
+function diePalette() {
+  if (color_mode === 'alt') {
+    return {
+      dieBackground: '#ffffff',
+      canvasBackground: '#ffffff',
+      moduleLabelFill: '#000000',
+      outlineStroke: '#000000',
+      moduleFill: '#cad0e0',
+      moduleStroke: '#000000',
+      moduleOpacityTier: { sel: 0.82, soft: 0.72, hard: 0.72 },
+      moduleOpacityOverview: { sel: 0.82, soft: 0.65, hard: 0.65 },
+      tsvFill: '#f5ffc2',
+      tsvStroke: '#000000',
+      tsvOpacity: '1',
+      netColor: '#3232ff',
+      netInterIsolatedStroke: '#f5ffc2',
+      netIntraFromTier: false,
+    };
+  }
+  return {
+    dieBackground: '#252830',
+    canvasBackground: 'var(--vscode-editor-background)',
+    moduleLabelFill: '#ffffff',
+    outlineStroke: '#6b7d92',
+    moduleFill: null,
+    moduleStroke: null,
+    moduleOpacityTier: { sel: 0.6, soft: 0.42, hard: 0.35 },
+    moduleOpacityOverview: { sel: 0.6, soft: 0.38, hard: 0.28 },
+    tsvFill: '#ff5566',
+    tsvStroke: '#ffaabb',
+    tsvOpacity: '0.5',
+    netColor: null,
+    netInterIsolatedStroke: '#ffcc44',
+    netInter: '#ffcc44',
+    netIntraFromTier: true,
+  };
+}
+
+function moduleFillOpacity(isSel, isSoft, isOverview) {
+  var pal = diePalette();
+  var op = isOverview ? pal.moduleOpacityOverview : pal.moduleOpacityTier;
+  if (isSel) { return op.sel; }
+  return isSoft ? op.soft : op.hard;
+}
+
+function netIntraColor(tier) {
+  var pal = diePalette();
+  if (pal.netIntraFromTier) {
+    return TIER_FILLS[tier % TIER_FILLS.length];
+  }
+  return pal.netColor;
+}
+
+function netInterColor() {
+  var pal = diePalette();
+  return pal.netInter || pal.netColor;
+}
+
 function shadeHex(hex, t) {
   var h = hex.replace('#', '');
   if (h.length === 3) {
@@ -57,6 +117,10 @@ function shadeHex(hex, t) {
 }
 
 function moduleStyle(tier, isSoft) {
+  var pal = diePalette();
+  if (pal.moduleFill) {
+    return { fill: pal.moduleFill, stroke: pal.moduleStroke };
+  }
   var fill = TIER_FILLS[tier % TIER_FILLS.length];
   var stroke = TIER_STROKES[tier % TIER_STROKES.length];
   if (isSoft) {
@@ -303,7 +367,7 @@ document.getElementById('presetSelect').onchange = function() {
     document.getElementById('netsPath').value       = j.n;
     document.getElementById('outPath').value        = j.o;
     document.getElementById('constraintPath').value = j.c || '';
-    document.getElementById('processPath').value    = j.p || (j.o ? j.o + '_analytical_iter.txt' : '');
+    document.getElementById('processPath').value    = j.p || (j.o ? j.o + '_module_positions.txt' : '');
     updateClearConstraintBtn();
     // 立即同步 constraint 清單
     if (j.c) {
@@ -449,7 +513,7 @@ function drawNetLines(parts, allPoints, stroke, dash, tx, ty) {
 // 包含 terminal 作為連線點；只在有 module 的 tier 上畫（避免在不含 module 的 tier 重複）
 function renderNetsIntra(parts, tier, tx, ty, scale) {
   if (!sceneData.nets || sceneData.nets.length === 0) { return; }
-  var fill = TIER_FILLS[tier % TIER_FILLS.length];
+  var stroke = netIntraColor(tier);
   var crossSet = buildCrossTierSet();
 
   sceneData.nets.forEach(function(net, idx) {
@@ -470,7 +534,7 @@ function renderNetsIntra(parts, tier, tx, ty, scale) {
     // 至少要有一個本 tier 的 module，terminal 才參與（避免同一條 net 在多個 tier 重複畫）
     if (modPts.length === 0) { return; }
 
-    drawNetLines(parts, modPts.concat(termPts), fill, false, tx, ty);
+    drawNetLines(parts, modPts.concat(termPts), stroke, false, tx, ty);
   });
 }
 
@@ -510,16 +574,16 @@ function renderNetsInter(parts, tier, tx, ty, scale) {
     var allPoints = modPts.concat(tsvPoints).concat(termPts);
 
     if (allPoints.length < 2) {
-      // 只有孤立 TSV 虛擬點（無 module 也無 terminal）→ 空心圓標示
+      var isoStroke = diePalette().netInterIsolatedStroke;
       tsvPoints.forEach(function(p) {
         parts.push('<circle cx="' + tx(p.x) + '" cy="' + ty(p.y) + '" r="2"' +
-          ' fill="none" stroke="#ffcc44" stroke-width="1" opacity="0.4"' +
+          ' fill="none" stroke="' + isoStroke + '" stroke-width="1" opacity="0.4"' +
           ' style="pointer-events:none"/>');
       });
       return;
     }
 
-    drawNetLines(parts, allPoints, '#ffcc44', true, tx, ty);
+    drawNetLines(parts, allPoints, netInterColor(), true, tx, ty);
   });
 }
 
@@ -537,8 +601,9 @@ function calcGridStep(size) {
   return 1000;
 }
 function appendDieWithGridAxes(parts, tx, ty, W, H, scale) {
+  var pal = diePalette();
   var x0 = tx(0), yTop = ty(H), wPx = W * scale, hPx = H * scale;
-  parts.push('<rect x="' + x0 + '" y="' + yTop + '" width="' + wPx + '" height="' + hPx + '" fill="#252830"/>');
+  parts.push('<rect x="' + x0 + '" y="' + yTop + '" width="' + wPx + '" height="' + hPx + '" fill="' + pal.dieBackground + '"/>');
   var stepX = calcGridStep(W);
   var stepY = calcGridStep(H);
   var g;
@@ -548,7 +613,7 @@ function appendDieWithGridAxes(parts, tx, ty, W, H, scale) {
   for (g = stepY; g < H; g += stepY) {
     parts.push('<line x1="' + tx(0) + '" y1="' + ty(g) + '" x2="' + tx(W) + '" y2="' + ty(g) + '" stroke="#3a4558" stroke-width="0.5" stroke-dasharray="3 4" opacity="0.5"/>');
   }
-  parts.push('<rect x="' + x0 + '" y="' + yTop + '" width="' + wPx + '" height="' + hPx + '" fill="none" stroke="#6b7d92" stroke-width="1"/>');
+  parts.push('<rect x="' + x0 + '" y="' + yTop + '" width="' + wPx + '" height="' + hPx + '" fill="none" stroke="' + pal.outlineStroke + '" stroke-width="1"/>');
   var fs = Math.max(6, Math.min(10, scale * 0.14));
   var tick = Math.max(3, scale * 0.1);
   for (g = 0; g <= W; g += stepX) {
@@ -641,7 +706,7 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
       var rgi = repulseGroupIdx(m.name);
       parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
         ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
-        ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.42' : '0.35')) + '"' +
+        ' fill="' + ms.fill + '" fill-opacity="' + moduleFillOpacity(isSel, !!m.isSoft, false) + '"' +
         ' stroke="' + moduleStrokeColor(isSel, fixed, boundary, ms.stroke) + '" stroke-width="' + moduleStrokeWidth(isSel, fixed, boundary, '0.8') + '"/>');
       appendModuleConstraintOverlay(parts, rx, ry, rw, rh, fixed, boundary);
       appendRepulseBadge(parts, rx, ry, Math.min(14, rw * 0.4, rh * 0.4), rgi);
@@ -649,21 +714,18 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
         var cx = rx + rw/2, cy = ry + rh/2;
         var fs = Math.min(9, rh * 0.45, rw * 0.18);
         if (fs > 3.5) {
-          parts.push('<text x="' + cx + '" y="' + cy + '" text-anchor="middle" dominant-baseline="middle" font-size="' + fs + '" fill="#fff" opacity="0.85" style="pointer-events:none">' + escXml(m.name) + '</text>');
+          parts.push('<text x="' + cx + '" y="' + cy + '" text-anchor="middle" dominant-baseline="middle" font-size="' + fs + '" fill="' + diePalette().moduleLabelFill + '" opacity="0.85" style="pointer-events:none">' + escXml(m.name) + '</text>');
         }
       }
     }
   }
-
-  // Net 連線（在 modules 之上、TSV 之下渲染）
-  if (chk('chkNetsIntra')) { renderNetsIntra(parts, tier, tx, ty, scale); }
-  if (chk('chkNetsInter')) { renderNetsInter(parts, tier, tx, ty, scale); }
 
   // TSVs：只顯示在下層（tierBelow === tier）
   if (chk('chkTsvs')) {
     var showTL = chk('chkTsvLabels');
     var tsvUserSz = parseFloat(document.getElementById('tsvSize').value) || 3;
     var tsvHalf = Math.max(0.1, tsvUserSz * scale / 2);
+    var tsvPal = diePalette();
     var tsvList = sceneData.tsvs.filter(function(t) { return t.tierBelow === tier; });
     for (var ti = 0; ti < tsvList.length; ti++) {
       var t = tsvList[ti];
@@ -671,12 +733,16 @@ function renderTierInto(parts, tier, ox, oy, pw, ph) {
       var tsvX = px - tsvHalf, tsvY = py - tsvHalf, tsvSz = tsvHalf * 2;
       parts.push('<rect class="hover-tag-target" data-label="' + escXml(t.netName) + '"' +
         ' x="' + tsvX + '" y="' + tsvY + '" width="' + tsvSz + '" height="' + tsvSz + '"' +
-        ' fill="#ff5566" opacity="0.5" stroke="#ffaabb" stroke-width="0.7"/>');
+        ' fill="' + tsvPal.tsvFill + '" opacity="' + tsvPal.tsvOpacity + '" stroke="' + tsvPal.tsvStroke + '" stroke-width="0.7"/>');
       if (showTL) {
         parts.push('<text x="' + (px + tsvHalf + 2) + '" y="' + py + '" font-size="6" fill="#ff8899" dominant-baseline="middle" opacity="0.7">' + escXml(t.netName) + '</text>');
       }
     }
   }
+
+  // Net 連線（在 TSV 之上渲染）
+  if (chk('chkNetsIntra')) { renderNetsIntra(parts, tier, tx, ty, scale); }
+  if (chk('chkNetsInter')) { renderNetsInter(parts, tier, tx, ty, scale); }
 
   // Terminals
   if (chk('chkTerminals')) {
@@ -730,7 +796,7 @@ function renderOverlaid(parts, cw, ch) {
         var rgi = repulseGroupIdx(m.name);
         parts.push('<rect class="module-rect' + (m.isSoft ? ' module-soft' : ' module-hard') + '" data-modname="' + escXml(m.name) + '"' +
           ' x="' + rx + '" y="' + ry + '" width="' + rw + '" height="' + rh + '"' +
-          ' fill="' + ms.fill + '" fill-opacity="' + (isSel ? '0.6' : (m.isSoft ? '0.38' : '0.28')) + '"' +
+          ' fill="' + ms.fill + '" fill-opacity="' + moduleFillOpacity(isSel, !!m.isSoft, true) + '"' +
           ' stroke="' + moduleStrokeColor(isSel, fixed, boundary, ms.stroke) + '" stroke-width="' + moduleStrokeWidth(isSel, fixed, boundary, '0.7') + '"/>');
         appendModuleConstraintOverlay(parts, rx, ry, rw, rh, fixed, boundary);
         appendRepulseBadge(parts, rx, ry, Math.min(14, rw * 0.4, rh * 0.4), rgi);
@@ -738,22 +804,10 @@ function renderOverlaid(parts, cw, ch) {
           var cx = rx + rw/2, cy = ry + rh/2;
           var fs = Math.min(9, rh * 0.45, rw * 0.18);
           if (fs > 3.5) {
-            parts.push('<text x="' + cx + '" y="' + cy + '" text-anchor="middle" dominant-baseline="middle" font-size="' + fs + '" fill="#fff" opacity="0.8" style="pointer-events:none">' + escXml(m.name) + '</text>');
+            parts.push('<text x="' + cx + '" y="' + cy + '" text-anchor="middle" dominant-baseline="middle" font-size="' + fs + '" fill="' + diePalette().moduleLabelFill + '" opacity="0.8" style="pointer-events:none">' + escXml(m.name) + '</text>');
           }
         }
       }
-    }
-  }
-
-  // Net 連線 overview：所有 tier 一起畫
-  if (chk('chkNetsIntra')) {
-    for (var nt = 0; nt < sceneData.outlines.length; nt++) {
-      renderNetsIntra(parts, nt, tx, ty, scale);
-    }
-  }
-  if (chk('chkNetsInter')) {
-    for (var nt2 = 0; nt2 < sceneData.outlines.length; nt2++) {
-      renderNetsInter(parts, nt2, tx, ty, scale);
     }
   }
 
@@ -762,16 +816,29 @@ function renderOverlaid(parts, cw, ch) {
     var showTL = chk('chkTsvLabels');
     var tsvUserSz = parseFloat(document.getElementById('tsvSize').value) || 3;
     var tsvHalf = Math.max(0.1, tsvUserSz * scale / 2);
+    var tsvPalOv = diePalette();
     for (var ti = 0; ti < sceneData.tsvs.length; ti++) {
       var t = sceneData.tsvs[ti];
       var px = tx(t.x), py = ty(t.y);
       var tsvX = px - tsvHalf, tsvY = py - tsvHalf, tsvSz = tsvHalf * 2;
       parts.push('<rect class="hover-tag-target" data-label="' + escXml(t.netName) + '"' +
         ' x="' + tsvX + '" y="' + tsvY + '" width="' + tsvSz + '" height="' + tsvSz + '"' +
-        ' fill="#ff5566" opacity="0.5" stroke="#ffaabb" stroke-width="0.7"/>');
+        ' fill="' + tsvPalOv.tsvFill + '" opacity="' + tsvPalOv.tsvOpacity + '" stroke="' + tsvPalOv.tsvStroke + '" stroke-width="0.7"/>');
       if (showTL) {
         parts.push('<text x="' + (px + tsvHalf + 2) + '" y="' + py + '" font-size="6" fill="#ff8899" dominant-baseline="middle" opacity="0.7">' + escXml(t.netName) + '</text>');
       }
+    }
+  }
+
+  // Net 連線 overview：所有 tier 一起畫（在 TSV 之上）
+  if (chk('chkNetsIntra')) {
+    for (var nt = 0; nt < sceneData.outlines.length; nt++) {
+      renderNetsIntra(parts, nt, tx, ty, scale);
+    }
+  }
+  if (chk('chkNetsInter')) {
+    for (var nt2 = 0; nt2 < sceneData.outlines.length; nt2++) {
+      renderNetsInter(parts, nt2, tx, ty, scale);
     }
   }
 
@@ -822,7 +889,7 @@ function render() {
     '<pattern id="hatch-boundary" patternUnits="userSpaceOnUse" width="7" height="7">' +
     '<line x1="0" y1="0" x2="7" y2="7" stroke="#c080e0" stroke-width="0.8" opacity="0.45"/>' +
     '</pattern></defs>');
-  parts.push('<rect x="0" y="0" width="' + cw + '" height="' + ch + '" fill="var(--vscode-editor-background)"/>');
+  parts.push('<rect x="0" y="0" width="' + cw + '" height="' + ch + '" fill="' + diePalette().canvasBackground + '"/>');
 
   if (currentMode === 'overview') {
     renderOverlaid(parts, cw, ch);
@@ -857,6 +924,16 @@ document.getElementById('pickNets').onclick = function() {
 };
 let selectedWlModel = 'lse';
 let legOnlyEnabled  = false;
+let rcMaxEnabled    = false;
+
+document.getElementById('toggleRcMax').onclick = function() {
+  rcMaxEnabled = !rcMaxEnabled;
+  var inp = document.getElementById('rcMax');
+  inp.disabled = !rcMaxEnabled;
+  this.textContent = rcMaxEnabled ? 'on' : 'off';
+  this.classList.toggle('active', rcMaxEnabled);
+  if (rcMaxEnabled) { inp.focus(); }
+};
 
 document.getElementById('toggleWlLse').onclick = function() {
   selectedWlModel = 'lse';
@@ -874,6 +951,16 @@ document.getElementById('toggleLegOnly').onclick = function() {
 };
 
 document.getElementById('runFloorplan').onclick = function() {
+  var rcMax = '';
+  if (rcMaxEnabled) {
+    var raw = document.getElementById('rcMax').value.trim();
+    var n = parseFloat(raw);
+    if (!raw || isNaN(n) || n < 0) {
+      log('[WARN] Congestion enabled: enter a number >= 0');
+      return;
+    }
+    rcMax = String(n);
+  }
   vscode.postMessage({
     type:       'run',
     block:      document.getElementById('blockPath').value,
@@ -882,6 +969,7 @@ document.getElementById('runFloorplan').onclick = function() {
     constraint: document.getElementById('constraintPath').value.trim(),
     wlModel:    selectedWlModel,
     legOnly:    legOnlyEnabled,
+    rcMax:      rcMax,
   });
 };
 document.getElementById('reload2d').onclick = function() {
@@ -924,7 +1012,7 @@ document.getElementById('processNext').onclick = function() {
 document.getElementById('outPath').addEventListener('change', function() {
   var out = this.value.trim();
   if (out) {
-    document.getElementById('processPath').value = out + '_analytical_iter.txt';
+    document.getElementById('processPath').value = out + '_module_positions.txt';
   }
 });
 
@@ -1590,7 +1678,7 @@ window.addEventListener('message', function(e) {
     if (msg.process !== undefined) {
       document.getElementById('processPath').value = msg.process;
     } else if (msg.output) {
-      document.getElementById('processPath').value = msg.output + '_analytical_iter.txt';
+      document.getElementById('processPath').value = msg.output + '_module_positions.txt';
     }
     updateClearConstraintBtn();
     syncPresetSelectFromPaths();

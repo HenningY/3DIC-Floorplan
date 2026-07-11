@@ -58,8 +58,10 @@ def frame_to_rgba(img_path: Path, tag: str, figsize_px: tuple[int, int]) -> np.n
     fh = figsize_px[1] / dpi + 0.5  # 額外給標題留空間
 
     fig, ax = plt.subplots(figsize=(fw, fh), dpi=dpi)
+    fig.patch.set_facecolor("#ffffff")
+    ax.set_facecolor("#ffffff")
     ax.imshow(img, origin="upper")
-    ax.set_title(tag, fontsize=10, pad=4)
+    ax.set_title(tag, fontsize=10, pad=4, color="#000000")
     ax.axis("off")
     fig.tight_layout(pad=0.3)
 

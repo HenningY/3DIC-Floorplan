@@ -42,6 +42,14 @@ body {
   border: 1px solid var(--vscode-input-border, #444);
   border-radius: 3px; font-size: 11px;
 }
+.input-group input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.browse-btn.rc-max-toggle.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
 select.preset-select {
   width: 100%; padding: 4px 6px; font-size: 11px;
   background: var(--vscode-dropdown-background);

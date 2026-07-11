@@ -211,6 +211,8 @@ void PlacementEngine::apply_geometry_scale(double factor)
         tsv.x *= factor;
         tsv.y *= factor;
     }
+    for (RepulsionGroup& grp : repulsion_groups_)
+        grp.min_dist *= factor;
 }
 
 void PlacementEngine::restore_geometry()
@@ -239,6 +241,8 @@ void PlacementEngine::restore_geometry()
         tsv.x *= inv;
         tsv.y *= inv;
     }
+    for (RepulsionGroup& grp : repulsion_groups_)
+        grp.min_dist *= inv;
 
     geometry_scale_ = 1.0;
     std::cout << "[Normalize] Geometry restored to physical coordinates.\n";
@@ -920,7 +924,7 @@ void PlacementEngine::solve_tsv_phase()
 //   LSE 近似 HPWL 的目標函數值
 //   WL(e) = γ * [ln Σ exp(xi/γ) + ln Σ exp(-xi/γ)
 //              + ln Σ exp(yi/γ) + ln Σ exp(-yi/γ)]
-//   每條 net 再乘以 net_wirelength_die_weight(net)（與梯度一致）
+//   每條 net 再乘以 analytical_net_wirelength_weight(net)（die weight / degree）
 // ============================================================
 double PlacementEngine::compute_lse_wirelength() const
 {
@@ -930,7 +934,7 @@ double PlacementEngine::compute_lse_wirelength() const
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
 
-        const double w_net = net_wirelength_die_weight(net);
+        const double w_net = analytical_net_wirelength_weight(net);
 
         double sum_exp_x  = 0.0, sum_exp_nx = 0.0;
         double sum_exp_y  = 0.0, sum_exp_ny = 0.0;
@@ -976,7 +980,8 @@ double PlacementEngine::compute_lse_wirelength() const
 //     x̄- = Σ xi*exp(-xi/γ) / Σ exp(-xi/γ)  ≈ min(xi)
 //     ∂WL/∂xj = (1/γ) * [ (exp_p/A)*(γ+xj-x̄+) - (exp_n/C)*(γ-xj+x̄-) ]
 //
-//   兩者均使用 max/min shift 以確保數值穩定；w_net 為跨 tier die weight 平均。
+//   兩者均使用 max/min shift 以確保數值穩定；
+//   w_net = analytical_net_wirelength_weight（die weight，可選除以 net degree）。
 // ============================================================
 // 共用 LSE/WA 梯度累加核心：對一組 endpoints 計算 WL 梯度
 // pts[k] = {x, y}; module_ids[k] >= 0 表示 module pin（累加到 gx/gy），< 0 表示 TSV
@@ -1086,8 +1091,10 @@ void PlacementEngine::calculate_wirelength_gradient(
             const int t_lo = net.is_cross_tier ? net.min_tier : 0;
             const int t_hi = net.is_cross_tier ? net.max_tier : (num_tiers - 1);
 
+            const double w_deg = net_wirelength_degree_norm(net);
+
             for (int t = t_lo; t <= t_hi; ++t) {
-                const double w_tier = analytical_tier_net_weight(t);
+                const double w_tier = analytical_tier_net_weight(t) * w_deg;
 
                 std::vector<std::pair<double,double>> pts;
                 std::vector<int> mod_ids, tsv_ids_vec;
@@ -1129,7 +1136,7 @@ void PlacementEngine::calculate_wirelength_gradient(
     for (const Net& net : nets_) {
         if (net.pins.size() < 2) continue;
 
-        const double w_net = net_wirelength_die_weight(net);
+        const double w_net = analytical_net_wirelength_weight(net);
 
         double max_x = -1e18, min_x = 1e18;
         double max_y = -1e18, min_y = 1e18;
@@ -1574,6 +1581,18 @@ double PlacementEngine::net_wirelength_die_weight(const Net& net) const
     for (int t : tiers)
         sum_w += analytical_tier_net_weight(t);
     return sum_w / static_cast<double>(tiers.size());
+}
+
+double PlacementEngine::net_wirelength_degree_norm(const Net& net) const
+{
+    if (!cfg_.wl_normalize_by_net_degree || net.pins.size() < 2)
+        return 1.0;
+    return 1.0 / static_cast<double>(net.pins.size());
+}
+
+double PlacementEngine::analytical_net_wirelength_weight(const Net& net) const
+{
+    return net_wirelength_die_weight(net) * net_wirelength_degree_norm(net);
 }
 
 // ============================================================
