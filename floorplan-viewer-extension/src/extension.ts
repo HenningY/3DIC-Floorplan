@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as vscode from "vscode";
-import { parseBlockFile, parseFloorplanOutput, parseAnalyticalIterFile } from "./parsers";
+import { parseBlockFile, parseFloorplanOutput, parseAnalyticalIterFile, readBlockOutline, rewriteBlockOutlines } from "./parsers";
 import { getHtml } from "./getHtml";
 import {
   resolvePa2ProjectRoot,
@@ -80,6 +80,28 @@ export function activate(context: vscode.ExtensionContext): void {
         return path.resolve(trimmed);
       }
 
+      function sendBlockOutline(blockPath: string): void {
+        if (!blockPath || !fs.existsSync(blockPath)) {
+          panel.webview.postMessage({ type: "dieOutline", width: "", height: "" });
+          return;
+        }
+        try {
+          const outline = readBlockOutline(fs.readFileSync(blockPath, "utf8"));
+          if (outline) {
+            panel.webview.postMessage({
+              type: "dieOutline",
+              width: outline.width,
+              height: outline.height,
+            });
+          } else {
+            panel.webview.postMessage({ type: "dieOutline", width: "", height: "" });
+          }
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e);
+          appendLog(`[DieSize] read outline failed: ${err}`);
+        }
+      }
+
       async function loadAndSend2D(
         blockPath: string,
         outputPath: string,
@@ -144,6 +166,7 @@ export function activate(context: vscode.ExtensionContext): void {
               constraint: defaultConstraint,
               process:    defaultProcess,
             });
+            if (defaultBlock) { sendBlockOutline(defaultBlock); }
 
             const presets: {
               label: string;
@@ -188,6 +211,12 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
           }
 
+          // --- requestDieOutline ---
+          if (msg.type === "requestDieOutline") {
+            sendBlockOutline((msg.blockPath || "").trim());
+            return;
+          }
+
           // --- pickBlock ---
           if (msg.type === "pickBlock") {
             const uris = await vscode.window.showOpenDialog({
@@ -201,6 +230,42 @@ export function activate(context: vscode.ExtensionContext): void {
             });
             if (uris?.[0]) {
               panel.webview.postMessage({ type: "setPaths", block: uris[0].fsPath });
+              sendBlockOutline(uris[0].fsPath);
+            }
+            return;
+          }
+
+          // --- updateDieSize：寫入 .block 所有 Outline 行 ---
+          if (msg.type === "updateDieSize") {
+            const blockPath: string = (msg.blockPath || "").trim();
+            const width = Number(msg.width);
+            const height = Number(msg.height);
+            if (!blockPath) {
+              vscode.window.showWarningMessage("請先選取 .block 檔");
+              return;
+            }
+            if (!fs.existsSync(blockPath)) {
+              vscode.window.showErrorMessage(`找不到 .block 檔：${blockPath}`);
+              return;
+            }
+            if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+              vscode.window.showWarningMessage("Die size 必須為大於 0 的數字");
+              return;
+            }
+            try {
+              const oldText = fs.readFileSync(blockPath, "utf8");
+              const { text, count } = rewriteBlockOutlines(oldText, width, height);
+              if (count === 0) {
+                vscode.window.showErrorMessage("未找到 Outline 行，無法更新");
+                return;
+              }
+              fs.writeFileSync(blockPath, text, "utf8");
+              appendLog(`[DieSize] Updated ${count} Outline line(s) -> ${width} × ${height}`);
+              sendBlockOutline(blockPath);
+            } catch (e) {
+              const err = e instanceof Error ? e.message : String(e);
+              appendLog(`[DieSize] write failed: ${err}`);
+              vscode.window.showErrorMessage(err);
             }
             return;
           }

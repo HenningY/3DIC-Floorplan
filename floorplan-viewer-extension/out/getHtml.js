@@ -94,11 +94,22 @@ function getHtml(webview, extensionUri) {
           <button class="browse-btn secondary" id="pickConstraint">…</button>
         </div>
       </div>
-      <div class="field-row">
-        <label>Congestion (--rc-max)</label>
-        <div class="input-group">
-          <input type="number" id="rcMax" disabled placeholder="—" step="any" min="0" />
-          <button class="browse-btn secondary rc-max-toggle" id="toggleRcMax" title="Enable --rc-max">off</button>
+      <div class="field-row field-row-split">
+        <div class="field-col">
+          <label>Congestion (--rc-max)</label>
+          <div class="input-group">
+            <input type="number" id="rcMax" disabled placeholder="—" step="any" min="0" />
+            <button class="browse-btn secondary rc-max-toggle" id="toggleRcMax" title="Enable --rc-max">off</button>
+          </div>
+        </div>
+        <div class="field-col">
+          <label>Die size (Outline W×H)</label>
+          <div class="input-group">
+            <input type="text" id="dieWidth" placeholder="W" inputmode="decimal" title="Die width" />
+            <span class="die-size-x">×</span>
+            <input type="text" id="dieHeight" placeholder="H" inputmode="decimal" title="Die height" />
+            <button class="browse-btn secondary" id="applyDieSize" title="Write Outline to .block file">Set</button>
+          </div>
         </div>
       </div>
       <div class="field-row">

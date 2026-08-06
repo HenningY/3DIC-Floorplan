@@ -4,10 +4,11 @@
 #include "legalize_heu.h"
 #include "util.h"
 
+#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <string>
-#include <chrono>
+#include <vector>
 
 int main(int argc, char* argv[])
 {
@@ -85,7 +86,7 @@ int main(int argc, char* argv[])
     cfg.step_decay      = 0.999;    // 步長衰減（越小衰減越快） default 0.9998, < 0.999 >
     cfg.momentum        = 0.9;      // Nesterov 動量係數 default 0.9
     cfg.target_density  = 0.9;      // 每層目標密度 default 0.85
-    cfg.bin_resolution  = 192;       // Bin 格數（每層 16x16） n100: 64
+    cfg.bin_resolution  = 64;       // 預設小 case；parse 後若任一層 >250 module 改 192
     cfg.convergence_tol = 1e-3;     // 收斂容忍度 default 1e-5
     cfg.rotation_start_iter = 1000;    // Analytical 過程旋轉優化起始 iter 數（0 = 停用）
     cfg.rotation_interval   = 500;    // Analytical 過程旋轉優化 iter 間隔（0 = 停用）
@@ -100,8 +101,8 @@ int main(int argc, char* argv[])
     cfg.lambda_max_mult        = 300.0;     // λ 倍率上限, n100: 300.0
 
     // ---- dynamic smoothing radius σ ----
-    cfg.sigma_start_frac = 0.013;     // 初始 = 20% die 寬（=53.6 for 268） n100: 0.04
-    cfg.sigma_end_frac   = 0.013;    // 最終 = 5% die 寬（=18.8，略大於 bin 寬 16.75） n100: 0.04
+    cfg.sigma_start_frac = 0.04;     // 預設小 case；大 case 在 parse 後改 0.013
+    cfg.sigma_end_frac   = 0.04;
 
     // base value of density penalty coefficient for each tier (multiplied by lambda_mult)
     // 實際層數在 parse_blocks 後才能確定；這裡設定「模板值」，
@@ -125,16 +126,18 @@ int main(int argc, char* argv[])
     cfg.routing_congestion_max = routing_congestion_max;
     cfg.routing_congestion_alpha_boost_rate = 1.15;
     cfg.routing_congestion_alpha_max_mult = 50;
-    // 小 module 比例門檻：area < tier_max_area / divisor 的 module 視為小 module
-    // 比例 <= gate_min_ratio（預設 20%）時停用 routing_congestion_max
-    // gate_divisor <= 0 停用此門檻
+    // 小 module 面積門檻共用：area < tier_max_area / divisor
+    // 用於 routing congestion gate 與 Phase2 小 module 例外；<=0 停用相關門檻
     cfg.routing_congestion_gate_divisor   = 10.0;
     cfg.routing_congestion_gate_min_ratio = 0.30;
 
     // phase 2 analytical tsv
     cfg.analytical_tsv_max_iterations = 1000;
     // 任一 tier module 面積使用率超過此值則跳過 Phase 2（走 solve_tsvs + reflow）；<=0 停用，一律 Phase 2
-    cfg.tier_area_util_phase2_max = 0.8;
+    cfg.tier_area_util_phase2_max = 0.80;
+    // util 超標時：若小 module 比例 > 此值仍強制 Phase 2；<=0 停用例外
+    // （小 module 定義用 routing_congestion_gate_divisor）
+    cfg.phase2_small_module_ratio_min = 0.20;
 
     // ---- die geometry normalize ----
     // 依全 die 最小邊長判斷是否縮放，僅等比縮放幾何（die/module/TSV），超參數不變
@@ -160,6 +163,8 @@ int main(int argc, char* argv[])
 
     if (!engine.parse_blocks(block_file, leg_only)) return 1;
     if (!engine.parse_nets(nets_file))               return 1;
+
+    engine.adapt_bin_sigma_by_module_count(500);
 
     // ---- 依實際 die 數量調整 tier_lambdas ----
     // #die < template length → 取後 n 個；#die > template length → 前面補第一個值
@@ -244,7 +249,7 @@ int main(int argc, char* argv[])
     tcfg.tsv_height     = base_tsv_h * gs;
     tcfg.tsv_die_weights = {1, 1, 1};
 
-    // ---- Phase 2 決策：依各 tier 面積使用率自動選流程 ----
+    // ---- Phase 2 決策：面積使用率 + 小 module 比例例外 ----
     {
         const auto util = compute_tier_module_utilization(engine, tcfg.tsv_width, tcfg.tsv_height);
         const double thr = cfg.tier_area_util_phase2_max;
@@ -269,6 +274,42 @@ int main(int argc, char* argv[])
                 }
             }
         }
+
+        if (skip_phase2
+            && cfg.phase2_small_module_ratio_min > 0.0
+            && cfg.routing_congestion_gate_divisor > 0.0) {
+            const int nd = engine.num_dies();
+            const auto& modules = engine.modules();
+            std::vector<double> tier_max_area(static_cast<size_t>(nd), 0.0);
+            for (const Module& m : modules) {
+                if (m.is_terminal || m.tier_id < 0 || m.tier_id >= nd) continue;
+                const double a = m.area();
+                if (a > tier_max_area[static_cast<size_t>(m.tier_id)])
+                    tier_max_area[static_cast<size_t>(m.tier_id)] = a;
+            }
+            int small_count = 0, total_count = 0;
+            for (const Module& m : modules) {
+                if (m.is_terminal || m.is_fixed || m.tier_id < 0 || m.tier_id >= nd) continue;
+                ++total_count;
+                const double athresh = tier_max_area[static_cast<size_t>(m.tier_id)]
+                                       / cfg.routing_congestion_gate_divisor;
+                if (m.area() < athresh) ++small_count;
+            }
+            const double ratio = (total_count > 0)
+                ? static_cast<double>(small_count) / static_cast<double>(total_count)
+                : 0.0;
+            std::cout << "[Config] Phase2 small-module gate: small=" << small_count
+                      << "/" << total_count
+                      << " (" << std::fixed << std::setprecision(1) << ratio * 100.0 << "%)"
+                      << " min=" << cfg.phase2_small_module_ratio_min * 100.0 << "%\n";
+            if (ratio > cfg.phase2_small_module_ratio_min) {
+                std::cout << "[Config] Phase2 force-enabled: small-module ratio "
+                          << std::setprecision(1) << ratio * 100.0 << "% > "
+                          << cfg.phase2_small_module_ratio_min * 100.0 << "%\n";
+                skip_phase2 = false;
+            }
+        }
+
         cfg.enable_analytical_tsv_phase = !skip_phase2;
     }
 

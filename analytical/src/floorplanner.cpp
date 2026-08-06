@@ -90,6 +90,46 @@ void PlacementEngine::setup_dies(int num_dies,
     }
 }
 
+void PlacementEngine::adapt_bin_sigma_by_module_count(int threshold)
+{
+    const int nd = static_cast<int>(dies_.size());
+    if (nd <= 0) return;
+
+    std::vector<int> cnt(static_cast<size_t>(nd), 0);
+    for (const Module& m : modules_) {
+        if (m.is_terminal) continue;
+        if (m.tier_id < 0 || m.tier_id >= nd) continue;
+        ++cnt[static_cast<size_t>(m.tier_id)];
+    }
+
+    int max_cnt = 0;
+    for (int c : cnt) max_cnt = std::max(max_cnt, c);
+
+    if (max_cnt <= threshold) {
+        std::cout << "[Config] bin/sigma keep small-case: bin=" << cfg_.bin_resolution
+                  << " sigma=" << cfg_.sigma_start_frac
+                  << " (max modules/tier=" << max_cnt
+                  << " <= " << threshold << ")\n";
+        return;
+    }
+
+    cfg_.bin_resolution    = 192;
+    cfg_.sigma_start_frac  = 0.013;
+    cfg_.sigma_end_frac    = 0.013;
+
+    std::vector<double> die_w(static_cast<size_t>(nd)), die_h(static_cast<size_t>(nd));
+    for (int t = 0; t < nd; ++t) {
+        die_w[static_cast<size_t>(t)] = dies_[static_cast<size_t>(t)].width;
+        die_h[static_cast<size_t>(t)] = dies_[static_cast<size_t>(t)].height;
+    }
+    setup_dies(nd, die_w, die_h);
+
+    std::cout << "[Config] bin/sigma large-case: bin=" << cfg_.bin_resolution
+              << " sigma=" << cfg_.sigma_start_frac
+              << " (max modules/tier=" << max_cnt
+              << " > " << threshold << ")\n";
+}
+
 // ============================================================
 // 幾何 Normalize 實作
 // ============================================================

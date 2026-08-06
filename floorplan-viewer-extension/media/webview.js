@@ -369,6 +369,7 @@ document.getElementById('presetSelect').onchange = function() {
     document.getElementById('constraintPath').value = j.c || '';
     document.getElementById('processPath').value    = j.p || (j.o ? j.o + '_module_positions.txt' : '');
     updateClearConstraintBtn();
+    requestDieOutline();
     // 立即同步 constraint 清單
     if (j.c) {
       vscode.postMessage({ type: 'loadConstraint', path: j.c });
@@ -933,6 +934,27 @@ document.getElementById('toggleRcMax').onclick = function() {
   this.textContent = rcMaxEnabled ? 'on' : 'off';
   this.classList.toggle('active', rcMaxEnabled);
   if (rcMaxEnabled) { inp.focus(); }
+};
+
+function requestDieOutline() {
+  var bp = document.getElementById('blockPath').value.trim();
+  if (!bp) { return; }
+  vscode.postMessage({ type: 'requestDieOutline', blockPath: bp });
+}
+
+document.getElementById('applyDieSize').onclick = function() {
+  var bp = document.getElementById('blockPath').value.trim();
+  var w = parseFloat(document.getElementById('dieWidth').value);
+  var h = parseFloat(document.getElementById('dieHeight').value);
+  if (!bp) {
+    log('[WARN] Select a .block file first');
+    return;
+  }
+  if (isNaN(w) || isNaN(h) || w <= 0 || h <= 0) {
+    log('[WARN] Die size must be > 0');
+    return;
+  }
+  vscode.postMessage({ type: 'updateDieSize', blockPath: bp, width: w, height: h });
 };
 
 document.getElementById('toggleWlLse').onclick = function() {
@@ -1682,6 +1704,11 @@ window.addEventListener('message', function(e) {
     }
     updateClearConstraintBtn();
     syncPresetSelectFromPaths();
+    if (msg.block) { requestDieOutline(); }
+  }
+  if (msg.type === 'dieOutline') {
+    document.getElementById('dieWidth').value  = msg.width === '' || msg.width === undefined ? '' : msg.width;
+    document.getElementById('dieHeight').value = msg.height === '' || msg.height === undefined ? '' : msg.height;
   }
   if (msg.type === 'constraintData') {
     constraintData = msg.constraints || [];

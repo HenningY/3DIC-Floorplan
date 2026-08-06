@@ -1357,8 +1357,8 @@ void run_legalize_heu(PlacementEngine& engine, const PartitionConfig& pcfg)
     static constexpr double kSideBiasWeight = 0.0;
 
     LocalMoveConfig lcfg;
-    lcfg.max_search_dist   = 50.0;
-    lcfg.max_move_dist     = 50.0;
+    lcfg.max_search_dist   = 30.0;
+    lcfg.max_move_dist     = 30.0;
     lcfg.disp_weight       = 3.0;
     lcfg.overlap_weight    = 1.0;
     lcfg.moved_weight_mul  = 3;

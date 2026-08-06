@@ -260,3 +260,46 @@ export function parseFloorplanOutput(text: string): FloorplanOutput {
 
   return { modules, tsvs };
 }
+
+const OUTLINE_LINE_RE =
+  /^(\s*Outline:\s*)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(\s+)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(\s*)$/i;
+
+export function readBlockOutline(blockText: string): DieOutline | null {
+  const lines = blockText.split(/\r?\n/);
+  for (const line of lines) {
+    const m = line.match(OUTLINE_LINE_RE);
+    if (m) {
+      return { width: parseFloat(m[2]), height: parseFloat(m[4]) };
+    }
+  }
+  return null;
+}
+
+export function formatOutlineNumber(n: number): string {
+  if (!Number.isFinite(n)) { return "0"; }
+  const s = n.toFixed(10).replace(/\.?0+$/, "");
+  return s === "-0" ? "0" : s;
+}
+
+/** 將所有 Outline 行改成相同 W H；回傳更新後全文與被改寫的行數 */
+export function rewriteBlockOutlines(
+  blockText: string,
+  width: number,
+  height: number
+): { text: string; count: number } {
+  const wStr = formatOutlineNumber(width);
+  const hStr = formatOutlineNumber(height);
+  const nl = blockText.includes("\r\n") ? "\r\n" : "\n";
+  let count = 0;
+  const lines = blockText.split(/\r?\n/);
+  const out = lines.map((line) => {
+    const m = line.match(OUTLINE_LINE_RE);
+    if (!m) { return line; }
+    count += 1;
+    return `${m[1]}${wStr}${m[3]}${hStr}${m[5]}`;
+  });
+  const endedWithNl = /(?:\r?\n)$/.test(blockText);
+  let text = out.join(nl);
+  if (endedWithNl && !/(?:\r?\n)$/.test(text)) { text += nl; }
+  return { text, count };
+}

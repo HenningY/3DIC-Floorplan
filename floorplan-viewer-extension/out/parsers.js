@@ -7,6 +7,9 @@ exports.parseAnalyticalIterFile = parseAnalyticalIterFile;
 exports.parseNetsFile = parseNetsFile;
 exports.parseBlockFile = parseBlockFile;
 exports.parseFloorplanOutput = parseFloorplanOutput;
+exports.readBlockOutline = readBlockOutline;
+exports.formatOutlineNumber = formatOutlineNumber;
+exports.rewriteBlockOutlines = rewriteBlockOutlines;
 /** 解析 analytical_iter trace：每個 [Iter N] 區塊內為 name llx lly urx ury */
 function parseAnalyticalIterFile(text) {
     const frames = [];
@@ -189,5 +192,45 @@ function parseFloorplanOutput(text) {
         idx++;
     }
     return { modules, tsvs };
+}
+const OUTLINE_LINE_RE = /^(\s*Outline:\s*)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(\s+)([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(\s*)$/i;
+function readBlockOutline(blockText) {
+    const lines = blockText.split(/\r?\n/);
+    for (const line of lines) {
+        const m = line.match(OUTLINE_LINE_RE);
+        if (m) {
+            return { width: parseFloat(m[2]), height: parseFloat(m[4]) };
+        }
+    }
+    return null;
+}
+function formatOutlineNumber(n) {
+    if (!Number.isFinite(n)) {
+        return "0";
+    }
+    const s = n.toFixed(10).replace(/\.?0+$/, "");
+    return s === "-0" ? "0" : s;
+}
+/** 將所有 Outline 行改成相同 W H；回傳更新後全文與被改寫的行數 */
+function rewriteBlockOutlines(blockText, width, height) {
+    const wStr = formatOutlineNumber(width);
+    const hStr = formatOutlineNumber(height);
+    const nl = blockText.includes("\r\n") ? "\r\n" : "\n";
+    let count = 0;
+    const lines = blockText.split(/\r?\n/);
+    const out = lines.map((line) => {
+        const m = line.match(OUTLINE_LINE_RE);
+        if (!m) {
+            return line;
+        }
+        count += 1;
+        return `${m[1]}${wStr}${m[3]}${hStr}${m[5]}`;
+    });
+    const endedWithNl = /(?:\r?\n)$/.test(blockText);
+    let text = out.join(nl);
+    if (endedWithNl && !/(?:\r?\n)$/.test(text)) {
+        text += nl;
+    }
+    return { text, count };
 }
 //# sourceMappingURL=parsers.js.map

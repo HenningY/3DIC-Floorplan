@@ -194,6 +194,7 @@ struct PlacementConfig {
     // ---- Congestion 啟用門檻（小 module 比例）----
     // area < 各層最大 module 面積 / divisor 的 module 視為「小 module」
     // 全部可動 module 中小 module 比例 <= gate_min_ratio 時，將 routing_congestion_max 強制設為 0（停用）
+    // 小 module：area < tier_max_area / routing_congestion_gate_divisor（與 Phase2 小 module 例外共用）
     // gate_divisor <= 0 → 停用此門檻，直接使用 routing_congestion_max 設定值
     double routing_congestion_gate_divisor   = 0.0;   // <=0 停用門檻
     double routing_congestion_gate_min_ratio = 0.20;  // 預設 20%
@@ -209,6 +210,9 @@ struct PlacementConfig {
     // 面積使用率門檻：build_tsvs() 後若任一 tier 的 (module+TSV) 面積佔比 > 此值，跳過 Phase 2
     // （改走 solve_tsvs + reflow_tsvs_after_legalize）；<=0 停用檢查，一律走 Phase 2。
     double tier_area_util_phase2_max      = 0.70;
+    // util 超標而將 skip 時：若小 module 比例 > 此值，仍強制開啟 Phase 2；<=0 停用此例外
+    // 小 module 定義共用 routing_congestion_gate_divisor
+    double phase2_small_module_ratio_min  = 0.20;
     // true：solve() 後 build_tsvs() 然後再跑一輪 joint analytical（module + TSV 一起移動）
     bool   enable_analytical_tsv_phase    = false;
     int    analytical_tsv_max_iterations  = 1000;  // Phase 2 最大迭代次數
@@ -456,6 +460,9 @@ public:
     void set_hpwl_die_weight_override(std::vector<double> w) { cfg_.hpwl_die_weights = std::move(w); }
     // 覆寫各 tier 的基礎密度懲罰係數（parse 後依實際 die 數量調整用）
     void set_tier_lambdas(std::vector<double> v) { cfg_.tier_lambdas = std::move(v); }
+
+    // 任一 tier 非 terminal module 數 > threshold 時切到高解析密度參數並重建 bin
+    void adapt_bin_sigma_by_module_count(int threshold = 250);
 
     // 覆寫 TSV placement 用的每層乘數（可不經 solve_tsvs 先設）；tsv_die_weights 空則跟 .block
     void set_tsv_placement_config(const TsvPlacementConfig& cfg) { tsv_placement_cfg_ = cfg; }
